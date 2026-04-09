@@ -12,3 +12,4 @@ venv/
 # Patent data files (large)
 US*/
 *.pdf
+tests/
