@@ -8,3 +8,7 @@ dist/
 build/
 .env
 venv/
+
+# Patent data files (large)
+US*/
+*.pdf
