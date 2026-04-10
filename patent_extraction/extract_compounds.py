@@ -41,11 +41,17 @@ Extract ALL compounds mentioned on this page. For each compound return:
   ]
 }]
 
-Rules:
+CRITICAL rules for IUPAC names:
+- Extract the COMPLETE IUPAC name — NEVER truncate. Include every character.
+- Verify all parentheses () and brackets [] are balanced. Every open must have a close.
+- Copy the name EXACTLY as written in the patent — do not alter locants, substituent positions, or ring numbering.
+- Double-check fused ring notation like pyrrolo[2,1-f] — preserve the exact letters (pyrrolo has double r).
+- If the name is split across multiple text blocks on the page, reconstruct the full name.
+- Do NOT convert IUPAC names to SMILES.
+
+Other rules:
 - Use the FULL compound designation verbatim from the patent (e.g., "Example 1", not just "1")
-- Extract the COMPLETE IUPAC name — do not truncate
 - If synthesis steps are described, extract them. If not, leave synthesis_steps as []
-- Do NOT convert IUPAC names to SMILES
 - If no compounds are on this page, return []
 - Return ONLY the JSON array, no other text"""
 

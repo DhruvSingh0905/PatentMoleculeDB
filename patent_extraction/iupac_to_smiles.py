@@ -41,19 +41,25 @@ OPSIN_FAILURES_LOG = config.LOGS_DIR / "opsin_failures.jsonl"
 def rule_based_clean(name: str) -> str:
     """Deterministic fixes for known OPSIN failure patterns.
 
-    Based on empirical analysis of US10214537 extraction failures:
-    - pyrolo→pyrrolo (Claude drops an 'r' during extraction)
-    - pyranyl→pyran (extraction artifact)
+    Built from empirical analysis of US10214537 (169 compounds):
+    - pyrolo→pyrrolo: Claude drops an 'r' during extraction (30+ compounds)
+    - pyranyl→pyran: extraction artifact
+    - thionorpholine→thiomorpholine: OPSIN needs standard name
     - Salt suffix stripping
     - Stereo prefix normalization
+    - Misplaced parentheses from Claude extraction
     """
     n = name.strip()
 
-    # Fix known extraction typos
+    # Fix known extraction typos (ring names)
     n = n.replace('pyrolo[', 'pyrrolo[')
     n = n.replace('Pyrolo[', 'Pyrrolo[')
     n = n.replace('pyrran', 'pyran')
     n = n.replace('pyranyl-', 'pyran-')
+    n = n.replace('thionorpholine', 'thiomorpholine')
+
+    # Fix misplaced parens: "pyrazol-5-(yl)" → "pyrazol-5-yl)"
+    n = re.sub(r'-(\d+)-\(yl\)', r'-\1-yl)', n)
 
     # Strip salt suffixes (OPSIN can't parse these)
     n = re.sub(r',\s*\d*\s*HCl$', '', n)
@@ -64,6 +70,11 @@ def rule_based_clean(name: str) -> str:
     n = re.sub(r'^\(\((?:C|c)is\)\)-?', '', n)   # ((Cis))- → strip
     n = re.sub(r'^\((cis|trans)\)-', '', n, flags=re.IGNORECASE)
     n = re.sub(r'^\((\d+[RS])\)-', '', n)         # (3R)- → strip
+    n = re.sub(r'^\((S|R)\)-', '', n)
+
+    # Fix garbled thiomorpholine patterns
+    n = re.sub(r"1,6'-4-thiomorpholine", 'thiomorpholine', n)
+    n = n.replace('1,1-dione', '1,1-dioxide')
 
     return n
 
