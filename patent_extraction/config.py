@@ -7,7 +7,7 @@ from pathlib import Path
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MODEL_OPUS = "claude-opus-4-6"
 MODEL_SONNET = "claude-sonnet-4-6"
-DEFAULT_MODEL = MODEL_OPUS  # Accuracy > cost
+DEFAULT_MODEL = MODEL_SONNET  # Sonnet for $200 proof phase; upgrade to Opus after budget increase
 
 # Paths
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -31,9 +31,9 @@ PATENT_IDS = [
 
 DEV_PATENT = "US10214537"  # Primary development/testing patent
 
-# Cost
-COST_THRESHOLDS = [1000, 2500, 5000]
-COST_CEILING = 5000
+# Cost — $200 proof budget for 8 patents
+COST_THRESHOLDS = [50, 100, 150, 200]
+COST_CEILING = 200
 
 # Opus pricing (per million tokens)
 PRICING = {

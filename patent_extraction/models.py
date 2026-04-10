@@ -63,6 +63,15 @@ class IupacSource(str, Enum):
     GENERATED = "generated"                     # From scaffold + substituent table
 
 
+class SynthesisStep(BaseModel):
+    """A single step in a compound's synthesis route."""
+    step_number: int
+    starting_materials: list[str] = Field(default_factory=list)  # IUPAC or common names
+    reagents: list[str] = Field(default_factory=list)
+    conditions: str | None = None               # "reflux, 2h, THF"
+    product: str = ""                           # Intermediate name or "final product"
+
+
 class Compound(BaseModel):
     """A single extracted compound with all metadata."""
     patent_id: str
@@ -90,6 +99,9 @@ class Compound(BaseModel):
     image_path: str | None = None
     source_page: int | None = None
     image_bbox: list[int] | None = None         # [x1, y1, x2, y2]
+
+    # Synthesis route (extracted from same page, for future retrosynthesis project)
+    synthesis_route: list[SynthesisStep] = Field(default_factory=list)
 
     # Assay & drug-likeness
     assay_data: list[AssayResult] = Field(default_factory=list)
