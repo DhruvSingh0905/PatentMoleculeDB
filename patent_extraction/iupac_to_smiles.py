@@ -343,6 +343,24 @@ def _finalize(compound: Compound, smiles: str, stage: str) -> Compound:
     compound.parent_inchikey = salt_result.get("parent_inchikey")
 
     compound.drug_likeness = compute_drug_likeness(canonical)
+
+    # MW cross-check against MS data (intermediate validation)
+    if compound.ms_mh_plus:
+        from rdkit import Chem as RDChem
+        from rdkit.Chem import Descriptors as RDDescriptors
+        mol = RDChem.MolFromSmiles(canonical)
+        if mol:
+            exact_mw = RDDescriptors.ExactMolWt(mol)
+            expected_mw = compound.ms_mh_plus - 1.008  # (M+H)+ = MW + proton
+            delta = abs(exact_mw - expected_mw)
+            compound.mw_validated = delta < 1.5
+            if not compound.mw_validated:
+                logger.warning(
+                    f"{compound.example_number}: MW MISMATCH — "
+                    f"OPSIN={exact_mw:.1f} vs MS-derived={expected_mw:.1f} (Δ={delta:.1f}Da). "
+                    f"IUPAC name may be wrong."
+                )
+
     compound.processing_status = "validated"
     return compound
 

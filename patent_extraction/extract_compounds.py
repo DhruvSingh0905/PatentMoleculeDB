@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from . import config
@@ -22,6 +23,28 @@ from .models import Compound, CompoundSource, IupacSource, SynthesisStep, PageMa
 
 logger = logging.getLogger(__name__)
 
+# Regex patterns for extracting MS (M+H)+ values from raw page text
+MS_PATTERNS = [
+    re.compile(r'(?:LCMS?|LC/MS|ESI-MS|LC-MS).*?\(?M\+[H1]\)?\+?\s*[=:]\s*(\d+\.?\d*)', re.IGNORECASE),
+    re.compile(r'\[M\+[H1]\]\+?\s*[=:]\s*(\d+\.?\d*)', re.IGNORECASE),
+    re.compile(r'\[M\+1\]\+?\s*[+=]\s*(\d+\.?\d*)', re.IGNORECASE),
+    re.compile(r'm/[ez]\s*[=:]\s*(\d+\.?\d*)', re.IGNORECASE),
+]
+
+
+def _extract_ms_from_text(text: str) -> float | None:
+    """Extract (M+H)+ value from raw page text using regex."""
+    for pattern in MS_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            try:
+                val = float(match.group(1))
+                if 100 < val < 2000:  # Sane MW range for pharma
+                    return val
+            except ValueError:
+                continue
+    return None
+
 EXTRACTION_PROMPT = """You are extracting chemical compound information from a pharmaceutical patent page.
 
 Extract ALL compounds mentioned on this page. For each compound return:
@@ -29,6 +52,7 @@ Extract ALL compounds mentioned on this page. For each compound return:
 [{
   "compound_id": "Example 1" or "Cpd. No. 243" or "Intermediate 1A" (use the FULL designation from the patent),
   "iupac_name": "the complete IUPAC chemical name, or null if not present on this page",
+  "ms_mh_plus": 420.3 or null (the (M+H)+ or [M+1]+ value from MS/LCMS data on this page),
   "is_intermediate": false,
   "synthesis_steps": [
     {
@@ -220,6 +244,9 @@ def extract_all_compounds(
     # Sort by page number for deterministic ordering
     all_raw_results.sort(key=lambda x: x[0])
 
+    # Build page text lookup for MS regex fallback
+    page_texts = {pnum: text for pnum, text in page_tasks}
+
     # Deduplicate and build Compound objects
     all_compounds: list[Compound] = []
     seen_compound_ids: set[str] = set()
@@ -243,6 +270,17 @@ def extract_all_compounds(
 
             iupac_name = raw.get("iupac_name")
 
+            # Extract MS (M+H)+ value — from Claude's response or regex fallback
+            ms_mh_plus = None
+            ms_raw = raw.get("ms_mh_plus")
+            if ms_raw is not None:
+                try:
+                    ms_mh_plus = float(ms_raw)
+                    if not (100 < ms_mh_plus < 2000):
+                        ms_mh_plus = None
+                except (ValueError, TypeError):
+                    ms_mh_plus = None
+
             # Flag truncated names (unbalanced parens/brackets)
             if iupac_name:
                 open_p = iupac_name.count('(') - iupac_name.count(')')
@@ -254,10 +292,15 @@ def extract_all_compounds(
                         f"Name may be truncated: {iupac_name[:60]}"
                     )
 
+            # Regex fallback for MS if Claude didn't extract it
+            if ms_mh_plus is None and page_num in page_texts:
+                ms_mh_plus = _extract_ms_from_text(page_texts[page_num])
+
             compound = Compound(
                 patent_id=patent_id,
                 example_number=compound_id,
                 iupac_name=iupac_name,
+                ms_mh_plus=ms_mh_plus,
                 iupac_source=IupacSource.PATENT_VERBATIM,
                 is_intermediate=raw.get("is_intermediate", False),
                 source=CompoundSource.EXEMPLIFIED,

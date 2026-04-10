@@ -100,6 +100,10 @@ class Compound(BaseModel):
     source_page: int | None = None
     image_bbox: list[int] | None = None         # [x1, y1, x2, y2]
 
+    # MS data for intermediate validation
+    ms_mh_plus: float | None = None             # (M+H)+ value from MS/LCMS on same page
+    mw_validated: bool | None = None             # True if ExactMolWt matches MS ±1.5 Da
+
     # Synthesis route (extracted from same page, for future retrosynthesis project)
     synthesis_route: list[SynthesisStep] = Field(default_factory=list)
 
