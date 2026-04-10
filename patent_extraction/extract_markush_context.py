@@ -107,13 +107,32 @@ def extract_markush_context(
 
     # Parse JSON response
     try:
-        # Strip markdown code fences if present
         cleaned = response.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[1]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
+
+        # Strip markdown code fences
+        if "```" in cleaned:
+            parts = cleaned.split("```")
+            for part in parts:
+                part = part.strip()
+                if part.startswith("json"):
+                    part = part[4:].strip()
+                if part.startswith("{"):
+                    cleaned = part
+                    break
+
+        # Find JSON object if there's text around it
+        if not cleaned.startswith("{"):
+            start = cleaned.find("{")
+            if start >= 0:
+                depth = 0
+                for i in range(start, len(cleaned)):
+                    if cleaned[i] == "{":
+                        depth += 1
+                    elif cleaned[i] == "}":
+                        depth -= 1
+                    if depth == 0:
+                        cleaned = cleaned[start:i+1]
+                        break
 
         data = json.loads(cleaned)
     except json.JSONDecodeError:

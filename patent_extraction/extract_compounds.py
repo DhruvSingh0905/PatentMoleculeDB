@@ -80,15 +80,36 @@ def extract_compounds_from_page(
         logger.error(f"Patent {patent_id} page {page_num}: API call failed")
         return []
 
-    # Parse JSON response
+    # Parse JSON response — handle Claude adding text before/after JSON
     try:
         cleaned = response.strip()
-        # Strip markdown code fences
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[1]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
+
+        # Strip markdown code fences (Claude often wraps JSON in ```json ... ```)
+        if "```" in cleaned:
+            # Extract content between first ``` and last ```
+            parts = cleaned.split("```")
+            for part in parts:
+                part = part.strip()
+                if part.startswith("json"):
+                    part = part[4:].strip()
+                if part.startswith("["):
+                    cleaned = part
+                    break
+
+        # If response contains a JSON array somewhere, find it
+        if not cleaned.startswith("["):
+            start = cleaned.find("[")
+            if start >= 0:
+                # Find the matching closing bracket
+                depth = 0
+                for i in range(start, len(cleaned)):
+                    if cleaned[i] == "[":
+                        depth += 1
+                    elif cleaned[i] == "]":
+                        depth -= 1
+                    if depth == 0:
+                        cleaned = cleaned[start:i+1]
+                        break
 
         compounds = json.loads(cleaned)
         if not isinstance(compounds, list):
@@ -122,12 +143,17 @@ def _parse_synthesis_steps(raw_steps: list[dict]) -> list[SynthesisStep]:
     return steps
 
 
+MAX_PARALLEL_PAGES = 5  # Concurrent page extraction calls
+
+
 def extract_all_compounds(
     patent_id: str,
     manifest: PageManifest,
     data_dir: Path | None = None,
 ) -> list[Compound]:
     """Extract all compounds from a patent's iupacs_clean pages.
+
+    Parallelizes page extraction with MAX_PARALLEL_PAGES concurrent calls.
 
     Args:
         patent_id: Patent identifier.
@@ -137,6 +163,8 @@ def extract_all_compounds(
     Returns:
         List of Compound objects with names and synthesis routes populated.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     if data_dir is None:
         data_dir = config.DATA_DIR
 
@@ -145,22 +173,51 @@ def extract_all_compounds(
         logger.warning(f"Patent {patent_id}: No iupacs_clean directory")
         return []
 
-    all_compounds: list[Compound] = []
-    seen_compound_ids: set[str] = set()
-    pages_processed = 0
+    # Only process pages that detection flagged as having example headers
+    example_pages = set(manifest.example_pages) if manifest.example_pages else None
 
-    # Process all iupacs_clean pages (they're pre-filtered to compound content)
+    # Collect pages to process
+    page_tasks: list[tuple[int, str]] = []
     for page_file in sorted(iupacs_dir.glob("page_*.md")):
         page_num = extract_page_number(page_file)
         if page_num is None:
             continue
-
-        # Read the full page text (raw markdown — Claude can handle the format)
+        if example_pages is not None and page_num not in example_pages:
+            continue
         page_text = page_file.read_text(encoding="utf-8")
+        if page_text.strip():
+            page_tasks.append((page_num, page_text))
 
-        raw_compounds = extract_compounds_from_page(page_text, patent_id, page_num)
-        pages_processed += 1
+    logger.info(
+        f"Patent {patent_id}: Processing {len(page_tasks)} pages "
+        f"with {MAX_PARALLEL_PAGES} parallel workers"
+    )
 
+    # Process pages in parallel
+    all_raw_results: list[tuple[int, list[dict]]] = []
+
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_PAGES) as executor:
+        futures = {
+            executor.submit(extract_compounds_from_page, text, patent_id, pnum): pnum
+            for pnum, text in page_tasks
+        }
+        for future in as_completed(futures):
+            pnum = futures[future]
+            try:
+                raw = future.result()
+                all_raw_results.append((pnum, raw))
+            except Exception as e:
+                logger.error(f"Patent {patent_id} page {pnum}: extraction failed: {e}")
+
+    # Sort by page number for deterministic ordering
+    all_raw_results.sort(key=lambda x: x[0])
+
+    # Deduplicate and build Compound objects
+    all_compounds: list[Compound] = []
+    seen_compound_ids: set[str] = set()
+    pages_processed = len(all_raw_results)
+
+    for page_num, raw_compounds in all_raw_results:
         for raw in raw_compounds:
             compound_id = raw.get("compound_id", "")
             if not compound_id:
