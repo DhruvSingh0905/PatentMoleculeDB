@@ -61,11 +61,9 @@ def extract_inline_compounds(manifest: PageManifest) -> list[Compound]:
         drug_likeness = compute_drug_likeness(canonical)
 
         # Determine confidence tier
-        # Inline SMILES/InChI are machine-readable — highest confidence
-        if drug_likeness and drug_likeness.lipinski_passes:
-            tier = ConfidenceTier.DUAL_CONFIRMED  # Tier 1: validated + drug-like
-        else:
-            tier = ConfidenceTier.SINGLE_VALIDATED  # Tier 2: valid but unusual properties
+        # Inline SMILES/InChI is a single source — Tier 2 (single-source-validated)
+        # Tier 1 requires 2+ independent sources agreeing
+        tier = ConfidenceTier.SINGLE_VALIDATED
 
         compound = Compound(
             patent_id=manifest.patent_id,

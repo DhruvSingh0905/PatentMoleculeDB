@@ -186,8 +186,15 @@ def compute_drug_likeness(smiles: str) -> DrugLikenessResult | None:
             sys.path.insert(0, sa_path)
         import sascorer
         sa_score = sascorer.calculateScore(mol)
-    except Exception:
-        sa_score = 0.0  # If SA scorer not available, default to 0
+    except ImportError:
+        logging.getLogger(__name__).warning(
+            "SA_Score module not available. SA scores will default to 0.0. "
+            "Install from RDKit Contrib or set RDBASE."
+        )
+        sa_score = 0.0
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"SA_Score calculation failed: {e}")
+        sa_score = 0.0
 
     return DrugLikenessResult(
         mw=round(mw, 2),

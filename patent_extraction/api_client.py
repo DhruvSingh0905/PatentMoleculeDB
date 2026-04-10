@@ -84,13 +84,16 @@ def _log_failure(prompt: str, error: str, patent_id: str = "", compound_id: str 
         anthropic.InternalServerError,
     )),
 )
-def _call_api(client, model, messages, max_tokens=2048):
+def _call_api(client, model, messages, max_tokens=2048, system=""):
     """Raw API call with retry on transient errors."""
-    return client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=messages,
-    )
+    kwargs = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": messages,
+    }
+    if system:
+        kwargs["system"] = system
+    return client.messages.create(**kwargs)
 
 
 def call_claude_text(
@@ -119,11 +122,7 @@ def call_claude_text(
 
     start = time.monotonic()
     try:
-        kwargs = {"model": model, "messages": messages, "max_tokens": max_tokens}
-        if system:
-            kwargs["system"] = system
-
-        response = client.messages.create(**kwargs)
+        response = _call_api(client, model, messages, max_tokens, system=system)
 
         elapsed_ms = (time.monotonic() - start) * 1000
         input_tokens = response.usage.input_tokens

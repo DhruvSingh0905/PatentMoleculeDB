@@ -27,6 +27,7 @@ class AssayResult(BaseModel):
     value_numeric: float | None = None
     qualifier: str | None = None                # ">", "<", "~", "range"
     unit: str = ""
+    n_runs: int | None = None                   # Number of experimental replicates
 
 
 class DrugLikenessResult(BaseModel):
@@ -40,11 +41,34 @@ class DrugLikenessResult(BaseModel):
     sa_score: float
 
 
+class MarkushContext(BaseModel):
+    """Markush scaffold context extracted from patent claims.
+
+    Used as context for IUPAC→SMILES conversion, NOT for enumeration.
+    """
+    patent_id: str
+    scaffold_smiles: str | None = None          # RDKit-validated scaffold SMILES
+    scaffold_description: str = ""              # Natural language description
+    r_group_definitions: dict[str, list[str]] = Field(default_factory=dict)
+    quality: Literal["high_confidence", "partial", "failed"] = "failed"
+    # high_confidence: valid SMILES + complete R-group defs
+    # partial: natural language only, SMILES invalid or absent
+    # failed: couldn't extract coherent scaffold
+
+
+class IupacSource(str, Enum):
+    """How the IUPAC name was obtained."""
+    PATENT_VERBATIM = "patent_verbatim"         # Directly extracted from patent text
+    CORRECTED = "corrected"                     # Image SMILES won, IUPAC regenerated
+    GENERATED = "generated"                     # From scaffold + substituent table
+
+
 class Compound(BaseModel):
     """A single extracted compound with all metadata."""
     patent_id: str
-    example_number: str | None = None
+    example_number: str | None = None           # Full verbatim: "Example 1", not "1"
     iupac_name: str | None = None
+    iupac_source: IupacSource = IupacSource.PATENT_VERBATIM
 
     # SMILES from different sources
     smiles_from_inline: str | None = None       # Regex-extracted SMILES/InChI
@@ -60,6 +84,7 @@ class Compound(BaseModel):
     # Metadata
     source: CompoundSource = CompoundSource.EXEMPLIFIED
     confidence_tier: ConfidenceTier = ConfidenceTier.SINGLE_UNVALIDATED
+    is_intermediate: bool = False
     markush_parent: str | None = None
     r_groups: dict[str, str] | None = None      # {"1": "methyl", "2": "F"}
     image_path: str | None = None
