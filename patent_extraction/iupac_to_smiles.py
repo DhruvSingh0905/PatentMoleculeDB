@@ -16,6 +16,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from py2opsin import py2opsin
+import threading
+
+# py2opsin uses a shared temp file — not thread-safe. Serialize access.
+_opsin_lock = threading.Lock()
 
 from . import config
 from .api_client import call_claude_text
@@ -86,8 +90,14 @@ def rule_based_clean(name: str) -> str:
 # ============================================================
 
 def _is_truncated(name: str) -> bool:
-    """Check if IUPAC name is truncated (unbalanced parens/brackets)."""
-    return name.count('(') != name.count(')') or name.count('[') != name.count(']')
+    """Check if IUPAC name is truncated."""
+    # Unbalanced parens/brackets
+    if name.count('(') != name.count(')') or name.count('[') != name.count(']'):
+        return True
+    # Ends with a trailing hyphen (cut off mid-name)
+    if name.rstrip().endswith('-'):
+        return True
+    return False
 
 
 def _vision_ocr_name(patent_id: str, page_num: int, compound_id: str) -> str | None:
@@ -210,23 +220,24 @@ def _llm_direct_smiles(raw_name: str, patent_id: str, compound_id: str) -> str |
 # ============================================================
 
 def _try_opsin(name: str) -> tuple[str | None, str]:
-    """Try OPSIN conversion. Returns (smiles, error_msg)."""
+    """Try OPSIN conversion. Returns (smiles, error_msg).
+    Thread-safe: py2opsin uses a shared temp file internally.
+    """
     import warnings
     error_msg = ""
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        try:
-            result = py2opsin(name)
-        except Exception as e:
-            return None, str(e)
+    with _opsin_lock:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            try:
+                result = py2opsin(name)
+            except Exception as e:
+                return None, str(e)
 
-        # Capture OPSIN warnings as error messages
-        if caught:
-            error_msg = str(caught[-1].message)
+            if caught:
+                error_msg = str(caught[-1].message)
 
     if result and isinstance(result, str) and len(result) > 3:
-        # Validate with RDKit as double-check
         if validate_smiles(result):
             return result, ""
 
