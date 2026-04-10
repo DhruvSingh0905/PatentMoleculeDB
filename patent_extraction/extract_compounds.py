@@ -44,6 +44,8 @@ Extract ALL compounds mentioned on this page. For each compound return:
 CRITICAL rules for IUPAC names:
 - Extract the COMPLETE IUPAC name — NEVER truncate. Include every character.
 - Verify all parentheses () and brackets [] are balanced. Every open must have a close.
+- If a name appears truncated (unbalanced parentheses, ends mid-word), look at the synthesis
+  procedure text on the same page for the complete name — it is often repeated there.
 - Copy the name EXACTLY as written in the patent — do not alter locants, substituent positions, or ring numbering.
 - Double-check fused ring notation like pyrrolo[2,1-f] — preserve the exact letters (pyrrolo has double r).
 - If the name is split across multiple text blocks on the page, reconstruct the full name.
@@ -239,10 +241,23 @@ def extract_all_compounds(
             # Parse synthesis steps
             synthesis = _parse_synthesis_steps(raw.get("synthesis_steps", []))
 
+            iupac_name = raw.get("iupac_name")
+
+            # Flag truncated names (unbalanced parens/brackets)
+            if iupac_name:
+                open_p = iupac_name.count('(') - iupac_name.count(')')
+                open_b = iupac_name.count('[') - iupac_name.count(']')
+                if open_p != 0 or open_b != 0:
+                    logger.warning(
+                        f"Patent {patent_id} {compound_id}: IUPAC name has "
+                        f"unbalanced parens ({open_p:+d}) or brackets ({open_b:+d}). "
+                        f"Name may be truncated: {iupac_name[:60]}"
+                    )
+
             compound = Compound(
                 patent_id=patent_id,
                 example_number=compound_id,
-                iupac_name=raw.get("iupac_name"),
+                iupac_name=iupac_name,
                 iupac_source=IupacSource.PATENT_VERBATIM,
                 is_intermediate=raw.get("is_intermediate", False),
                 source=CompoundSource.EXEMPLIFIED,
