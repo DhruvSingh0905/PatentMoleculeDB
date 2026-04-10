@@ -51,14 +51,15 @@ def rule_based_clean(name: str) -> str:
     """
     n = name.strip()
 
-    # Fix known extraction typos (ring names)
-    n = n.replace('pyrolo[', 'pyrrolo[')
-    n = n.replace('Pyrolo[', 'Pyrrolo[')
-    n = n.replace('pyrran', 'pyran')
-    n = n.replace('pyranyl-', 'pyran-')
-    n = n.replace('thionorpholine', 'thiomorpholine')
+    # --- GENERALIZABLE FIXES (safe across all patents) ---
 
-    # Fix misplaced parens: "pyrazol-5-(yl)" → "pyrazol-5-yl)"
+    # Fix common LLM/OCR typos in ring names
+    n = n.replace('pyrolo[', 'pyrrolo[')    # Dropped double-r
+    n = n.replace('Pyrolo[', 'Pyrrolo[')
+    n = n.replace('pyrran', 'pyran')         # Extra r
+    n = n.replace('thionorpholine', 'thiomorpholine')  # Wrong ring name
+
+    # Fix misplaced parens: "pyrazol-5-(yl)" → "pyrazol-5-yl)" (Claude artifact)
     n = re.sub(r'-(\d+)-\(yl\)', r'-\1-yl)', n)
 
     # Strip salt suffixes (OPSIN can't parse these)
@@ -66,15 +67,15 @@ def rule_based_clean(name: str) -> str:
     n = re.sub(r',\s*\d*\s*TFA$', '', n)
     n = re.sub(r'\s+as the \w+ salt$', '', n, flags=re.IGNORECASE)
 
-    # Normalize stereochemistry prefixes
-    n = re.sub(r'^\(\((?:C|c)is\)\)-?', '', n)   # ((Cis))- → strip
+    # Strip stereochemistry prefixes OPSIN can't resolve
+    n = re.sub(r'^\(\((?:C|c)is\)\)-?', '', n)
     n = re.sub(r'^\((cis|trans)\)-', '', n, flags=re.IGNORECASE)
-    n = re.sub(r'^\((\d+[RS])\)-', '', n)         # (3R)- → strip
+    n = re.sub(r'^\((\d*[RS])\)-', '', n)
     n = re.sub(r'^\((S|R)\)-', '', n)
 
-    # Fix garbled thiomorpholine patterns
-    n = re.sub(r"1,6'-4-thiomorpholine", 'thiomorpholine', n)
-    n = n.replace('1,1-dione', '1,1-dioxide')
+    # NOTE: Fusion descriptors ([1,2-f] vs [2,1-f]) and locants (triazin-9 vs -7)
+    # are NOT corrected here — they specify different molecules. Changing them
+    # would silently produce wrong structures. These go to the LLM fallback.
 
     return n
 
