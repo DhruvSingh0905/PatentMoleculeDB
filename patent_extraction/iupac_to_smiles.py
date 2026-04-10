@@ -85,6 +85,63 @@ def rule_based_clean(name: str) -> str:
 # Stage 3: LLM cleaning with error context
 # ============================================================
 
+def _is_truncated(name: str) -> bool:
+    """Check if IUPAC name is truncated (unbalanced parens/brackets)."""
+    return name.count('(') != name.count(')') or name.count('[') != name.count(']')
+
+
+def _vision_ocr_name(patent_id: str, page_num: int, compound_id: str) -> str | None:
+    """Render a PDF page and ask Claude Vision to extract the complete IUPAC name.
+
+    Used for compounds where the source markdown truncated the name
+    (image-only PDF pages with garbled table extraction).
+    """
+    from .api_client import call_claude_vision
+    from pathlib import Path
+    import fitz
+    from PIL import Image
+
+    pdf_path = config.DATA_DIR / patent_id / f"{patent_id}.pdf"
+    if not pdf_path.exists():
+        return None
+
+    try:
+        doc = fitz.open(str(pdf_path))
+        if page_num >= len(doc):
+            doc.close()
+            return None
+
+        page = doc[page_num]
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 144 DPI, enough for text
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        doc.close()
+
+        # Save temporarily
+        img_path = config.IMAGES_DIR / patent_id / f"ocr_p{page_num:04d}.png"
+        img_path.parent.mkdir(parents=True, exist_ok=True)
+        img.save(str(img_path))
+
+        response = call_claude_vision(
+            prompt=f"This is a page from a pharmaceutical patent. "
+                   f"Find the complete IUPAC chemical name for compound '{compound_id}' on this page. "
+                   f"The name may be in a table. Extract the COMPLETE name with all parentheses balanced. "
+                   f"Output ONLY the IUPAC name, nothing else.",
+            image_path=img_path,
+            patent_id=patent_id,
+            compound_id=f"{compound_id}_vision_ocr",
+        )
+
+        if response:
+            name = response.strip().split("\n")[0].strip()
+            if len(name) > 20 and name.count('(') == name.count(')'):
+                return name
+
+    except Exception as e:
+        logger.warning(f"Vision OCR failed for {patent_id} p{page_num}: {e}")
+
+    return None
+
+
 CLEANING_PROMPT = """OPSIN parser failed on this IUPAC chemical name with error:
 {error}
 
@@ -195,6 +252,25 @@ def _convert_single(compound: Compound) -> Compound:
         smiles, error = _try_opsin(cleaned)
         if smiles:
             return _finalize(compound, smiles, stage="rule_cleaned")
+
+    # Stage 2b: If name is truncated (unbalanced parens from garbled source markdown),
+    # render the PDF page and ask Claude Vision to read the complete name.
+    if _is_truncated(raw_name) and compound.source_page is not None:
+        vision_name = _vision_ocr_name(
+            compound.patent_id, compound.source_page,
+            compound.example_number or "unknown",
+        )
+        if vision_name:
+            smiles, error = _try_opsin(vision_name)
+            if smiles:
+                compound.iupac_name = vision_name  # Update with complete name
+                return _finalize(compound, smiles, stage="vision_ocr")
+            # Also try rule-cleaning the vision-extracted name
+            vision_cleaned = rule_based_clean(vision_name)
+            smiles, error = _try_opsin(vision_cleaned)
+            if smiles:
+                compound.iupac_name = vision_name
+                return _finalize(compound, smiles, stage="vision_ocr_cleaned")
 
     # Stage 3a: LLM clean with error context → OPSIN (cheap, Sonnet)
     llm_cleaned = _llm_clean(
