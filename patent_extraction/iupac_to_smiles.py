@@ -57,6 +57,7 @@ def rule_based_clean(name: str) -> str:
     n = n.replace('pyrolo[', 'pyrrolo[')    # Dropped double-r
     n = n.replace('Pyrolo[', 'Pyrrolo[')
     n = n.replace('pyrran', 'pyran')         # Extra r
+    n = re.sub(r'pyranyl-(\d)-yl', r'pyran-\1-yl', n)  # pyranyl-4-yl → pyran-4-yl
     n = n.replace('thionorpholine', 'thiomorpholine')  # Wrong ring name
 
     # Fix misplaced parens: "pyrazol-5-(yl)" → "pyrazol-5-yl)" (Claude artifact)
@@ -91,15 +92,24 @@ Raw name from patent: {raw_name}
 
 Fix the IUPAC name so OPSIN can parse it. Common issues:
 - Missing double letters in ring names (pyrrolo not pyrolo)
-- Unmatched brackets/parentheses
-- OCR artifacts (l vs 1, O vs 0)
-- Salt suffixes that need stripping
+- Unmatched brackets/parentheses — ensure every ( has a ) and every [ has a ]
+- Wrong locants (e.g., pyrazol-1-yl should be pyrazol-5-yl based on the scaffold)
+- Garbled ring names (e.g., "1,6'-4-thiomorpholine" should be "thiomorpholine")
+- "morpholin-3-one" → use standard IUPAC notation for the ring
 
 Output ONLY the corrected IUPAC name. Nothing else."""
 
+SMILES_FALLBACK_PROMPT = """Convert this IUPAC chemical name to a canonical SMILES string.
+The OPSIN parser cannot handle this name, so generate the SMILES directly.
+Preserve all stereochemistry (R/S, E/Z, cis/trans).
+
+Name: {raw_name}
+
+Output ONLY the SMILES string. Nothing else."""
+
 
 def _llm_clean(raw_name: str, error_msg: str, patent_id: str, compound_id: str) -> str | None:
-    """Use Sonnet to clean an IUPAC name that OPSIN can't parse."""
+    """Stage 3a: Use Sonnet to clean an IUPAC name that OPSIN can't parse."""
     prompt = CLEANING_PROMPT.format(error=error_msg, raw_name=raw_name)
 
     response = call_claude_text(
@@ -112,6 +122,29 @@ def _llm_clean(raw_name: str, error_msg: str, patent_id: str, compound_id: str) 
 
     if response:
         return response.strip().split("\n")[0].strip()
+    return None
+
+
+def _llm_direct_smiles(raw_name: str, patent_id: str, compound_id: str) -> str | None:
+    """Stage 3b: Last resort — ask Opus to generate SMILES directly.
+
+    Only used when OPSIN fundamentally can't parse the ring system
+    (e.g., pyrrolo[1,2-f] fusion descriptors).
+    """
+    prompt = SMILES_FALLBACK_PROMPT.format(raw_name=raw_name)
+
+    response = call_claude_text(
+        prompt=prompt,
+        model=config.MODEL_OPUS,
+        patent_id=patent_id,
+        compound_id=f"{compound_id}_smiles_fallback",
+        max_tokens=200,
+    )
+
+    if response:
+        smiles = response.strip().split("\n")[0].strip()
+        if validate_smiles(smiles) and len(smiles) > 10:
+            return smiles
     return None
 
 
@@ -163,7 +196,7 @@ def _convert_single(compound: Compound) -> Compound:
         if smiles:
             return _finalize(compound, smiles, stage="rule_cleaned")
 
-    # Stage 3: LLM clean with error context → OPSIN (cheap)
+    # Stage 3a: LLM clean with error context → OPSIN (cheap, Sonnet)
     llm_cleaned = _llm_clean(
         raw_name, error,
         compound.patent_id,
@@ -174,8 +207,17 @@ def _convert_single(compound: Compound) -> Compound:
         if smiles:
             return _finalize(compound, smiles, stage="llm_cleaned")
 
+    # Stage 3b: Direct SMILES from Opus (last resort for OPSIN-unfixable names)
+    direct_smiles = _llm_direct_smiles(
+        raw_name,
+        compound.patent_id,
+        compound.example_number or "unknown",
+    )
+    if direct_smiles:
+        return _finalize(compound, direct_smiles, stage="llm_direct_smiles")
+
     # All stages failed — log and flag
-    compound.failure_reason = "opsin_all_stages_failed"
+    compound.failure_reason = "all_stages_failed"
     compound.processing_status = "failed"
 
     _log_opsin_failure(
