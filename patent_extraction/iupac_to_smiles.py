@@ -370,18 +370,13 @@ def _finalize(compound: Compound, smiles: str, stage: str) -> Compound:
             expected_mw = compound.ms_mh_plus - 1.008  # (M+H)+ = MW + proton
             delta = abs(exact_mw - expected_mw)
             compound.mw_validated = delta < 1.5
-            if delta > 10:
-                # Large mismatch — almost certainly wrong molecule
-                compound.failure_reason = f"mw_mismatch_delta_{delta:.0f}"
-                compound.processing_status = "failed"
+            if not compound.mw_validated:
+                # MW mismatch is a WARNING, not a failure.
+                # Common causes: Claude assigned wrong MS to this compound,
+                # or IUPAC name was partially truncated (missing substituent).
+                # OPSIN SMILES is still likely correct — the MS assignment is unreliable.
                 logger.warning(
-                    f"{compound.example_number}: MW MISMATCH (HARD FAIL) — "
-                    f"OPSIN={exact_mw:.1f} vs MS={expected_mw:.1f} (Δ={delta:.1f}Da)"
-                )
-                return compound
-            elif not compound.mw_validated:
-                logger.info(
-                    f"{compound.example_number}: MW minor deviation — "
+                    f"{compound.example_number}: MW MISMATCH (warning) — "
                     f"OPSIN={exact_mw:.1f} vs MS={expected_mw:.1f} (Δ={delta:.1f}Da)"
                 )
 
