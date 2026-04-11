@@ -32,7 +32,8 @@ from .smiles_utils import (
 logger = logging.getLogger(__name__)
 
 MAX_PARALLEL = 10
-MIN_SMILES_MW = 100  # Lower than before — OPSIN output is guaranteed correct
+MIN_SMILES_MW = 150    # Catches iodine (127.9) and other single-atom SMILES
+MIN_SMILES_LENGTH = 10 # Drug molecules have SMILES ≥10 chars; "I", "Cl", "CC" are not drugs
 
 # OPSIN failure log
 OPSIN_FAILURES_LOG = config.LOGS_DIR / "opsin_failures.jsonl"
@@ -304,7 +305,15 @@ def _convert_single(compound: Compound) -> Compound:
         return _finalize(compound, direct_smiles, stage="llm_direct_smiles")
 
     # All stages failed — log and flag
-    compound.failure_reason = "all_stages_failed"
+    # Check if this is a complex macrocyclic name that no tool can handle
+    is_macrocycle = any(kw in raw_name.lower() for kw in [
+        'methano', 'cyclotridecine', 'cyclododecine', 'cyclopentadecine',
+        'methanobenzo', 'methanodipyrido', 'triazacyclo',
+    ])
+    if is_macrocycle:
+        compound.failure_reason = "unparsable_macrocycle_frontier_limitation"
+    else:
+        compound.failure_reason = "all_stages_failed"
     compound.processing_status = "failed"
 
     _log_opsin_failure(
@@ -325,6 +334,11 @@ def _finalize(compound: Compound, smiles: str, stage: str) -> Compound:
     canonical = canonicalize_smiles(smiles)
     if not canonical:
         compound.failure_reason = f"rdkit_rejected_opsin_output"
+        compound.processing_status = "failed"
+        return compound
+
+    if len(canonical) < MIN_SMILES_LENGTH:
+        compound.failure_reason = f"smiles_too_short_{len(canonical)}"
         compound.processing_status = "failed"
         return compound
 
@@ -354,11 +368,19 @@ def _finalize(compound: Compound, smiles: str, stage: str) -> Compound:
             expected_mw = compound.ms_mh_plus - 1.008  # (M+H)+ = MW + proton
             delta = abs(exact_mw - expected_mw)
             compound.mw_validated = delta < 1.5
-            if not compound.mw_validated:
+            if delta > 10:
+                # Large mismatch — almost certainly wrong molecule
+                compound.failure_reason = f"mw_mismatch_delta_{delta:.0f}"
+                compound.processing_status = "failed"
                 logger.warning(
-                    f"{compound.example_number}: MW MISMATCH — "
-                    f"OPSIN={exact_mw:.1f} vs MS-derived={expected_mw:.1f} (Δ={delta:.1f}Da). "
-                    f"IUPAC name may be wrong."
+                    f"{compound.example_number}: MW MISMATCH (HARD FAIL) — "
+                    f"OPSIN={exact_mw:.1f} vs MS={expected_mw:.1f} (Δ={delta:.1f}Da)"
+                )
+                return compound
+            elif not compound.mw_validated:
+                logger.info(
+                    f"{compound.example_number}: MW minor deviation — "
+                    f"OPSIN={exact_mw:.1f} vs MS={expected_mw:.1f} (Δ={delta:.1f}Da)"
                 )
 
     compound.processing_status = "validated"
