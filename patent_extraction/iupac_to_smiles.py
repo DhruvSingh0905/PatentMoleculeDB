@@ -211,8 +211,10 @@ def _llm_direct_smiles(raw_name: str, patent_id: str, compound_id: str) -> str |
 
     if response:
         smiles = response.strip().split("\n")[0].strip()
-        if validate_smiles(smiles) and len(smiles) > 10:
-            return smiles
+        if validate_smiles(smiles) and len(smiles) >= MIN_SMILES_LENGTH:
+            mw = molecular_weight(smiles)
+            if mw and mw >= MIN_SMILES_MW:
+                return smiles
     return None
 
 
