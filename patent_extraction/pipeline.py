@@ -15,6 +15,7 @@ from . import config
 from .detect_structures import detect_patent
 from .extract_markush_context import extract_markush_context
 from .extract_compounds import extract_all_compounds
+from .parse_tables import extract_table_compounds
 from .iupac_to_smiles import convert_batch
 from .extract_images import extract_all_images
 from .image_to_smiles import convert_all_images
@@ -63,9 +64,25 @@ def run_patent(
     markush_context = extract_markush_context(patent_id, manifest, data_dir)
     progress.update(status="markush_context_complete")
 
-    # Step 2.1: Page-level compound extraction
+    # Step 2.1: Page-level compound extraction (from iupacs_clean example pages)
     logger.info(f"Step 2.1: Page-level compound extraction")
     compounds = extract_all_compounds(patent_id, manifest, data_dir)
+
+    # Step 2.5: Table compound extraction (from all_pages compound tables)
+    logger.info(f"Step 2.5: Table compound extraction")
+    table_compounds = extract_table_compounds(patent_id, data_dir)
+
+    # Merge: add table compounds not already found in page extraction
+    existing_ids = {(c.example_number or '').lower().replace(' ', '') for c in compounds}
+    new_from_tables = 0
+    for tc in table_compounds:
+        tc_key = (tc.example_number or '').lower().replace(' ', '')
+        if tc_key not in existing_ids:
+            compounds.append(tc)
+            existing_ids.add(tc_key)
+            new_from_tables += 1
+
+    logger.info(f"  Merged: {new_from_tables} new compounds from tables (total: {len(compounds)})")
     progress.update(
         status="compound_extraction_complete",
         compounds_found=len(compounds),
