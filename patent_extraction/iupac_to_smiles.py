@@ -73,11 +73,10 @@ def rule_based_clean(name: str) -> str:
     n = re.sub(r',\s*\d*\s*TFA$', '', n)
     n = re.sub(r'\s+as the \w+ salt$', '', n, flags=re.IGNORECASE)
 
-    # Strip stereochemistry prefixes OPSIN can't resolve
-    n = re.sub(r'^\(\((?:C|c)is\)\)-?', '', n)
+    # Strip ONLY cis/trans prefixes (OPSIN can't resolve these)
+    # KEEP R/S/E/Z prefixes — OPSIN handles them correctly (tested on 21 compounds)
+    n = re.sub(r'^\(\((?:C|c)is\)\)-?', '', n)   # ((Cis))- artifact
     n = re.sub(r'^\((cis|trans)\)-', '', n, flags=re.IGNORECASE)
-    n = re.sub(r'^\((\d*[RS])\)-', '', n)
-    n = re.sub(r'^\((S|R)\)-', '', n)
 
     # NOTE: Fusion descriptors ([1,2-f] vs [2,1-f]) and locants (triazin-9 vs -7)
     # are NOT corrected here — they specify different molecules. Changing them
