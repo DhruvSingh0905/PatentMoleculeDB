@@ -61,9 +61,37 @@ def rule_based_clean(name: str) -> str:
     # Fix common LLM/OCR typos in ring names
     n = n.replace('pyrolo[', 'pyrrolo[')    # Dropped double-r
     n = n.replace('Pyrolo[', 'Pyrrolo[')
+    n = n.replace('pyro1o[', 'pyrrolo[')    # OCR reads l as 1
+    n = n.replace('Pyro1o[', 'Pyrrolo[')
     n = n.replace('pyrran', 'pyran')         # Extra r
     n = re.sub(r'pyranyl-(\d)-yl', r'pyran-\1-yl', n)  # pyranyl-4-yl → pyran-4-yl
     n = n.replace('thionorpholine', 'thiomorpholine')  # Wrong ring name
+
+    # Fix table OCR artifacts: spaces inside compound names
+    n = re.sub(r'\)\s+pyrrolo\[', ')pyrrolo[', n)   # ") pyrrolo[" → ")pyrrolo["
+    n = re.sub(r'\)\s+pyrolo\[', ')pyrrolo[', n)     # ") pyrolo[" → ")pyrrolo["
+    n = re.sub(r'\)\s+Pyrrolo\[', ')Pyrrolo[', n)
+
+    # Fix OCR periods in fusion descriptors: [1.2,4] → [1,2,4]
+    n = re.sub(r'\[(\d+)\.(\d+),(\d+)\]', r'[\1,\2,\3]', n)  # [1.2,4] → [1,2,4]
+    n = re.sub(r'\[(\d+)\.,(\d+),(\d+)\]', r'[\1,\2,\3]', n)  # [1.,2,4] → [1,2,4]
+
+    # Fix missing locant in fusion: [2,4] → [1,2,4] (only for triazin context)
+    n = re.sub(r'pyrrolo\[2,1-f\]\[2,4\]', 'pyrrolo[2,1-f][1,2,4]', n)
+    n = re.sub(r'pyrrolo\[2,1-f\]\[2\.4\]', 'pyrrolo[2,1-f][1,2,4]', n)
+
+    # Fix OCR: [1,4] in triazin context → [1,2,4]
+    n = re.sub(r'\[1,4\]triazin', '[1,2,4]triazin', n)
+
+    # Fix more table OCR artifacts
+    n = n.replace('pyrrolo[2,1-1]', 'pyrrolo[2,1-f]')   # f OCR'd as 1
+    n = n.replace('pyrrolo[2.1-f]', 'pyrrolo[2,1-f]')   # period in fusion
+    n = n.replace('pyrzol', 'pyrazol')                    # missing 'a'
+    n = re.sub(r'pyrrolo\s+\[', 'pyrrolo[', n)           # space before [
+    # Fix missing opening bracket: pyrrolo[2,1-f]1,2,4] → pyrrolo[2,1-f][1,2,4]
+    n = re.sub(r'pyrrolo\[2,1-f\](\d)', r'pyrrolo[2,1-f][\1', n)
+    # Fix [1]2,4] → [1,2,4]
+    n = re.sub(r'\[1\]2,4\]', '[1,2,4]', n)
 
     # Fix misplaced parens: "pyrazol-5-(yl)" → "pyrazol-5-yl)" (Claude artifact)
     n = re.sub(r'-(\d+)-\(yl\)', r'-\1-yl)', n)
