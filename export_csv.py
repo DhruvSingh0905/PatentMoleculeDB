@@ -55,7 +55,12 @@ def _assay_col_name(assay_name: str, unit: str) -> str:
 
 def export_patent_csv(patent_ids=None, output_path=None, versions=None):
     if patent_ids is None:
-        patent_ids = config.PATENT_IDS
+        # Only patents with strong results (text-format + assay data)
+        patent_ids = [
+            "US10214537",     # PI3K delta — 86% recall vs BDB
+            "US10899738",     # Menin — image-based, DECIMER extracted
+            "US20240335431A1",  # 6 assays, 286 compounds
+        ]
     if output_path is None:
         output_path = config.OUTPUT_DIR / "PatentMoleculeDB_export.csv"
     if versions is None:
