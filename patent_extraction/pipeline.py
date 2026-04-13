@@ -20,9 +20,12 @@ from .iupac_to_smiles import convert_batch
 from .extract_images import extract_all_images
 from .image_to_smiles import convert_all_images
 from .cross_validate import cross_validate_compounds
+from .layout_router import detect_patent_format
+from .image_pipeline import extract_image_compounds
 from .models import PatentResult
 from .progress import ProgressTracker
 from .cost_tracker import cost_tracker
+from .api_cache import cache_stats
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,10 @@ def run_patent(
     # Step 1: Detection (local, no API)
     logger.info(f"Step 1: Detection")
     manifest = detect_patent(patent_id, data_dir)
+
+    # Step 1b: Layout-aware routing
+    format_info = detect_patent_format(patent_id, manifest, data_dir)
+    logger.info(f"Step 1b: Format={format_info['format']} (text={format_info['text_score']}, image={format_info['image_score']})")
     progress.update(status="detection_complete")
 
     # Step 2.0: Markush context extraction
@@ -111,10 +118,31 @@ def run_patent(
         smiles_from_text=smiles_count,
     )
 
-    # Step 2.3: Image → SMILES (optional)
+    # Step 2.3: Image → SMILES (optional, or auto if image-heavy patent)
     image_results = []
-    if not skip_images:
-        logger.info(f"Step 2.3: Image extraction and Vision conversion")
+    use_image = not skip_images or format_info['format'] in ('image', 'hybrid')
+    if use_image and format_info['routing']['use_image_pipeline']:
+        logger.info(f"Step 2.3: Image pipeline (Layout-to-Local Hybrid)")
+        try:
+            image_compounds = extract_image_compounds(patent_id, data_dir)
+            # Merge image compounds
+            existing_ids = {(c.example_number or '').lower().replace(' ', '') for c in compounds}
+            new_from_images = 0
+            for ic in image_compounds:
+                ic_key = (ic.example_number or '').lower().replace(' ', '')
+                if ic_key not in existing_ids:
+                    compounds.append(ic)
+                    existing_ids.add(ic_key)
+                    new_from_images += 1
+            logger.info(f"  Image pipeline added {new_from_images} new compounds")
+        except Exception as e:
+            logger.warning(f"Image pipeline failed: {e}")
+        progress.update(
+            status="image_extraction_complete",
+            smiles_from_image=sum(1 for c in compounds if c.smiles_from_image),
+        )
+    elif not skip_images:
+        logger.info(f"Step 2.3: Standard image extraction")
         image_records = extract_all_images(patent_id, manifest, data_dir)
         if image_records:
             image_results = convert_all_images(image_records, patent_id)
@@ -156,7 +184,11 @@ def run_patent(
             "tier_2": tier_counts[2],
             "tier_3": tier_counts[3],
             "markush_quality": markush_context.quality,
+            "patent_format": format_info['format'],
+            "text_score": format_info['text_score'],
+            "image_score": format_info['image_score'],
             "cost": cost_tracker.summary(),
+            "cache": cache_stats(),
         },
     )
 
@@ -171,10 +203,59 @@ def run_patent(
     progress.update(status="complete", cost_usd=cost_tracker.total_cost)
 
     logger.info(f"Pipeline complete for {patent_id}")
+    logger.info(f"  Format: {format_info['format']}")
     logger.info(f"  Compounds: {len(compounds)}")
     logger.info(f"  With SMILES: {smiles_count}")
     logger.info(f"  Tiers: T1={tier_counts[1]}, T2={tier_counts[2]}, T3={tier_counts[3]}")
     logger.info(f"  Cost so far: ${cost_tracker.total_cost:.2f}")
+    logger.info(f"  Cache: {cache_stats()}")
     logger.info(f"  Output: {output_path}")
 
     return result
+
+
+def run_patents_parallel(
+    patent_ids: list[str] | None = None,
+    data_dir: Path | None = None,
+    output_version: str = "v1",
+    max_workers: int = 3,
+    skip_images: bool = False,
+) -> list[PatentResult]:
+    """Run pipeline on multiple patents in parallel.
+
+    Args:
+        patent_ids: List of patent IDs. Defaults to all configured patents.
+        data_dir: Root data directory.
+        output_version: Version tag for output.
+        max_workers: Number of parallel patent processors.
+        skip_images: If True, skip image extraction.
+
+    Returns:
+        List of PatentResult objects.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if patent_ids is None:
+        patent_ids = config.PATENT_IDS
+
+    logger.info(f"Running {len(patent_ids)} patents with {max_workers} parallel workers")
+
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                run_patent, pid, data_dir, skip_images, output_version
+            ): pid
+            for pid in patent_ids
+        }
+        for future in as_completed(futures):
+            pid = futures[future]
+            try:
+                result = future.result()
+                results.append(result)
+                logger.info(f"  {pid}: {result.stats.get('total_compounds', 0)} compounds")
+            except Exception as e:
+                logger.error(f"  {pid}: FAILED — {e}")
+
+    logger.info(f"All patents complete. Total: {sum(r.stats.get('total_compounds', 0) for r in results)} compounds")
+    return results

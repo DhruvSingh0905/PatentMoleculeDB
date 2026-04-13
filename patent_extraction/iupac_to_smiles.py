@@ -314,9 +314,12 @@ def _convert_single(compound: Compound) -> Compound:
 
     # Stage 2: Rule-based clean → OPSIN (free, instant)
     cleaned = rule_based_clean(raw_name)
+    # Track if stereo was stripped
+    stereo_stripped = any(p in raw_name.lower() for p in ['(cis)', '(trans)']) and not any(p in cleaned.lower() for p in ['(cis)', '(trans)'])
     if cleaned != raw_name:
         smiles, error = _try_opsin(cleaned)
         if smiles:
+            compound.inferred_stereochemistry = stereo_stripped
             return _finalize(compound, smiles, stage="rule_cleaned")
 
     # Stage 2b: If name is truncated (unbalanced parens from garbled source markdown),
@@ -384,7 +387,8 @@ def _convert_single(compound: Compound) -> Compound:
 
 
 def _finalize(compound: Compound, smiles: str, stage: str) -> Compound:
-    """Finalize a compound with an OPSIN-generated SMILES."""
+    """Finalize a compound with a validated SMILES. Sets provenance metadata."""
+    compound.extraction_method = stage
     canonical = canonicalize_smiles(smiles)
     if not canonical:
         compound.failure_reason = f"rdkit_rejected_opsin_output"

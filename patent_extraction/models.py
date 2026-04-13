@@ -111,6 +111,11 @@ class Compound(BaseModel):
     assay_data: list[AssayResult] = Field(default_factory=list)
     drug_likeness: DrugLikenessResult | None = None
 
+    # Provenance — how this compound was extracted
+    extraction_method: str | None = None       # "opsin_direct", "pubchem", "decimer_local", "opus_vision", etc.
+    confidence_score: float | None = None       # 0.0-1.0
+    inferred_stereochemistry: bool = False      # True if stereo was lost/inferred
+
     # Processing status
     processing_status: Literal[
         "pending", "text_done", "image_done", "validated", "failed"
