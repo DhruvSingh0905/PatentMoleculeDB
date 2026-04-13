@@ -11,12 +11,14 @@ Recall (compounds found):
 v1  ████░░░░░░░░░░░░░░░░  10.3%  (80/774)   — example pages only
 v8  █████████░░░░░░░░░░░░  49.0%  (379/774)  — + compound tables
 v10 █████████████░░░░░░░░  65.1%  (504/774)  — + claims parsing
+v12 ███████████████░░░░░░  76.0%  (588/774)  — fixed claims name extraction
                                     ▲ current
 
 Precision (correct molecules):
 v7  ██████████░░░░░░░░░░░  53%
 v8  ██████████████░░░░░░░  71%
-v10 ████████████░░░░░░░░░  64%   ← dropped, OCR artifacts from new sources
+v10 ████████████░░░░░░░░░  64%   ← dropped, OCR artifacts
+v12 ██████████████░░░░░░░  74%   ← recovered after claims fix
                                     ▲ current
 
 Target: 99% precision, 99% recall
@@ -50,10 +52,10 @@ Patent PDF → Markdown (pre-extracted)
 
 | Metric | Value |
 |---|---|
-| Compounds extracted | 959 |
-| Validated SMILES | 838 |
-| BindingDB matches | 504/774 |
-| Budget spent | ~$25 of $200 |
+| Compounds extracted | 946 |
+| Validated SMILES | 842 |
+| BindingDB matches | 588/774 (76% recall) |
+| Budget spent | ~$30 of $200 |
 | Patents processed | 1 (US10214537) |
 | Tests passing | 181 |
 
