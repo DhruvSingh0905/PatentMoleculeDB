@@ -44,7 +44,7 @@ def _parse_value(raw: str) -> tuple[float | None, str | None]:
         return None, None
 
     if 'no inhib' in raw.lower() or 'inactive' in raw.lower():
-        return None, 'inactive'
+        return None, '>'  # Map to ">" (above detection limit)
 
     m = VALUE_PATTERN.match(raw)
     if m:
@@ -151,6 +151,15 @@ def _clean_assay_name(raw_name: str) -> str:
     # Fix common OCR typos in assay names
     name = re.sub(r'\bMeni\b', 'Menin', name)
     name = re.sub(r'InhibitionIC50', 'Inhibition IC50', name)
+    # Shorten verbose assay names
+    name = re.sub(r'(?:IC50|IC₅₀)\s*values?\s*for\s*(?:the\s*)?(?:inhibition\s*of\s*)?', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'\(IC_\{50\}\\?\)\s*', '', name)
+    name = re.sub(r'enzymatic\s*activity', 'enzymatic activity', name)
+    name = re.sub(r'\s*in\s+[\w\s;,]+ cells?\b', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'\s*by\s+example\s+compounds?\s*', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'^values?\s+for\s+', '', name, flags=re.IGNORECASE)
+    # Normalize SGK-1 variants
+    name = re.sub(r'^inhibition of\s+', '', name, flags=re.IGNORECASE)
     # Collapse whitespace
     name = re.sub(r'\s+', ' ', name).strip()
 

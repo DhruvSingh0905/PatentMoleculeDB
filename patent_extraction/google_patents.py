@@ -155,24 +155,30 @@ def extract_compounds_from_clean_text(
 
     logger.info(f"Google Patents {patent_id}: found {len(compounds)} compound names in clean text")
 
-    # Convert through OPSIN (no LLM needed — text is clean)
-    import threading
-    lock = threading.Lock()
+    # Convert through OPSIN sequentially (no threading — avoids temp file race)
     validated = []
 
     for c in compounds:
         name = c['name']
 
         # Try OPSIN direct
-        with lock:
-            smiles, error = _try_opsin(name)
+        smiles, error = _try_opsin(name)
         if not smiles:
             cleaned = rule_based_clean(name)
-            with lock:
-                smiles, error = _try_opsin(cleaned)
+            smiles, error = _try_opsin(cleaned)
 
         if not smiles or not validate_smiles(smiles) or len(smiles) < 10:
             continue
+
+        # Verify: re-run OPSIN to catch temp file contamination
+        verify_smiles, _ = _try_opsin(name)
+        if verify_smiles:
+            from .smiles_utils import canonicalize_smiles
+            c1 = canonicalize_smiles(smiles)
+            c2 = canonicalize_smiles(verify_smiles)
+            if c1 != c2:
+                logger.warning(f"OPSIN verification mismatch for {c['num']}: {c1[:40]} vs {c2[:40]}")
+                smiles = verify_smiles  # Use the verified one
 
         compound = Compound(
             patent_id=patent_id,
@@ -183,7 +189,7 @@ def extract_compounds_from_clean_text(
             extraction_method=f"google_patents_{c['source']}",
             processing_status="text_done",
         )
-        result = _finalize(compound, smiles, stage="google_patents_opsin")
+        _finalize(compound, smiles, stage="google_patents_opsin")
         if compound.processing_status == "validated":
             validated.append(compound)
 

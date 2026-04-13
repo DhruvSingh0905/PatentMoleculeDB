@@ -59,7 +59,8 @@ def export_patent_csv(patent_ids=None, output_path=None, versions=None):
     if output_path is None:
         output_path = config.OUTPUT_DIR / "PatentMoleculeDB_export.csv"
     if versions is None:
-        versions = ["decimer_v1", "google_patents_v1", "final_v2", "v13"]
+        # Prefer LLM-validated results over Google Patents (which has OPSIN race bugs)
+        versions = ["final_v2", "decimer_v1", "google_patents_v1", "v13"]
 
     # First pass: collect all rows + discover assay columns per patent
     raw_rows = []
@@ -117,12 +118,11 @@ def export_patent_csv(patent_ids=None, output_path=None, versions=None):
                     continue  # Skip bad merged headers
                 val = _clean_value(val)
 
-                # Add columns: value, qualifier, n_runs
+                # Add columns: value, qualifier (n_runs not available in patent tables)
                 assay_dict[col_base] = val
                 assay_dict[f"{col_base}_qualifier"] = qual
-                assay_dict[f"{col_base}_n_runs"] = str(n_runs) if n_runs else ""
 
-                for col in [col_base, f"{col_base}_qualifier", f"{col_base}_n_runs"]:
+                for col in [col_base, f"{col_base}_qualifier"]:
                     if col not in assay_columns_set:
                         assay_columns_set.add(col)
                         assay_columns_ordered.append(col)
