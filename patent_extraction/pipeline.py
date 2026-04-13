@@ -23,6 +23,7 @@ from .cross_validate import cross_validate_compounds
 from .layout_router import detect_patent_format
 from .image_pipeline import extract_image_compounds
 from .google_patents import extract_patent_google
+from .extract_assays import extract_assays_for_patent, attach_assays_to_compounds
 from .models import PatentResult
 from .progress import ProgressTracker
 from .cost_tracker import cost_tracker
@@ -209,6 +210,13 @@ def run_patent(
         tier_3=tier_counts[3],
     )
 
+    # Step 2.6: Assay data extraction (local, no API)
+    logger.info(f"Step 2.6: Assay data extraction")
+    assay_data = extract_assays_for_patent(patent_id, data_dir)
+    assays_attached = attach_assays_to_compounds(compounds, assay_data)
+    logger.info(f"  Attached assay data to {assays_attached}/{len(compounds)} compounds")
+    progress.update(status="assay_extraction_complete", compounds_with_assays=assays_attached)
+
     # Build result
     result = PatentResult(
         patent_id=patent_id,
@@ -223,6 +231,8 @@ def run_patent(
             "tier_2": tier_counts[2],
             "tier_3": tier_counts[3],
             "google_patents_compounds": len(gp_compounds),
+            "compounds_with_assays": assays_attached,
+            "total_assay_measurements": sum(len(c.assay_data) for c in compounds),
             "markush_quality": markush_context.quality,
             "patent_format": format_info['format'],
             "text_score": format_info['text_score'],
