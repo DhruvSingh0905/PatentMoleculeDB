@@ -18,6 +18,7 @@ from tenacity import (
 
 from . import config
 from .cost_tracker import cost_tracker
+from .api_cache import get_cached, store_cached
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,11 @@ def call_claude_text(
     Returns:
         Response text, or None on permanent failure.
     """
+    # Check cache first
+    cached = get_cached(model, prompt)
+    if cached is not None:
+        return cached
+
     client = _get_client()
     messages = [{"role": "user", "content": prompt}]
 
@@ -132,7 +138,10 @@ def call_claude_text(
         _log_api_call(model, input_tokens, output_tokens, elapsed_ms, True,
                       patent_id, compound_id)
 
-        return response.content[0].text.strip()
+        result_text = response.content[0].text.strip()
+        store_cached(model, prompt, result_text,
+                     input_tokens=input_tokens, output_tokens=output_tokens)
+        return result_text
 
     except (anthropic.RateLimitError, anthropic.APITimeoutError,
             anthropic.InternalServerError):
@@ -175,6 +184,11 @@ def call_claude_vision(
     # Read and encode image
     image_data = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
 
+    # Check cache (use image hash + prompt as key)
+    cached = get_cached(model, prompt, image_data)
+    if cached is not None:
+        return cached
+
     # Determine media type
     suffix = image_path.suffix.lower()
     media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
@@ -210,7 +224,10 @@ def call_claude_vision(
         _log_api_call(model, input_tokens, output_tokens, elapsed_ms, True,
                       patent_id, compound_id)
 
-        return response.content[0].text.strip()
+        result_text = response.content[0].text.strip()
+        store_cached(model, prompt, result_text, image_data=image_data,
+                     input_tokens=input_tokens, output_tokens=output_tokens)
+        return result_text
 
     except (anthropic.RateLimitError, anthropic.APITimeoutError,
             anthropic.InternalServerError):
