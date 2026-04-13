@@ -52,14 +52,7 @@ Return ONLY the JSON array."""
 
 
 def _extract_table_layout(page_image_path: str, patent_id: str, page_num: int) -> list[dict]:
-    """Use Sonnet to read table layout and identify compound locations."""
-    response = call_claude_text(
-        prompt="",  # Unused — vision call
-        patent_id=patent_id,
-        compound_id=f"layout_p{page_num}",
-    )
-
-    # Actually use vision
+    """Use Sonnet Vision to read table layout and identify compound locations."""
     response = call_claude_vision(
         prompt=LAYOUT_PROMPT,
         image_path=page_image_path,
@@ -192,17 +185,30 @@ def extract_image_compounds(
         logger.error(f"Patent {patent_id}: PDF not found")
         return []
 
-    # Find table pages (from iupacs_clean or all_pages with table markers)
-    iupacs_dir = data_dir / patent_id / "iupacs_clean"
+    # Find table pages — check both iupacs_clean and all_pages
     table_pages = set()
 
-    if iupacs_dir.exists():
-        for page_file in sorted(iupacs_dir.glob("page_*.md")):
+    for subdir_name in ["iupacs_clean", "all_pages"]:
+        pages_dir = data_dir / patent_id / subdir_name
+        if not pages_dir.exists():
+            continue
+        for page_file in sorted(pages_dir.glob("page_*.md")):
             text = page_file.read_text(encoding="utf-8")
-            # Pages with compound tables (Cpd. No. format or table with structures)
-            if ('<table>' in text.lower() and
-                ('cpd' in text.lower() or 'structure' in text.lower() or
-                 'chemical' in text.lower())):
+            text_lower = text.lower()
+            # Pages with compound tables (multiple detection patterns)
+            is_table_page = False
+            if '<table>' in text_lower:
+                if any(kw in text_lower for kw in [
+                    'cpd', 'structure', 'chemical', 'compound',
+                    'no.', 'name', 'table '
+                ]):
+                    is_table_page = True
+            # Also catch pages with TABLE N headers and structure images
+            if re.search(r'TABLE\s+\d+', text, re.IGNORECASE):
+                if 'structure' in text_lower or 'compound' in text_lower or 'cpd' in text_lower:
+                    is_table_page = True
+
+            if is_table_page:
                 match = re.search(r'page_(\d+)', page_file.stem)
                 if match:
                     table_pages.add(int(match.group(1)))
@@ -214,91 +220,107 @@ def extract_image_compounds(
     logger.info(f"Patent {patent_id}: Processing {len(table_pages)} table pages via image pipeline")
 
     doc = fitz.open(str(pdf_path))
-    compounds: list[Compound] = []
-    seen_ids: set[str] = set()
     images_dir = config.IMAGES_DIR / patent_id
     images_dir.mkdir(parents=True, exist_ok=True)
 
+    # Phase 1: Render all pages and extract layouts (parallelizable)
+    page_jobs = []  # (page_num, page_img, page_img_path, layouts)
     for page_num in sorted(table_pages):
         if page_num >= len(doc):
             continue
-
-        # Render page
         page = doc[page_num]
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
         page_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         page_img_path = str(images_dir / f"page_{page_num:04d}.png")
         page_img.save(page_img_path)
+        page_jobs.append((page_num, page_img, page_img_path))
 
-        # Step 1: Sonnet reads layout
+    doc.close()
+
+    # Phase 2: Sonnet layout extraction (cached, parallel)
+    def _get_layout(job):
+        page_num, page_img, page_img_path = job
         layouts = _extract_table_layout(page_img_path, patent_id, page_num)
+        return page_num, page_img, layouts
+
+    layout_results = []
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        for result in executor.map(_get_layout, page_jobs):
+            layout_results.append(result)
+
+    # Phase 3: Crop + DECIMER (parallelized per compound)
+    crop_jobs = []  # (cpd_no, crop_path, ms_mh, iupac_name, page_num)
+    seen_ids: set[str] = set()
+
+    for page_num, page_img, layouts in layout_results:
         if not layouts:
             continue
-
         for layout in layouts:
             cpd_no = str(layout.get('cpd_no', ''))
             if not cpd_no:
                 continue
-
             dedup_key = f"example{cpd_no}".lower().replace(' ', '')
             if dedup_key in seen_ids:
                 continue
+            seen_ids.add(dedup_key)
 
             bbox = layout.get('structure_bbox', [])
-            ms_mh = layout.get('ms_mh')
-            iupac_name = layout.get('name')
-
-            # Step 2: Crop structure
             crop = _crop_structure(page_img, bbox)
             if crop is None:
                 continue
 
             crop_path = str(images_dir / f"cpd_{cpd_no}_p{page_num}.png")
             crop.save(crop_path)
+            crop_jobs.append((cpd_no, crop_path, layout.get('ms_mh'), layout.get('name'), page_num))
 
-            # Step 3: DECIMER converts
-            smiles = _decimer_to_smiles(crop_path)
-            extraction_method = "decimer_local"
+    logger.info(f"Patent {patent_id}: {len(crop_jobs)} structure crops to process with DECIMER")
 
-            # Step 4: Opus fallback
-            if smiles is None and use_opus_fallback:
-                smiles = _opus_vision_fallback(crop_path, patent_id, cpd_no)
-                extraction_method = "opus_vision_fallback"
+    def _process_crop(job):
+        cpd_no, crop_path, ms_mh, iupac_name, page_num = job
+        smiles = _decimer_to_smiles(crop_path)
+        extraction_method = "decimer_local"
 
-            if smiles is None:
-                continue
+        if smiles is None and use_opus_fallback:
+            smiles = _opus_vision_fallback(crop_path, patent_id, cpd_no)
+            extraction_method = "opus_vision_fallback"
 
-            # Validate and build compound
-            canonical = canonicalize_smiles(smiles)
-            if not canonical:
-                continue
+        if smiles is None:
+            return None
 
-            inchikey = get_inchikey(canonical)
-            salt_result = strip_salt(canonical)
-            drug_likeness = compute_drug_likeness(canonical)
+        canonical = canonicalize_smiles(smiles)
+        if not canonical:
+            return None
 
-            compound = Compound(
-                patent_id=patent_id,
-                example_number=f"Cpd. No. {cpd_no}",
-                iupac_name=iupac_name,
-                iupac_source=IupacSource.GENERATED if not iupac_name else IupacSource.PATENT_VERBATIM,
-                smiles_from_image=smiles,
-                canonical_smiles=canonical,
-                inchikey=inchikey,
-                parent_smiles=salt_result.get("parent_smiles"),
-                parent_inchikey=salt_result.get("parent_inchikey"),
-                ms_mh_plus=ms_mh,
-                source=CompoundSource.EXEMPLIFIED,
-                confidence_tier=ConfidenceTier.SINGLE_VALIDATED,
-                image_path=crop_path,
-                source_page=page_num,
-                drug_likeness=drug_likeness,
-                processing_status="validated",
-            )
-            compounds.append(compound)
-            seen_ids.add(dedup_key)
+        inchikey = get_inchikey(canonical)
+        salt_result = strip_salt(canonical)
+        drug_likeness = compute_drug_likeness(canonical)
 
-    doc.close()
+        return Compound(
+            patent_id=patent_id,
+            example_number=f"Cpd. No. {cpd_no}",
+            iupac_name=iupac_name,
+            iupac_source=IupacSource.GENERATED if not iupac_name else IupacSource.PATENT_VERBATIM,
+            smiles_from_image=smiles,
+            canonical_smiles=canonical,
+            inchikey=inchikey,
+            parent_smiles=salt_result.get("parent_smiles"),
+            parent_inchikey=salt_result.get("parent_inchikey"),
+            ms_mh_plus=ms_mh,
+            source=CompoundSource.EXEMPLIFIED,
+            confidence_tier=ConfidenceTier.SINGLE_VALIDATED,
+            extraction_method=extraction_method,
+            image_path=crop_path,
+            source_page=page_num,
+            drug_likeness=drug_likeness,
+            processing_status="validated",
+        )
+
+    # Run DECIMER in parallel (4 workers — CPU-bound, don't overload)
+    compounds: list[Compound] = []
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        for result in executor.map(_process_crop, crop_jobs):
+            if result is not None:
+                compounds.append(result)
 
     logger.info(
         f"Patent {patent_id}: Image pipeline extracted {len(compounds)} compounds "
