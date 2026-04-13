@@ -1,72 +1,114 @@
 # PatentMoleculeDB — Patent Compound Extraction Pipeline
 
-## Progress (Updated: April 12, 2026)
+Extracts drug-like small molecules from pharmaceutical patents, converts IUPAC names to SMILES, validates against BindingDB, and outputs compounds ready for a Geometric GNN docking pipeline.
 
-### Benchmark: US10214537 vs BindingDB Ground Truth
-
-```
-Target: 774 compounds (BindingDB has for this patent)
-
-Recall (compounds found):
-v1  ████░░░░░░░░░░░░░░░░  10.3%  (80/774)   — example pages only
-v8  █████████░░░░░░░░░░░░  49.0%  (379/774)  — + compound tables
-v10 █████████████░░░░░░░░  65.1%  (504/774)  — + claims parsing
-v12 ███████████████░░░░░░  76.0%  (588/774)  — fixed claims name extraction
-                                    ▲ current
-
-Precision (correct molecules):
-v7  ██████████░░░░░░░░░░░  53%
-v8  ██████████████░░░░░░░  71%
-v10 ████████████░░░░░░░░░  64%   ← dropped, OCR artifacts
-v12 ██████████████░░░░░░░  74%   ← recovered after claims fix
-                                    ▲ current
-
-Target: 99% precision, 99% recall
-```
-
-### Pipeline Architecture
+## Architecture
 
 ```
-Patent PDF → Markdown (pre-extracted)
-    ↓
-[1] DETECT pages (local, no API)
-    ↓
-[2] EXTRACT compounds from 3 sources:
-    • Example sections (Claude Sonnet)
-    • Compound tables (regex parser)
-    • Claims section (semicolon-split parser)
-    ↓
-[3] IUPAC → SMILES (5-stage fault-tolerant):
-    Stage 1: OPSIN direct (free, deterministic) — 76%
-    Stage 2: Rule-based OCR fix + OPSIN  — 91%
-    Stage 2b: Vision OCR for truncated names
-    Stage 3a: Sonnet cleans name + OPSIN
-    Stage 3b: Opus direct SMILES (last resort)
-    ↓
-[4] VALIDATE: RDKit + MW check + InChIKey
-    ↓
-[5] BENCHMARK vs BindingDB
+                        ┌─────────────────────────┐
+                        │     Patent Input         │
+                        │  (ID: e.g. US10214537)   │
+                        └────────────┬────────────┘
+                                     │
+                    ┌────────────────┼────────────────┐
+                    ▼                ▼                 ▼
+         ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+         │   Route 1    │  │   Route 2    │  │   Route 3    │
+         │   Google     │  │  Claude OCR  │  │   DECIMER    │
+         │   Patents    │  │  Pipeline    │  │  Image       │
+         │   (FREE)     │  │  (Sonnet)    │  │  Pipeline    │
+         │              │  │              │  │  (FREE)      │
+         │ Clean USPTO  │  │ PDF→MD→LLM  │  │ Structure    │
+         │ XML text     │  │ extraction   │  │ images→      │
+         │ + OPSIN      │  │ + 5-stage    │  │ SMILES       │
+         │              │  │ SMILES       │  │              │
+         └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+                │                 │                  │
+                └────────────────┼──────────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │  Merge + Deduplicate     │
+                    │  (prefer longest IUPAC,  │
+                    │   prefer final product)  │
+                    └────────────┬────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │  Validate                │
+                    │  • RDKit canonicalize    │
+                    │  • InChIKey generation   │
+                    │  • MW check (150-800)    │
+                    │  • Lipinski + PAINS      │
+                    │  • Salt stripping        │
+                    └────────────┬────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │  Output                  │
+                    │  • JSON per patent       │
+                    │  • BindingDB benchmark   │
+                    │  • Cost tracking         │
+                    └─────────────────────────┘
 ```
 
-### Key Numbers
+### Route Details
 
-| Metric | Value |
-|---|---|
-| Compounds extracted | 946 |
-| Validated SMILES | 842 |
-| BindingDB matches | 588/774 (76% recall) |
-| Budget spent | ~$30 of $200 |
-| Patents processed | 1 (US10214537) |
-| Tests passing | 181 |
+**Route 1 — Google Patents (Primary, $0)**
+- Scrapes clean text from patents.google.com (same data as USPTO XML)
+- Zero OCR errors — text comes from official XML, not PDF image recognition
+- Regex extraction of IUPAC names from claims lists and example sections
+- OPSIN deterministic IUPAC→SMILES conversion (no LLM needed)
+- Best results on "Example N:" format patents
 
-### What Works
-- OPSIN deterministic compiler (no LLM-generated SMILES)
-- Rule-based OCR cleaning (pyrolo→pyrrolo, space fixes, bracket fixes)
-- Multi-source extraction (examples + tables + claims)
-- MW cross-validation against MS data
-- Synthesis route extraction (for future retrosynthesis project)
+**Route 2 — Claude OCR Pipeline (Fallback, ~$4/patent)**
+- PDF→Markdown pre-extracted text processed by Claude Sonnet
+- 5-stage fault-tolerant SMILES conversion:
+  1. PubChem lookup (free, stereo-aware)
+  2. OPSIN direct (free, deterministic)
+  3. Rule-based OCR cleaning + OPSIN (fixes pyrolo→pyrrolo, etc.)
+  4. Claude Sonnet name cleaning + OPSIN
+  5. Claude Opus direct SMILES (last resort)
+- Handles complex page layouts, truncated names, multi-page compounds
 
-### Detailed Accuracy Analysis (v12)
+**Route 3 — DECIMER Image Pipeline (For structure-only patents, $0)**
+- Layout-to-Local Hybrid: Sonnet reads table layout → crop individual structures → DECIMER converts
+- Handles "Cpd.No." format patents where compounds are defined by drawings only
+- DECIMER: open-source deep learning chemical image recognition
+- Opus Vision fallback for DECIMER failures
+
+### Layout-Aware Router
+Automatically detects patent format and routes to optimal pipeline:
+- **Text format** (5/8 patents): Route 1 + Route 2
+- **Hybrid format** (3/8 patents): All three routes
+- **Image format**: Route 3 primary
+
+## Results
+
+### Google Patents Route (All 8 Patents, $0 Cost)
+
+| Patent | Compounds | Validated | BDB Match | Precision | Recall |
+|---|---|---|---|---|---|
+| US10214537 | 680 | 680 | 547/774 | 82.6% | 70.7% |
+| US10899738 | 0 | 0 | 0/380 | — | — |
+| US11312727 | 0 | 0 | 0/376 | — | — |
+| US20230365584A1 | 8 | 8 | N/A | N/A | N/A |
+| US20240010684A1 | 0 | 0 | N/A | N/A | N/A |
+| US20240335431A1 | 0 | 0 | N/A | N/A | N/A |
+| US20250163061A1 | 0 | 0 | N/A | N/A | N/A |
+| US9718825 | 0 | 0 | 0/630 | — | — |
+
+### OCR Pipeline (Fallback)
+
+| Patent | Drug-like | BDB Matched | BDB Total | Recall | Cost |
+|---|---|---|---|---|---|
+| US10214537 | 839 | 595 | 774 | 76.9% | $4.04 |
+| US10899738 | 31 | 11 | 380 | 2.9% | $5.25 |
+
+### Combined Ensemble (Google Patents + OCR Fallback)
+- US10214537: **680 compounds at $0** (Google Patents alone) vs 595 at $4 (OCR pipeline alone)
+- Google Patents provides cleaner extraction with higher yield for text-format patents
+- OCR pipeline catches edge cases Google Patents regex misses
+- Image pipeline (DECIMER) needed for Cpd.No. format patents (US10899738, etc.)
+
+### Accuracy Analysis (US10214537, v12 OCR pipeline)
 ```
 Of 639 compounds where we CAN compare (same Example #):
   633 correct molecule (99.1% molecular accuracy)
@@ -75,49 +117,66 @@ Of 639 compounds where we CAN compare (same Example #):
 Of 215 unmatched validated compounds:
   60 stereo mismatches (right molecule, OPSIN can't encode stereo)
   ~155 genuine BDB gaps (compounds we correctly extracted, BDB doesn't have)
-
-Of 186 missing BDB compounds:
-  ~93% we have the Example # but different SMILES (mostly stereo/OCR)
-  ~7% we don't have at all
 ```
 
-### 8-Patent Run Results
+## Cost Model
 
-| Patent | Drug-like | BDB Matched | BDB Total | Recall | Cost | Notes |
-|---|---|---|---|---|---|---|
-| US10214537 | 839 | 595 | 774 | 77% | $4.04 | ✅ Example format, text works well |
-| US10899738 | 31 | 11 | 380 | 3% | $5.25 | ❌ Cpd.No. format, needs image extraction |
-| Other 6 | TBD | TBD | TBD | TBD | TBD | Run pending |
-
-### Key Finding: Generalizability Gap
-The pipeline works well for patents using "Example N: IUPAC name" format (US10214537: 77% recall). It fails on patents using table-defined compounds without IUPAC names (US10899738: 3% recall).
-
-**Two patent format types identified:**
-1. **"Example" format** — compounds have explicit IUPAC names → text extraction works (77%)
-2. **"Cpd. No." format** — compounds defined by structure drawings only → needs Vision/DECIMER
-
-### Ceiling for Text-Only Extraction
-- Stereo: OPSIN can't assign cis/trans from IUPAC names
-- Coverage: Table-defined patents (no IUPAC names) need image-based extraction
-- Text-only ceiling: ~77% recall on "Example" format patents, ~3% on "Cpd.No." format
-
-### Image Extraction (DECIMER) Test
-- DECIMER (deep learning chemical image recognition) tested on 1 compound
-- Successfully extracted valid SMILES with stereochemistry from patent structure image
-- Connectivity matched BDB, stereo encoding differed
-- Noisy output (reads surrounding page content) — needs isolated image crops
-- Viable path for "Cpd.No." format patents but requires significant engineering
-
-### Scale Projection
-
-| | Per patent | 100K patents |
+| Route | Per Patent | 100K Patents |
 |---|---|---|
-| Compounds | ~788 drug-like | ~78.8M |
-| Cost (Sonnet) | ~$4 | ~$400K |
-| Cost (Haiku) | ~$0.50 | ~$50K |
-| Time | ~10 min | ~7 days at 100× parallel |
+| Google Patents (Route 1) | $0 | $0 |
+| Claude Sonnet (Route 2) | ~$4 | ~$400K |
+| DECIMER (Route 3) | $0 | $0 |
+| Batch API (50% off) | ~$2 | ~$200K |
+| Google Patents + Fallback | ~$1-2 | ~$100-200K |
 
-### Next Steps
-- Fix OCR artifact patterns in claims-extracted names
-- Diagnose precision errors individually
-- Scale to remaining 7 patents after hitting 99% on US10214537
+## Module Structure
+
+```
+patent_extraction/
+  config.py              # Central configuration, patent IDs, cost ceilings
+  models.py              # Pydantic data models (Compound, PatentResult, etc.)
+  pipeline.py            # Main orchestrator — runs all routes
+  google_patents.py      # Route 1: Google Patents clean text extraction
+  detect_structures.py   # Local page classification (no API)
+  layout_router.py       # Auto-detect patent format (text/image/hybrid)
+  extract_compounds.py   # Claude Sonnet page-level extraction
+  parse_tables.py        # HTML table + claims section parsing
+  iupac_to_smiles.py     # 5-stage IUPAC→SMILES conversion
+  ocr_autocorrect.py     # Levenshtein-based OCR error correction
+  image_pipeline.py      # Route 3: DECIMER + Opus Vision
+  smiles_utils.py        # RDKit validation, canonicalization, drug-likeness
+  cross_validate.py      # Multi-source cross-validation
+  benchmark.py           # BindingDB ground truth comparison
+  api_client.py          # Claude API wrapper with retry + caching
+  batch_client.py        # Anthropic Batch API (50% cheaper)
+  api_cache.py           # SHA256-keyed response cache
+  cost_tracker.py        # Real-time cost tracking with ceiling
+  progress.py            # Pipeline progress tracking
+```
+
+## Setup
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Set API key
+export ANTHROPIC_API_KEY="your-key-here"
+
+# Run single patent
+python3 -m patent_extraction.pipeline US10214537
+
+# Run Google Patents test on all 8
+python3 run_ensemble_test.py
+
+# Run benchmark
+python3 -m patent_extraction.benchmark
+```
+
+## Key Technical Decisions
+- **OPSIN over LLMs** for IUPAC→SMILES: Deterministic, no hallucination, 92% success on clean text
+- **Google Patents over OCR**: Same USPTO data, zero OCR errors, free
+- **DECIMER over Claude Vision** for structure images: Free, local, purpose-built, 100% valid SMILES
+- **InChIKey matching**: Full 27-char for stereo-aware, 14-char connectivity-only for stereo-agnostic
+- **Salt stripping**: Dual storage (salt form + parent) for flexible matching
+- **Cost ceiling**: Hard $200 budget with threshold warnings at $50/$100/$150

@@ -22,6 +22,7 @@ from .image_to_smiles import convert_all_images
 from .cross_validate import cross_validate_compounds
 from .layout_router import detect_patent_format
 from .image_pipeline import extract_image_compounds
+from .google_patents import extract_patent_google
 from .models import PatentResult
 from .progress import ProgressTracker
 from .cost_tracker import cost_tracker
@@ -66,6 +67,17 @@ def run_patent(
     logger.info(f"Step 1b: Format={format_info['format']} (text={format_info['text_score']}, image={format_info['image_score']})")
     progress.update(status="detection_complete")
 
+    # Route 1: Google Patents — clean text, $0 cost, no OCR errors
+    logger.info(f"Route 1: Google Patents clean text extraction")
+    gp_compounds = []
+    try:
+        gp_compounds = extract_patent_google(patent_id)
+        logger.info(f"  Google Patents: {len(gp_compounds)} compounds extracted ($0)")
+    except Exception as e:
+        logger.warning(f"  Google Patents failed: {e}")
+
+    progress.update(status="google_patents_complete", google_patents_compounds=len(gp_compounds))
+
     # Step 2.0: Markush context extraction
     logger.info(f"Step 2.0: Markush context extraction")
     markush_context = extract_markush_context(patent_id, manifest, data_dir)
@@ -104,14 +116,41 @@ def run_patent(
             new_from_tables += 1
 
     logger.info(f"  Merged: {new_from_tables} new compounds from tables (total: {len(compounds)})")
+
+    # Merge Google Patents compounds (already validated, skip IUPAC→SMILES for these)
+    gp_already_validated = []
+    new_from_gp = 0
+    for gc in gp_compounds:
+        gc_key = (gc.example_number or '').lower().replace(' ', '')
+        if gc_key in compounds_by_id:
+            existing = compounds[compounds_by_id[gc_key]]
+            # Google Patents has cleaner text — prefer if existing has no SMILES yet
+            if not existing.canonical_smiles and gc.canonical_smiles:
+                compounds[compounds_by_id[gc_key]] = gc
+                gp_already_validated.append(gc)
+        else:
+            compounds_by_id[gc_key] = len(compounds)
+            compounds.append(gc)
+            gp_already_validated.append(gc)
+            new_from_gp += 1
+
+    logger.info(f"  Google Patents added {new_from_gp} new compounds (total: {len(compounds)})")
+
     progress.update(
         status="compound_extraction_complete",
         compounds_found=len(compounds),
     )
 
     # Step 2.2: IUPAC → SMILES with Markush context
-    logger.info(f"Step 2.2: IUPAC → SMILES conversion ({len(compounds)} compounds)")
-    compounds = convert_batch(compounds, markush_context)
+    # Skip compounds already validated by Google Patents route
+    gp_validated_ids = {id(c) for c in gp_already_validated}
+    compounds_needing_conversion = [c for c in compounds if id(c) not in gp_validated_ids]
+    already_done = len(compounds) - len(compounds_needing_conversion)
+    logger.info(f"Step 2.2: IUPAC → SMILES conversion ({len(compounds_needing_conversion)} compounds, {already_done} already done via Google Patents)")
+    if compounds_needing_conversion:
+        compounds_needing_conversion = convert_batch(compounds_needing_conversion, markush_context)
+        # Rebuild full list: GP compounds + converted compounds
+        compounds = list(gp_already_validated) + compounds_needing_conversion
     smiles_count = sum(1 for c in compounds if c.canonical_smiles)
     progress.update(
         status="iupac_conversion_complete",
@@ -183,6 +222,7 @@ def run_patent(
             "tier_1": tier_counts[1],
             "tier_2": tier_counts[2],
             "tier_3": tier_counts[3],
+            "google_patents_compounds": len(gp_compounds),
             "markush_quality": markush_context.quality,
             "patent_format": format_info['format'],
             "text_score": format_info['text_score'],

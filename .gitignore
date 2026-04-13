@@ -23,3 +23,6 @@ tests/
 # Large data files
 BindingDB_*.tsv
 BindingDB_*.zip
+
+# Google Patents cache
+output/gpatents_cache/
