@@ -8,8 +8,18 @@ dist/
 build/
 .env
 venv/
+.pytest_cache/
+*.tsv
+*.zip
+/tmp/
 
 # Patent data files (large)
 US*/
 *.pdf
+
+# Tests (local only)
 tests/
+
+# Large data files
+BindingDB_*.tsv
+BindingDB_*.zip
