@@ -118,6 +118,11 @@ def call_claude_text(
     Returns:
         Response text, or None on permanent failure.
     """
+    # Guard: reject empty prompts
+    if not prompt or not prompt.strip():
+        logger.warning(f"Empty prompt for {patent_id}/{compound_id} — skipping API call")
+        return None
+
     # Check cache first
     cached = get_cached(model, prompt)
     if cached is not None:
