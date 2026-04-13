@@ -173,7 +173,54 @@ def extract_table_compounds(
                 )
                 all_compounds.append(compound)
 
+    # Also parse claims pages for dense compound lists: "IUPAC_NAME (NUMBER); ..."
+    if all_pages_dir.exists():
+        for page_file in sorted(all_pages_dir.glob("page_*.md")):
+            text = page_file.read_text(encoding="utf-8")
+
+            # Only process pages with semicolon-separated compound lists
+            if text.count(';') < 5 or '(' not in text:
+                continue
+
+            page_match = re.search(r'page_(\d+)', page_file.stem)
+            page_num = int(page_match.group(1)) if page_match else None
+
+            # Strip markdown tags and normalize whitespace
+            clean = re.sub(r'<\|ref\|>\w+<\|/ref\|><\|det\|>\[\[\d+.*?\]\]<\|/det\|>', '', text)
+            clean = re.sub(r'\s+', ' ', clean)
+
+            # Split by semicolons — each segment ends with "IUPAC_NAME (NUMBER)"
+            segments = clean.split(';')
+            for seg in segments:
+                seg = seg.strip()
+                m = re.search(r'\((\d{1,4})\)\s*\.?\s*$', seg)
+                if not m:
+                    continue
+                num = int(m.group(1))
+                name = seg[:m.start()].strip()
+                name = re.sub(r'^[^a-zA-Z(]*', '', name)
+
+                if len(name) < 15:
+                    continue
+
+                ex_id = f"Example {num}"
+                dedup_key = ex_id.lower().replace(' ', '')
+                if dedup_key in seen_ids:
+                    continue
+                seen_ids.add(dedup_key)
+
+                compound = Compound(
+                    patent_id=patent_id,
+                    example_number=ex_id,
+                    iupac_name=name,
+                    iupac_source=IupacSource.PATENT_VERBATIM,
+                    source=CompoundSource.EXEMPLIFIED,
+                    source_page=page_num,
+                    processing_status="text_done",
+                )
+                all_compounds.append(compound)
+
     logger.info(
-        f"Patent {patent_id}: Extracted {len(all_compounds)} compounds from tables"
+        f"Patent {patent_id}: Extracted {len(all_compounds)} compounds from tables + claims"
     )
     return all_compounds
