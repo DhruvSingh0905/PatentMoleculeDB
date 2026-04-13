@@ -90,6 +90,12 @@ def export_patent_csv(patent_ids=None, output_path=None, versions=None):
             if not smiles:
                 continue
 
+            # MW sanity gate: reject compounds outside drug-like range
+            dl = c.get("drug_likeness")
+            mw_val = dl.get("mw", 0) if dl and isinstance(dl, dict) else 0
+            if mw_val and mw_val > 1500:
+                continue  # Polymer/garbage SMILES, not a drug molecule
+
             ex = c.get("example_number", "") or ""
 
             # Match assay data
@@ -146,7 +152,7 @@ def export_patent_csv(patent_ids=None, output_path=None, versions=None):
             raw_rows.append({
                 "patent_id": pid,
                 "compound_id": _strip_compound_prefix(ex),
-                "iupac_name": c.get("iupac_name", "") or "",
+                "iupac_name": (c.get("iupac_name") or "").strip() or "[structure-only, no IUPAC available]",
                 "target": target,
                 "canonical_smiles": smiles,
                 "inchikey": c.get("inchikey", ""),

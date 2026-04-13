@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 MAX_PARALLEL = 10
 MIN_SMILES_MW = 150    # Catches iodine (127.9) and other single-atom SMILES
+MAX_SMILES_MW = 1500   # Catches polymer/garbage SMILES from DECIMER
 MIN_SMILES_LENGTH = 10 # Drug molecules have SMILES ≥10 chars; "I", "Cl", "CC" are not drugs
 
 # OPSIN failure log
@@ -403,6 +404,10 @@ def _finalize(compound: Compound, smiles: str, stage: str) -> Compound:
     mw = molecular_weight(canonical)
     if mw and mw < MIN_SMILES_MW:
         compound.failure_reason = f"mw_too_low_{mw:.0f}"
+        compound.processing_status = "failed"
+        return compound
+    if mw and mw > MAX_SMILES_MW:
+        compound.failure_reason = f"mw_too_high_{mw:.0f}"
         compound.processing_status = "failed"
         return compound
 

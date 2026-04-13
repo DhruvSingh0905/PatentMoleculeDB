@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 MIN_SMILES_LENGTH = 10
 MIN_SMILES_MW = 150
+MAX_SMILES_MW = 1500
 
 LAYOUT_PROMPT = """This is a page from a pharmaceutical patent showing a compound table.
 For each compound visible on this page, extract:
@@ -127,7 +128,7 @@ def _decimer_to_smiles(image_path: str) -> str | None:
 
         if validate_smiles(smiles) and len(smiles) >= MIN_SMILES_LENGTH:
             mw = molecular_weight(smiles)
-            if mw and mw >= MIN_SMILES_MW:
+            if mw and MIN_SMILES_MW <= mw <= MAX_SMILES_MW:
                 return smiles
     except Exception as e:
         logger.warning(f"DECIMER failed on {image_path}: {e}")
@@ -150,7 +151,7 @@ def _opus_vision_fallback(image_path: str, patent_id: str, cpd_no: str) -> str |
         smiles = response.strip().split('\n')[0].strip()
         if validate_smiles(smiles) and len(smiles) >= MIN_SMILES_LENGTH:
             mw = molecular_weight(smiles)
-            if mw and mw >= MIN_SMILES_MW:
+            if mw and MIN_SMILES_MW <= mw <= MAX_SMILES_MW:
                 return smiles
     return None
 
