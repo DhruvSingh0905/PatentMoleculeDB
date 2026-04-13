@@ -102,10 +102,6 @@ def export_patent_csv(patent_ids=None, output_path=None, versions=None):
                     assays = assay_data[key]
                     break
 
-            # Skip compounds without assay data
-            if not assays:
-                continue
-
             # Build assay dict with pivoted columns
             assay_dict = {}
             for a in assays:
