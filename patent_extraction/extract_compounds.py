@@ -200,25 +200,41 @@ def extract_all_compounds(
     if data_dir is None:
         data_dir = config.DATA_DIR
 
+    # Process BOTH iupacs_clean/ AND all_pages/ for maximum compound coverage
     iupacs_dir = data_dir / patent_id / "iupacs_clean"
-    if not iupacs_dir.exists():
-        logger.warning(f"Patent {patent_id}: No iupacs_clean directory")
+    all_pages_dir = data_dir / patent_id / "all_pages"
+
+    if not iupacs_dir.exists() and not all_pages_dir.exists():
+        logger.warning(f"Patent {patent_id}: No page directories found")
         return []
 
-    # Only process pages that detection flagged as having example headers
+    # Pages to process: example pages from iupacs_clean + example pages from all_pages
     example_pages = set(manifest.example_pages) if manifest.example_pages else None
-
-    # Collect pages to process
+    seen_pages: set[int] = set()
     page_tasks: list[tuple[int, str]] = []
-    for page_file in sorted(iupacs_dir.glob("page_*.md")):
-        page_num = extract_page_number(page_file)
-        if page_num is None:
-            continue
-        if example_pages is not None and page_num not in example_pages:
-            continue
-        page_text = page_file.read_text(encoding="utf-8")
-        if page_text.strip():
-            page_tasks.append((page_num, page_text))
+
+    # First pass: iupacs_clean (higher quality, pre-filtered)
+    if iupacs_dir.exists():
+        for page_file in sorted(iupacs_dir.glob("page_*.md")):
+            page_num = extract_page_number(page_file)
+            if page_num is None:
+                continue
+            if example_pages is not None and page_num not in example_pages:
+                continue
+            page_text = page_file.read_text(encoding="utf-8")
+            if page_text.strip():
+                page_tasks.append((page_num, page_text))
+                seen_pages.add(page_num)
+
+    # Second pass: all_pages for pages with examples NOT already in iupacs_clean
+    if all_pages_dir.exists() and example_pages:
+        for page_num in sorted(example_pages - seen_pages):
+            page_file = all_pages_dir / f"page_{page_num:04d}.md"
+            if page_file.exists():
+                page_text = page_file.read_text(encoding="utf-8")
+                if page_text.strip():
+                    page_tasks.append((page_num, page_text))
+                    seen_pages.add(page_num)
 
     logger.info(
         f"Patent {patent_id}: Processing {len(page_tasks)} pages "
