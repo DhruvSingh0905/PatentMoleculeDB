@@ -198,9 +198,20 @@ def extract_table_compounds(
                     continue
                 num = int(m.group(1))
                 name = seg[:m.start()].strip()
-                name = re.sub(r'^[^a-zA-Z(]*', '', name)
 
-                if len(name) < 15:
+                if len(name) < 20:
+                    continue
+
+                # Filter: must look like a real IUPAC compound name
+                # (contains ring/heterocycle indicators, not Markush fragments)
+                name_lower = name.lower()
+                has_ring = any(kw in name_lower for kw in [
+                    'pyrrolo', 'pyrrol', 'triazin', 'pyrazol', 'piperidin',
+                    'morpholin', 'piperazin', 'benzamide', 'benzonitrile',
+                    'phenyl', 'oxazol', 'thiomorpholin', 'pyridin',
+                    'oxetan', 'azetidin', 'pyrrolidin', 'imidazol',
+                ])
+                if not has_ring:
                     continue
 
                 ex_id = f"Example {num}"
