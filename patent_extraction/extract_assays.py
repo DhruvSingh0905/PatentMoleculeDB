@@ -73,10 +73,17 @@ def _parse_html_table(table_html: str) -> list[dict]:
         return []
 
     def _cells(row_html):
-        return [
-            re.sub(r'<[^>]+>', '', cell).strip()
-            for cell in re.findall(r'<td[^>]*>(.*?)</td>', row_html, re.DOTALL | re.IGNORECASE)
-        ]
+        cells = []
+        for m in re.finditer(r'<td([^>]*)>(.*?)</td>', row_html, re.DOTALL | re.IGNORECASE):
+            attrs, content = m.group(1), m.group(2)
+            text = re.sub(r'<[^>]+>', '', content).strip()
+            # Handle colspan: repeat the cell
+            colspan_m = re.search(r'colspan=["\']?(\d+)', attrs, re.IGNORECASE)
+            colspan = int(colspan_m.group(1)) if colspan_m else 1
+            cells.append(text)
+            for _ in range(colspan - 1):
+                cells.append(text)
+        return cells
 
     headers = _cells(rows[0])
     if not headers:
@@ -87,12 +94,19 @@ def _parse_html_table(table_html: str) -> list[dict]:
     second_cells = _cells(rows[1]) if len(rows) > 1 else []
     data_start = 1
     if second_cells and not any(re.search(r'\d', c) for c in second_cells):
-        # Merge headers
-        merged = []
-        for i, h in enumerate(headers):
-            sub = second_cells[i] if i < len(second_cells) else ''
-            merged.append(f"{h} {sub}".strip())
-        headers = merged
+        # Use subheaders as separate columns if they look like assay names
+        # Otherwise merge into parent headers
+        if any(ASSAY_KEYWORDS.search(s) for s in second_cells):
+            headers = second_cells
+        else:
+            merged = []
+            for i, h in enumerate(headers):
+                sub = second_cells[i] if i < len(second_cells) else ''
+                if sub and sub != h:
+                    merged.append(sub)
+                else:
+                    merged.append(h)
+            headers = merged
         data_start = 2
 
     result = []
@@ -134,6 +148,9 @@ def _clean_assay_name(raw_name: str) -> str:
     name = re.sub(r'^[\\/ ]+', '', name)
     # Remove trailing "Example no." or compound column text
     name = re.sub(r'\s*Example\s+no\.?\s*$', '', name, flags=re.IGNORECASE)
+    # Fix common OCR typos in assay names
+    name = re.sub(r'\bMeni\b', 'Menin', name)
+    name = re.sub(r'InhibitionIC50', 'Inhibition IC50', name)
     # Collapse whitespace
     name = re.sub(r'\s+', ' ', name).strip()
 
