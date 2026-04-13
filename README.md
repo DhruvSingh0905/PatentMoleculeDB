@@ -66,11 +66,25 @@ Patent PDF → Markdown (pre-extracted)
 - MW cross-validation against MS data
 - Synthesis route extraction (for future retrosynthesis project)
 
-### Current Gaps
-- 270 BindingDB compounds still unmatched
-- ~200 of those are precision errors (wrong SMILES from OCR-mangled names)
-- ~63 compounds have names but fail all conversion stages
-- Macrocyclic names (von Baeyer notation) are unfixable by OPSIN
+### Detailed Accuracy Analysis (v12)
+```
+Of 639 compounds where we CAN compare (same Example #):
+  633 correct molecule (99.1% molecular accuracy)
+  6 wrong molecule (grabbed intermediate instead of final product)
+
+Of 215 unmatched validated compounds:
+  60 stereo mismatches (right molecule, OPSIN can't encode stereo)
+  ~155 genuine BDB gaps (compounds we correctly extracted, BDB doesn't have)
+
+Of 186 missing BDB compounds:
+  ~93% we have the Example # but different SMILES (mostly stereo/OCR)
+  ~7% we don't have at all
+```
+
+### Ceiling for Text-Only Extraction
+Stereo accuracy requires structure IMAGE extraction (Vision path).
+OPSIN can't assign cis/trans stereochemistry from IUPAC names.
+Text-only ceiling: ~76% recall, ~99% molecular accuracy.
 
 ### Next Steps
 - Fix OCR artifact patterns in claims-extracted names
