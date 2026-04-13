@@ -117,6 +117,26 @@ def rule_based_clean(name: str) -> str:
 # Stage 3: LLM cleaning with error context
 # ============================================================
 
+def _try_pubchem(name: str) -> str | None:
+    """Try PubChem name lookup for stereo-aware SMILES.
+
+    PubChem has 111M+ compounds with resolved stereochemistry.
+    This bypasses OPSIN's stereo limitations.
+    """
+    try:
+        import pubchempy as pcp
+        results = pcp.get_compounds(name, 'name')
+        if results and len(results) > 0:
+            smiles = results[0].isomeric_smiles or results[0].canonical_smiles
+            if smiles and validate_smiles(smiles) and len(smiles) >= MIN_SMILES_LENGTH:
+                mw = molecular_weight(smiles)
+                if mw and mw >= MIN_SMILES_MW:
+                    return smiles
+    except Exception:
+        pass
+    return None
+
+
 def _is_truncated(name: str) -> bool:
     """Check if IUPAC name is truncated."""
     # Unbalanced parens/brackets
@@ -281,6 +301,11 @@ def _convert_single(compound: Compound) -> Compound:
         return compound
 
     raw_name = compound.iupac_name
+
+    # Stage 0: PubChem lookup (stereo-aware, authoritative)
+    pubchem_smiles = _try_pubchem(raw_name)
+    if pubchem_smiles:
+        return _finalize(compound, pubchem_smiles, stage="pubchem_direct")
 
     # Stage 1: OPSIN on raw name (free, instant)
     smiles, error = _try_opsin(raw_name)

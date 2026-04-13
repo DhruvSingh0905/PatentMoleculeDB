@@ -187,6 +187,10 @@ def extract_table_compounds(
 
             # Strip markdown tags and normalize whitespace
             clean = re.sub(r'<\|ref\|>\w+<\|/ref\|><\|det\|>\[\[\d+.*?\]\]<\|/det\|>', '', text)
+            # Fix hyphenated line breaks: "thiomorpho-\nline" → "thiomorpholine"
+            clean = re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', clean)
+            # Fix line breaks inside compound names: "pyrrolo\n[2,1-f]" → "pyrrolo[2,1-f]"
+            clean = re.sub(r'(\w)\s*\n\s*(\[)', r'\1\2', clean)
             clean = re.sub(r'\s+', ' ', clean)
 
             # Split by semicolons — each segment ends with "IUPAC_NAME (NUMBER)"

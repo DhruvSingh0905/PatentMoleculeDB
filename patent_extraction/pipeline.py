@@ -72,14 +72,28 @@ def run_patent(
     logger.info(f"Step 2.5: Table compound extraction")
     table_compounds = extract_table_compounds(patent_id, data_dir)
 
-    # Merge: add table compounds not already found in page extraction
-    existing_ids = {(c.example_number or '').lower().replace(' ', '') for c in compounds}
+    # Merge: add table compounds, preferring longer IUPAC names (final product > intermediate)
+    compounds_by_id: dict[str, int] = {}
+    for i, c in enumerate(compounds):
+        key = (c.example_number or '').lower().replace(' ', '')
+        if key in compounds_by_id:
+            existing = compounds[compounds_by_id[key]]
+            # Keep whichever has the longer IUPAC name (final products are longer)
+            if len(c.iupac_name or '') > len(existing.iupac_name or ''):
+                compounds[compounds_by_id[key]] = c  # Replace with longer name
+        else:
+            compounds_by_id[key] = i
+
     new_from_tables = 0
     for tc in table_compounds:
         tc_key = (tc.example_number or '').lower().replace(' ', '')
-        if tc_key not in existing_ids:
+        if tc_key in compounds_by_id:
+            existing = compounds[compounds_by_id[tc_key]]
+            if len(tc.iupac_name or '') > len(existing.iupac_name or ''):
+                compounds[compounds_by_id[tc_key]] = tc  # Table has better name
+        else:
+            compounds_by_id[tc_key] = len(compounds)
             compounds.append(tc)
-            existing_ids.add(tc_key)
             new_from_tables += 1
 
     logger.info(f"  Merged: {new_from_tables} new compounds from tables (total: {len(compounds)})")
