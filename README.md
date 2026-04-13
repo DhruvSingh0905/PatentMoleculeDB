@@ -81,10 +81,41 @@ Of 186 missing BDB compounds:
   ~7% we don't have at all
 ```
 
+### 8-Patent Run Results
+
+| Patent | Drug-like | BDB Matched | BDB Total | Recall | Cost | Notes |
+|---|---|---|---|---|---|---|
+| US10214537 | 839 | 595 | 774 | 77% | $4.04 | ✅ Example format, text works well |
+| US10899738 | 31 | 11 | 380 | 3% | $5.25 | ❌ Cpd.No. format, needs image extraction |
+| Other 6 | TBD | TBD | TBD | TBD | TBD | Run pending |
+
+### Key Finding: Generalizability Gap
+The pipeline works well for patents using "Example N: IUPAC name" format (US10214537: 77% recall). It fails on patents using table-defined compounds without IUPAC names (US10899738: 3% recall).
+
+**Two patent format types identified:**
+1. **"Example" format** — compounds have explicit IUPAC names → text extraction works (77%)
+2. **"Cpd. No." format** — compounds defined by structure drawings only → needs Vision/DECIMER
+
 ### Ceiling for Text-Only Extraction
-Stereo accuracy requires structure IMAGE extraction (Vision path).
-OPSIN can't assign cis/trans stereochemistry from IUPAC names.
-Text-only ceiling: ~76% recall, ~99% molecular accuracy.
+- Stereo: OPSIN can't assign cis/trans from IUPAC names
+- Coverage: Table-defined patents (no IUPAC names) need image-based extraction
+- Text-only ceiling: ~77% recall on "Example" format patents, ~3% on "Cpd.No." format
+
+### Image Extraction (DECIMER) Test
+- DECIMER (deep learning chemical image recognition) tested on 1 compound
+- Successfully extracted valid SMILES with stereochemistry from patent structure image
+- Connectivity matched BDB, stereo encoding differed
+- Noisy output (reads surrounding page content) — needs isolated image crops
+- Viable path for "Cpd.No." format patents but requires significant engineering
+
+### Scale Projection
+
+| | Per patent | 100K patents |
+|---|---|---|
+| Compounds | ~788 drug-like | ~78.8M |
+| Cost (Sonnet) | ~$4 | ~$400K |
+| Cost (Haiku) | ~$0.50 | ~$50K |
+| Time | ~10 min | ~7 days at 100× parallel |
 
 ### Next Steps
 - Fix OCR artifact patterns in claims-extracted names
