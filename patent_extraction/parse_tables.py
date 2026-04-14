@@ -48,19 +48,25 @@ def parse_compound_table(html: str) -> list[dict]:
         mh_col = None
 
         for i, h in enumerate(header_text):
-            if 'ex' in h and 'no' in h or h.startswith('ex'):
+            if any(k in h for k in ['ex', 'cpd', 'compound']) and any(k in h for k in ['no', '#', '.']):
                 ex_col = i
-            elif 'name' in h:
+            elif h.startswith('ex') or h.startswith('cpd'):
+                ex_col = i
+            elif 'name' in h and 'structure' not in h:
+                name_col = i
+            elif 'chemical name' in h:
                 name_col = i
             elif 'm + h' in h or 'm+h' in h or 'mh+' in h.replace(' ', ''):
                 mh_col = i
 
         # Fallback: if no header detected, try common layouts
-        # Layout 1: Ex. No. | Structure | Name | M+H (4 columns)
         if ex_col is None and len(header_cells) >= 3:
             ex_col = 0
-            name_col = 2 if len(header_cells) >= 4 else 1
-            mh_col = 3 if len(header_cells) >= 4 else 2
+        # Name is always the LAST text column (Structure is garbled OCR, Name is readable)
+        if name_col is None and ex_col is not None:
+            name_col = len(header_cells) - 1  # Last column
+            if mh_col == name_col:
+                name_col = len(header_cells) - 2
 
         if ex_col is None:
             continue

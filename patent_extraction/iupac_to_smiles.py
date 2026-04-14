@@ -60,6 +60,14 @@ def rule_based_clean(name: str) -> str:
     # --- GENERALIZABLE FIXES (safe across all patents) ---
 
     # Fix common LLM/OCR typos in ring names
+    n = n.replace('isodolin', 'isoindolin')  # Missing 'in' in isoindoline
+    n = n.replace('Isodolin', 'Isoindolin')
+    n = n.replace('isquinolin', 'isoquinolin')  # Missing 'o' in isoquinoline
+    n = n.replace('Isquinolin', 'Isoquinolin')
+    n = n.replace('benzontir', 'benzonitr')  # Transposed letters in benzonitrile
+    n = n.replace('Benzontir', 'Benzonitr')
+    n = n.replace('benzotir', 'benzonitr')   # Another variant
+    n = n.replace('isoquinoin', 'isoquinolin')  # Missing 'l'
     n = n.replace('pyrolo[', 'pyrrolo[')    # Dropped double-r
     n = n.replace('Pyrolo[', 'Pyrrolo[')
     n = n.replace('pyro1o[', 'pyrrolo[')    # OCR reads l as 1
