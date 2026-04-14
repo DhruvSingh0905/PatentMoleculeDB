@@ -323,6 +323,14 @@ def _convert_single(compound: Compound) -> Compound:
             compound.inferred_stereochemistry = stereo_stripped
             return _finalize(compound, smiles, stage="rule_cleaned")
 
+    # Stage 2c: Levenshtein autocorrect → OPSIN (free, catches novel OCR typos)
+    from .ocr_autocorrect import autocorrect_iupac
+    autocorrected = autocorrect_iupac(cleaned)
+    if autocorrected != cleaned:
+        smiles, error = _try_opsin(autocorrected)
+        if smiles:
+            return _finalize(compound, smiles, stage="autocorrected")
+
     # Stage 2b: If name is truncated (unbalanced parens from garbled source markdown),
     # render the PDF page and ask Claude Vision to read the complete name.
     if _is_truncated(raw_name) and compound.source_page is not None:

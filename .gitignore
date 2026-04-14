@@ -27,3 +27,4 @@ BindingDB_*.zip
 # Google Patents cache
 output/gpatents_cache/
 .env
+test_set/
