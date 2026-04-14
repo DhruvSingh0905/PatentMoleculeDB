@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import zipfile
 from pathlib import Path
 
@@ -85,14 +86,19 @@ def filter_by_patents(df: pd.DataFrame, patent_ids: list[str]) -> dict[str, pd.D
 
     for pid in patent_ids:
         # Try format variants
+        # Strip A1/B1/B2 suffix for application patents
+        pid_base = re.sub(r'[AB]\d+$', '', pid)
         variants = [
-            pid,                              # US10214537
-            pid.replace('US', ''),            # 10214537
-            f"US {pid[2:]}" if pid.startswith('US') else pid,  # US 10214537
+            pid,                              # US20240335431A1
+            pid_base,                         # US20240335431
+            pid.replace('US', ''),            # 20240335431A1
+            pid_base.replace('US', ''),       # 20240335431
+            f"US {pid[2:]}" if pid.startswith('US') else pid,  # US 20240335431A1
+            f"US {pid_base[2:]}" if pid_base.startswith('US') else pid_base,
         ]
         # Also try with commas: US 10,214,537
         if pid.startswith('US') and len(pid) > 5:
-            num = pid[2:]
+            num = pid_base[2:] if pid_base.startswith('US') else pid_base
             if len(num) >= 7:
                 formatted = f"{num[:-6]},{num[-6:-3]},{num[-3:]}"
                 variants.append(f"US {formatted}")
