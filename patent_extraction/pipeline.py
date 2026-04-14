@@ -23,6 +23,7 @@ from .cross_validate import cross_validate_compounds
 from .layout_router import detect_patent_format
 from .image_pipeline import extract_image_compounds
 from .google_patents import extract_patent_google
+from .google_patents_tables import extract_table_compounds_from_gp
 from .extract_assays import extract_assays_for_patent, attach_assays_to_compounds
 from .models import PatentResult
 from .progress import ProgressTracker
@@ -72,7 +73,17 @@ def run_patent(
     logger.info(f"Route 1: Google Patents clean text extraction")
     gp_compounds = []
     try:
+        # Route 1a: Example-format extraction (claims lists, Example N:)
         gp_compounds = extract_patent_google(patent_id)
+        # Route 1b: Table-format extraction (Cpd.No. tables with Chemical Name column)
+        gp_table_compounds = extract_table_compounds_from_gp(patent_id)
+        # Merge table compounds (avoid duplicates)
+        gp_keys = {(c.example_number or '').lower().replace(' ', '') for c in gp_compounds}
+        for tc in gp_table_compounds:
+            tc_key = (tc.example_number or '').lower().replace(' ', '')
+            if tc_key not in gp_keys:
+                gp_compounds.append(tc)
+                gp_keys.add(tc_key)
         logger.info(f"  Google Patents: {len(gp_compounds)} compounds extracted ($0)")
     except Exception as e:
         logger.warning(f"  Google Patents failed: {e}")
