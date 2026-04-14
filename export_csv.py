@@ -48,6 +48,9 @@ def _assay_col_name(assay_name: str, unit: str) -> str:
     ic50_count = name.count('ic50')
     if ic50_count > 1:
         return None  # Signal to skip this column
+    # Reject absurdly long names (assay description leaked into name)
+    if len(name) > 80:
+        return None
     if unit:
         name += f'_{unit}'
     return name

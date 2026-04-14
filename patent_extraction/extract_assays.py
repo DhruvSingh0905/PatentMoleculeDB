@@ -247,14 +247,132 @@ def extract_assays_from_page(text: str) -> dict[str, list[AssayResult]]:
     return results
 
 
+def _extract_assays_from_google_patents(patent_id: str) -> dict[str, list[AssayResult]]:
+    """Extract assay data from Google Patents clean text.
+
+    Parses flat number sequences like "Ex PI3K CD69 Ex PI3K CD69..."
+    that OCR markdown tables often mangle into single-column format.
+    """
+    import json
+
+    cache_path = config.OUTPUT_DIR / "gpatents_cache" / f"{patent_id}.json"
+    if not cache_path.exists():
+        return {}
+
+    text = json.loads(cache_path.read_text()).get('description', '')
+    if not text:
+        return {}
+
+    results: dict[str, list[AssayResult]] = {}
+
+    # Find assay table sections by looking for IC50 header patterns
+    # Pattern: sequences of "ExNum Value1 Value2 ExNum Value1 Value2..."
+    # Detect by finding known assay headers
+    for header_pattern in [
+        r'(?:TABLE\s*\d+\s*)?PI3K\s*delta\s*CD69\s*Ex',  # "TABLE 11 PI3K delta CD69 Ex."
+        r'PI3K\s*delta\s*(?:IC\s*50|IC50).*?CD69',       # "PI3K delta IC50 ... CD69"
+        r'Menin\s*Binding.*?IC\s*50',
+        r'IC\s*50.*?inhibition.*?SGK',
+    ]:
+        header_matches = list(re.finditer(header_pattern, text, re.IGNORECASE))
+        if not header_matches:
+            continue
+
+        for header_match in header_matches:
+
+            # Determine number of value columns from header
+            header_text = header_match.group(0).lower()
+            if 'cd69' in header_text:
+                n_cols = 2
+                assay_names = ['PI3K delta IC50', 'CD69 IC50']
+                units = ['nM', 'nM']
+            else:
+                n_cols = 1
+                assay_names = [re.sub(r'\s+', ' ', header_match.group(0)).strip()]
+                units = ['nM']
+
+            # Extract the numeric table after the header
+            # Skip past all header tokens — find last (nM) before data
+            search_start = header_match.end()
+            header_zone = text[search_start:search_start + 100]
+            # Find all (nM) in first 100 chars
+            nm_positions = [m.end() for m in re.finditer(r'\(nM\)', header_zone)]
+            if nm_positions:
+                table_start = search_start + nm_positions[-1]
+            else:
+                table_start = search_start
+            table_text = text[table_start:table_start + 10000]
+
+            tokens = re.split(r'\s+', table_text)
+
+            i = 0
+            while i < len(tokens) - n_cols:
+                tok = tokens[i].strip()
+                ex_match = re.match(r'^(\d{1,4})$', tok)
+                if not ex_match:
+                    i += 1
+                    continue
+
+                ex_num = ex_match.group(1)
+                vals = []
+                valid = True
+
+                for j in range(n_cols):
+                    if i + 1 + j >= len(tokens):
+                        valid = False
+                        break
+                    v = tokens[i + 1 + j].strip()
+                    if re.match(r'^[<>]?\d+\.?\d*$', v):
+                        vals.append(v)
+                    elif v in ('—', 'â', '-', '–') or 'â' in v or v.startswith('\u2014'):
+                        vals.append(None)
+                    else:
+                        valid = False
+                        break
+
+                if not valid or len(vals) != n_cols:
+                    i += 1
+                    continue
+
+                cpd_key = ex_num
+                # Don't overwrite if we already have data for this compound
+                if cpd_key in results:
+                    i += 1 + n_cols
+                    continue
+                results[cpd_key] = []
+
+                for k, val in enumerate(vals):
+                    if val is None:
+                        continue
+                    numeric, qualifier = _parse_value(val)
+                    results[cpd_key].append(AssayResult(
+                        assay_name=assay_names[k],
+                        value_raw=val,
+                        value_numeric=numeric,
+                        qualifier=qualifier,
+                        unit=units[k],
+                    ))
+
+                i += 1 + n_cols
+
+    if results:
+        logger.info(
+            f"Patent {patent_id}: Google Patents assay extraction found "
+            f"{len(results)} compounds"
+        )
+    return results
+
+
 def extract_assays_for_patent(
     patent_id: str,
     data_dir: Path | None = None,
 ) -> dict[str, list[AssayResult]]:
     """Extract all assay data for a patent from its markdown pages.
 
-    Scans all_pages/ for assay tables. Returns dict of
-    normalized compound key -> list of AssayResult.
+    Scans all_pages/ for assay tables, then supplements with Google Patents
+    clean text for values the OCR tables missed.
+
+    Returns dict of normalized compound key -> list of AssayResult.
     """
     if data_dir is None:
         data_dir = config.DATA_DIR
@@ -279,9 +397,24 @@ def extract_assays_for_patent(
                     all_assays[cpd_key] = []
                 all_assays[cpd_key].extend(assays)
 
+    # Supplement with Google Patents clean text (catches values OCR tables missed)
+    gp_assays = _extract_assays_from_google_patents(patent_id)
+    gp_new = 0
+    for cpd_key, assays in gp_assays.items():
+        if cpd_key not in all_assays:
+            all_assays[cpd_key] = assays
+            gp_new += 1
+        else:
+            # Add assay types we don't have yet
+            existing_names = {a.assay_name for a in all_assays[cpd_key]}
+            for a in assays:
+                if a.assay_name not in existing_names:
+                    all_assays[cpd_key].append(a)
+
     logger.info(
         f"Patent {patent_id}: extracted assay data for "
         f"{len(all_assays)} compounds ({sum(len(v) for v in all_assays.values())} total measurements)"
+        f"{f' (+{gp_new} from Google Patents)' if gp_new else ''}"
     )
     return all_assays
 
