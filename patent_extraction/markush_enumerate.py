@@ -184,6 +184,7 @@ def enumerate_markush(
     cap: int = 100,
     mode: str = "sample",
     r_value_table: list[dict[str, str]] | None = None,
+    decomposition_results: list[dict] | None = None,
 ) -> list[Compound]:
     """Generate concrete molecules from Markush definition.
 
@@ -208,6 +209,30 @@ def enumerate_markush(
                 compound = _validate_and_build(markush.patent_id, smiles, row)
                 if compound:
                     compounds.append(compound)
+
+    elif mode == "decomposition" and decomposition_results:
+        # Use actual R-group assignments from RGroupDecompose
+        # Each result is a dict: {Core: ..., R1: smi, R2: smi, ...}
+        seen_smiles = set()
+        for result in decomposition_results[:cap]:
+            core_smi = result.get('Core', '')
+            core_smi = re.sub(r'\[\*:(\d+)\]', r'[\1*]', core_smi)
+
+            assignments = {}
+            for key, smi in result.items():
+                if key == 'Core':
+                    continue
+                assignments[key] = smi
+
+            reconstructed = _instantiate_core(core_smi, assignments)
+            if reconstructed and reconstructed not in seen_smiles:
+                seen_smiles.add(reconstructed)
+                compound = _validate_and_build(markush.patent_id, reconstructed,
+                                               {k: v[:30] for k, v in assignments.items()})
+                if compound:
+                    compounds.append(compound)
+
+        logger.info(f"Markush decomposition {markush.patent_id}: {len(compounds)} from {len(decomposition_results)} decomposed")
 
     elif mode in ("sample", "exhaustive"):
         # Build option lists per R-group (SMILES only)
