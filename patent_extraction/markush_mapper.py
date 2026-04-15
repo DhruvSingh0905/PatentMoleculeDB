@@ -152,83 +152,160 @@ def resolve_position_mapping(
     if not placeholders or not r_labels:
         return {}
 
-    # Step 1: Use LM mapping if available
+    # Step 1: Use LM mapping as starting point
+    mapping = {}
     if lm_mapping:
-        # Validate: does each mapped placeholder exist?
-        valid_mapping = {}
         for pos, label in lm_mapping.items():
             if pos in placeholders and label in r_labels:
-                valid_mapping[label] = pos
+                mapping[label] = pos
             elif label in r_labels:
-                # LM might have used different notation — try fuzzy match
                 for p in placeholders:
-                    if p not in valid_mapping.values():
-                        valid_mapping[label] = p
+                    if p not in mapping.values():
+                        mapping[label] = p
                         break
-        if valid_mapping:
-            return valid_mapping
 
-    # Step 2: Structural consistency — check atom environments
-    mapping = _structural_environment_mapping(markush)
-    if mapping:
+    # Step 2: Fill unmapped positions using structural constraints
+    if len(mapping) < len(placeholders):
+        mapping = _fill_unmapped_positions(markush, mapping)
+
+    # Step 3: If still incomplete, positional heuristic for remaining
+    assigned_positions = set(mapping.values())
+    assigned_labels = set(mapping.keys())
+    remaining_positions = sorted(placeholders - assigned_positions, key=int)
+    remaining_labels = sorted(
+        r_labels - assigned_labels,
+        key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 999
+    )
+    for label, pos in zip(remaining_labels, remaining_positions):
+        mapping[label] = pos
+
+    return mapping
+
+
+def _get_position_environments(core_smiles: str) -> dict[str, dict]:
+    """Extract chemical environment for each dummy atom position in scaffold.
+
+    Returns: {mapnum_str: {neighbor_symbol, is_aromatic, in_ring, degree}}
+    """
+    # Normalize to [*:n] for RDKit atom map parsing
+    normalized = re.sub(r'\[(\d+)\*\]', r'[*:\1]', core_smiles)
+    mol = Chem.MolFromSmiles(normalized)
+    if mol is None:
+        return {}
+
+    envs = {}
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() == 0:  # Dummy atom
+            mapnum = atom.GetAtomMapNum()
+            if mapnum == 0:
+                continue
+            neighbors = list(atom.GetNeighbors())
+            if not neighbors:
+                continue
+            n = neighbors[0]
+            envs[str(mapnum)] = {
+                'neighbor_symbol': n.GetSymbol(),
+                'is_aromatic': n.GetIsAromatic(),
+                'in_ring': n.IsInRing(),
+                'degree': n.GetDegree(),
+                'is_heteroatom': n.GetAtomicNum() not in (6, 1),  # Not C or H
+            }
+
+    return envs
+
+
+def _infer_label_constraints(rdef) -> dict:
+    """Infer what chemical environment an R-group expects from its text options."""
+    opts_lower = ' '.join(rdef.options_text).lower()
+
+    return {
+        'prefers_N': any(kw in opts_lower for kw in ['amino', 'amine', 'n(', 'nh', 'amide', 'carboxamido', 'sulfonamido']),
+        'prefers_O': any(kw in opts_lower for kw in ['oxy', 'hydroxy', 'alkoxy', 'methoxy']),
+        'prefers_halogen_site': any(kw in opts_lower for kw in ['halogen', 'fluoro', 'chloro', 'bromo', 'iodo']),
+        'prefers_aromatic': any(kw in opts_lower for kw in ['aryl', 'phenyl', 'heteroaryl', 'pyridyl', 'pyrimidinyl']),
+        'prefers_alkyl': any(kw in opts_lower for kw in ['alkyl', 'methyl', 'ethyl', 'propyl', 'cycloalkyl', 'cyclopentyl']),
+        'is_linker': any(kw in opts_lower for kw in ['absent', 'ch2', 'linker', '-o-', '-s-', '-ch2-']),
+    }
+
+
+def _fill_unmapped_positions(
+    markush: MarkushFormula,
+    current_mapping: dict[str, str],
+) -> dict[str, str]:
+    """Fill unmapped scaffold positions using structural constraints.
+
+    For each unmapped [n*], check which unassigned R-labels are compatible
+    with the atom environment at that position. Auto-assign when there's
+    exactly one compatible label.
+    """
+    if not markush.core_smiles:
+        return current_mapping
+
+    envs = _get_position_environments(markush.core_smiles)
+    if not envs:
+        return current_mapping
+
+    mapping = dict(current_mapping)
+    assigned_positions = set(mapping.values())
+    assigned_labels = set(mapping.keys())
+
+    # Get all positions and unassigned labels
+    all_positions = set(envs.keys())
+    unmapped_positions = all_positions - assigned_positions
+    unassigned_labels = set(markush.r_groups.keys()) - assigned_labels
+
+    if not unmapped_positions or not unassigned_labels:
         return mapping
 
-    # Step 3: Positional heuristic — map in order
-    # Sort R-labels by numeric value, map to placeholders in order
-    sorted_labels = sorted(r_labels, key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 999)
-    sorted_positions = sorted(placeholders, key=int)
+    # Score each (label, position) pair
+    scores = {}
+    for label in unassigned_labels:
+        rdef = markush.r_groups[label]
+        constraints = _infer_label_constraints(rdef)
 
-    return {label: pos for label, pos in zip(sorted_labels, sorted_positions)}
+        for pos in unmapped_positions:
+            env = envs[pos]
+            score = 0
+
+            # Score based on environment compatibility
+            if constraints['prefers_N'] and env['neighbor_symbol'] == 'N':
+                score += 3
+            if constraints['prefers_O'] and env['neighbor_symbol'] == 'O':
+                score += 3
+            if constraints['prefers_halogen_site'] and env['neighbor_symbol'] == 'C' and not env['is_aromatic']:
+                score += 2
+            if constraints['prefers_aromatic'] and env['is_aromatic']:
+                score += 2
+            if constraints['prefers_alkyl'] and env['neighbor_symbol'] == 'C' and not env['is_aromatic']:
+                score += 2
+            if constraints['is_linker'] and env['neighbor_symbol'] in ('C', 'N'):
+                score += 1
+
+            # Penalty for obviously wrong matches
+            if constraints['prefers_N'] and env['neighbor_symbol'] != 'N':
+                score -= 1
+            if constraints['prefers_O'] and env['neighbor_symbol'] != 'O':
+                score -= 1
+
+            if score > 0:
+                scores[(label, pos)] = score
+
+    # Greedy assignment: highest-scoring pairs first, no conflicts
+    for (label, pos), score in sorted(scores.items(), key=lambda x: -x[1]):
+        if label not in assigned_labels and pos not in assigned_positions:
+            mapping[label] = pos
+            assigned_labels.add(label)
+            assigned_positions.add(pos)
+            logger.debug(f"    Constraint filler: {label} → [{pos}*] (score={score})")
+
+    return mapping
 
 
 def _structural_environment_mapping(markush: MarkushFormula) -> dict[str, str] | None:
-    """Try to map R-labels to positions based on chemical environment."""
-    if not markush.core_smiles:
-        return None
-
-    mol = Chem.MolFromSmiles(markush.core_smiles)
-    if mol is None:
-        return None
-
-    import re
-    # Find placeholder atoms and their neighbors
-    placeholder_envs = {}
-    for atom in mol.GetAtoms():
-        if atom.GetSymbol() == '*':
-            # Find which [n*] this is by position in SMILES
-            idx = atom.GetIdx()
-            neighbors = [mol.GetAtomWithIdx(n.GetIdx()) for n in atom.GetNeighbors()]
-            neighbor_symbols = [n.GetSymbol() for n in neighbors]
-            neighbor_aromatic = [n.GetIsAromatic() for n in neighbors]
-            placeholder_envs[str(idx)] = {
-                'neighbors': neighbor_symbols,
-                'aromatic': any(neighbor_aromatic),
-            }
-
-    # Match environments to R-group constraints from text
-    mapping = {}
-    for label, rdef in markush.r_groups.items():
-        # Analyze R-group options to infer expected environment
-        opts_lower = ' '.join(rdef.options_text).lower()
-        expected_on_n = 'amino' in opts_lower or 'amine' in opts_lower or 'n(' in opts_lower
-        expected_on_o = 'oxy' in opts_lower or 'hydroxy' in opts_lower
-        expected_halogen = 'halogen' in opts_lower or 'fluoro' in opts_lower or 'chloro' in opts_lower
-
-        # Try to find a matching placeholder
-        for pos, env in placeholder_envs.items():
-            if pos in mapping.values():
-                continue  # Already assigned
-            if expected_on_n and 'N' in env['neighbors']:
-                mapping[label] = pos
-                break
-            elif expected_on_o and 'O' in env['neighbors']:
-                mapping[label] = pos
-                break
-            elif expected_halogen and 'C' in env['neighbors'] and not env['aromatic']:
-                mapping[label] = pos
-                break
-
-    return mapping if mapping else None
+    """Try to map R-labels to positions based on chemical environment.
+    Wrapper around _fill_unmapped_positions for backward compatibility."""
+    result = _fill_unmapped_positions(markush, {})
+    return result if result else None
 
 
 def score_mapping_with_examples(

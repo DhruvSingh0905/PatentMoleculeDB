@@ -114,6 +114,21 @@ def _parse_formula_result(raw_result: dict) -> dict:
     smi = result.get('scaffold_smiles')
     if smi:
         smi = re.sub(r'\[\*:(\d+)\]', r'[\1*]', smi)
+
+        # Connected-scaffold filter: enforce single connected component
+        from rdkit import Chem
+        mol = Chem.MolFromSmiles(smi)
+        if mol:
+            frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
+            if len(frags) > 1:
+                # Keep only the largest fragment (most heavy atoms)
+                core = max(frags, key=lambda m: m.GetNumHeavyAtoms())
+                smi_clean = Chem.MolToSmiles(core, canonical=True)
+                # Re-add [n*] notation (RDKit may have changed it)
+                smi_clean = re.sub(r'\[\*:(\d+)\]', r'[\1*]', smi_clean)
+                logger.info(f"  Scaffold cleaned: {len(frags)} fragments → kept largest ({core.GetNumHeavyAtoms()} atoms)")
+                smi = smi_clean
+
         result['scaffold_smiles'] = smi
 
     # Get actual placeholder positions from scaffold
