@@ -35,13 +35,9 @@ def _instantiate_core(
 ) -> str | None:
     """Graph-level substituent attachment using RDKit mol editing.
 
-    Instead of brittle string replacement, this:
-    1. Converts core SMILES to mol with dummy atoms [*]
-    2. For each R-assignment, finds the dummy atom by map number
-    3. Attaches the substituent fragment at the graph level
-    4. Removes dummy atoms and sanitizes
-
-    This handles ring closures, aromaticity, and valence correctly.
+    Strategy: combine core + all fragments into one mol, then bond
+    matching dummies and remove them all at once. This avoids the
+    atom-index-shift problem when attaching sequentially.
     """
     # Normalize core SMILES: convert [n*] to [*:n] (atom map notation)
     normalized = core_smiles
@@ -49,7 +45,7 @@ def _instantiate_core(
         n = m.group(1)
         normalized = normalized.replace(f'[{n}*]', f'[*:{n}]')
 
-    core_mol = Chem.RWMol(Chem.MolFromSmiles(normalized))
+    core_mol = Chem.MolFromSmiles(normalized)
     if core_mol is None:
         return None
 
@@ -59,17 +55,24 @@ def _instantiate_core(
         for label, pos in position_mapping.items():
             label_to_mapnum[label] = int(pos)
     else:
-        # Fallback: extract numeric part of label
         for label in assignments:
             num = re.search(r'\d+', label)
             if num:
                 label_to_mapnum[label] = int(num.group(0))
 
-    # Attach each substituent
+    # Phase 1: Combine core + ALL fragments into one molecule
+    combo = Chem.RWMol(Chem.MolFromSmiles(normalized))
+    if combo is None:
+        return None
+
+    # Track: (core_dummy_idx, core_attach_idx, frag_dummy_idx, frag_attach_idx)
+    bonds_to_add = []
+    dummies_to_remove = set()
+    hydrogen_dummies = set()  # Core dummies to just remove (R=H)
+
     for label, sub_name in assignments.items():
-        # Check if sub_name is already a SMILES (from RGroupDecompose data)
         if Chem.MolFromSmiles(sub_name) is not None:
-            sub_smi = sub_name  # Already valid SMILES — use directly
+            sub_smi = sub_name
         else:
             sub_smi = lookup_substituent(sub_name)
             if sub_smi is None or sub_smi == "":
@@ -79,102 +82,95 @@ def _instantiate_core(
         if mapnum is None:
             continue
 
-        # Find the dummy atom in core with this map number
-        dummy_idx = None
-        for atom in core_mol.GetAtoms():
+        # Find core dummy with this map number
+        core_dummy_idx = None
+        for atom in combo.GetAtoms():
             if atom.GetAtomicNum() == 0 and atom.GetAtomMapNum() == mapnum:
-                dummy_idx = atom.GetIdx()
+                core_dummy_idx = atom.GetIdx()
                 break
-
-        if dummy_idx is None:
+        if core_dummy_idx is None:
             continue
 
-        # Get the neighbor of the dummy (the attachment point in the core)
-        dummy_atom = core_mol.GetAtomWithIdx(dummy_idx)
-        neighbors = list(dummy_atom.GetNeighbors())
-        if not neighbors:
+        core_dummy = combo.GetAtomWithIdx(core_dummy_idx)
+        core_neighbors = list(core_dummy.GetNeighbors())
+        if not core_neighbors:
             continue
-        attach_idx = neighbors[0].GetIdx()
+        core_attach_idx = core_neighbors[0].GetIdx()
 
-        # Handle hydrogen substituent: just remove the dummy
-        if sub_smi == "[H]" or sub_smi == "[H][*]":
-            core_mol.RemoveAtom(dummy_idx)
+        # Handle hydrogen
+        if sub_smi in ("[H]", "[H][*]", "[H][*:1]", "[H][*:2]", "[H][*:3]"):
+            hydrogen_dummies.add(core_dummy_idx)
             continue
 
-        # Parse substituent fragment
-        # Fragment may contain [*:n] attachment point from RGroupDecompose
+        # Parse fragment
         frag_mol = Chem.MolFromSmiles(sub_smi)
         if frag_mol is None:
-            # Try stripping attachment point notation
             cleaned = re.sub(r'\[\*:\d+\]', '[*]', sub_smi)
             frag_mol = Chem.MolFromSmiles(cleaned)
         if frag_mol is None:
+            hydrogen_dummies.add(core_dummy_idx)
             continue
 
-        # Find the dummy atom in the fragment (the attachment point)
+        # Find fragment dummy
         frag_dummy_idx = None
         for atom in frag_mol.GetAtoms():
-            if atom.GetAtomicNum() == 0:  # Dummy atom
+            if atom.GetAtomicNum() == 0:
                 frag_dummy_idx = atom.GetIdx()
                 break
 
-        # Combine core + fragment
-        combo = Chem.RWMol(Chem.CombineMols(core_mol, frag_mol))
-        frag_start = core_mol.GetNumAtoms()
+        # Add fragment to combo
+        frag_start = combo.GetNumAtoms()
+        combo = Chem.RWMol(Chem.CombineMols(combo, frag_mol))
 
         if frag_dummy_idx is not None:
-            # Fragment has its own dummy — bond the neighbors of both dummies
             frag_dummy_in_combo = frag_start + frag_dummy_idx
             frag_dummy_atom = combo.GetAtomWithIdx(frag_dummy_in_combo)
             frag_neighbors = list(frag_dummy_atom.GetNeighbors())
-
             if frag_neighbors:
                 frag_attach = frag_neighbors[0].GetIdx()
-                # Bond core attachment to fragment attachment
-                combo.AddBond(attach_idx, frag_attach, Chem.BondType.SINGLE)
-                # Remove BOTH dummies (fragment dummy first since it has higher index)
-                dummies_to_remove = sorted([dummy_idx, frag_dummy_in_combo], reverse=True)
-                for d in dummies_to_remove:
-                    combo.RemoveAtom(d)
+                bonds_to_add.append((core_attach_idx, frag_attach))
+                dummies_to_remove.add(core_dummy_idx)
+                dummies_to_remove.add(frag_dummy_in_combo)
             else:
-                # Fragment dummy has no neighbors — skip
-                combo.RemoveAtom(dummy_idx)
+                hydrogen_dummies.add(core_dummy_idx)
         else:
-            # No dummy in fragment — attach first heavy atom directly
+            # No dummy — attach first heavy atom
             frag_attach = frag_start
             for i in range(frag_start, combo.GetNumAtoms()):
                 if combo.GetAtomWithIdx(i).GetAtomicNum() > 1:
                     frag_attach = i
                     break
-            combo.AddBond(attach_idx, frag_attach, Chem.BondType.SINGLE)
-            combo.RemoveAtom(dummy_idx)
+            bonds_to_add.append((core_attach_idx, frag_attach))
+            dummies_to_remove.add(core_dummy_idx)
 
-        # Update core_mol for next iteration
+    # Phase 2: Add all bonds at once
+    for a, b in bonds_to_add:
         try:
-            Chem.SanitizeMol(combo)
-            core_mol = combo
+            combo.AddBond(a, b, Chem.BondType.SINGLE)
         except Exception:
-            # Sanitization failed — try to continue with unsanitized mol
-            core_mol = combo
+            pass
 
-    # Remove remaining dummies (unassigned R-groups → treat as H)
-    atoms_to_remove = []
-    for atom in core_mol.GetAtoms():
+    # Phase 3: Remove all dummies at once (reverse order to preserve indices)
+    all_dummies = dummies_to_remove | hydrogen_dummies
+    # Also remove any remaining unmapped dummies
+    for atom in combo.GetAtoms():
         if atom.GetAtomicNum() == 0:
-            atoms_to_remove.append(atom.GetIdx())
+            all_dummies.add(atom.GetIdx())
 
-    # Remove in reverse order to preserve indices
-    for idx in sorted(atoms_to_remove, reverse=True):
-        core_mol.RemoveAtom(idx)
+    for idx in sorted(all_dummies, reverse=True):
+        try:
+            combo.RemoveAtom(idx)
+        except Exception:
+            pass
 
-    # Final sanitization and canonicalization
+    # Phase 4: Sanitize and canonicalize
     try:
-        Chem.SanitizeMol(core_mol)
-        mol = Chem.RemoveHs(core_mol)
+        Chem.SanitizeMol(combo)
+        mol = Chem.RemoveHs(combo)
         return Chem.MolToSmiles(mol)
     except Exception:
         try:
-            return Chem.MolToSmiles(core_mol)
+            return Chem.MolToSmiles(combo)
         except Exception:
             return None
 
