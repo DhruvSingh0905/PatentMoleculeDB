@@ -521,13 +521,66 @@ def extract_markush_multiagent(
 
     logger.info(f"Markush multi-agent: {patent_id}")
 
-    # Agent 1: Formula + Position Mapping
-    # Image-first: most direct R-label signal (labels are drawn next to bonds)
-    logger.info(f"  FormulaAgent: trying image path first (most direct R-label signal)")
-    formula_result = _extract_formula_from_image(patent_id, manifest, data_dir)
-    scaffold_smiles = formula_result.get("scaffold_smiles")
-    scaffold_desc = formula_result.get("description", "")
-    lm_position_mapping = formula_result.get("position_mapping", {})
+    # Layer 0: Check scaffold cache
+    scaffold_cache_dir = config.OUTPUT_DIR / "scaffold_cache"
+    scaffold_cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = scaffold_cache_dir / f"{patent_id}.json"
+    if cache_path.exists():
+        cached = json.loads(cache_path.read_text())
+        if cached.get("scaffold_smiles") and cached.get("score", 0) > 1.0:
+            logger.info(f"  Scaffold cache hit (score={cached['score']:.1f})")
+            r_groups = _symbolic_r_group_parse(patent_id, data_dir)
+            return MarkushContext(
+                patent_id=patent_id,
+                scaffold_smiles=cached["scaffold_smiles"],
+                scaffold_description=cached.get("description", "cached"),
+                r_group_definitions=r_groups,
+                position_mapping=cached.get("position_mapping", {}),
+                quality="high_confidence",
+            )
+
+    # Layer 1: Example-derived scaffold (deterministic, free, no LM)
+    from .markush_mapper import derive_scaffold_from_examples, score_scaffold
+    scaffold_smiles = None
+    lm_position_mapping = {}
+
+    if example_smiles and len(example_smiles) >= 5:
+        logger.info(f"  Layer 1: Deriving scaffold from {len(example_smiles)} examples...")
+        derived_scaffold, decomposition = derive_scaffold_from_examples(example_smiles)
+        if derived_scaffold:
+            # Score the derived scaffold
+            from rdkit import Chem as _Chem
+            example_mols = [_Chem.MolFromSmiles(s) for s in example_smiles[:20] if _Chem.MolFromSmiles(s)]
+            r_groups_sym = _symbolic_r_group_parse(patent_id, data_dir)
+            sc = score_scaffold(derived_scaffold, set(r_groups_sym.keys()), example_mols)
+            logger.info(f"  Layer 1: scaffold score={sc:.2f}, {derived_scaffold[:50]}...")
+
+            if sc > 1.0:
+                scaffold_smiles = derived_scaffold
+                # Extract position mapping from R-group decomposition column names
+                if decomposition:
+                    for i, key in enumerate(sorted(k for k in decomposition[0].keys() if k != 'Core')):
+                        lm_position_mapping[key] = str(i + 1)
+                # Cache it
+                cache_data = {
+                    "scaffold_smiles": scaffold_smiles,
+                    "score": sc,
+                    "position_mapping": lm_position_mapping,
+                    "source": "example_derived",
+                    "description": f"Derived from {len(example_smiles)} examples via Murcko + RGroupDecompose",
+                }
+                cache_path.write_text(json.dumps(cache_data, indent=2))
+                logger.info(f"  Layer 1: SUCCESS — cached scaffold (score={sc:.2f})")
+
+    # Agent 1: Formula + Position Mapping (Layer 2+3 — only if Layer 1 failed)
+    scaffold_desc = ""
+    if not scaffold_smiles:
+        # Image-first: most direct R-label signal (labels are drawn next to bonds)
+        logger.info(f"  Layer 2: FormulaAgent (image path first)")
+        formula_result = _extract_formula_from_image(patent_id, manifest, data_dir)
+        scaffold_smiles = formula_result.get("scaffold_smiles")
+        scaffold_desc = formula_result.get("description", "")
+        lm_position_mapping = formula_result.get("position_mapping", {})
 
     if scaffold_smiles and not validate_smiles(scaffold_smiles):
         scaffold_desc = f"{scaffold_desc} (SMILES: {scaffold_smiles})"

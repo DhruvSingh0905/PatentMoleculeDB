@@ -123,6 +123,149 @@ def lookup_substituent(name: str) -> str | None:
 
 
 # ============================================================
+# Example-derived scaffold via RDKit R-group decomposition
+# ============================================================
+
+def derive_scaffold_from_examples(
+    example_smiles: list[str],
+    min_examples: int = 5,
+    top_k_scaffolds: int = 3,
+) -> tuple[str | None, list[dict] | None]:
+    """Derive the Markush core scaffold from extracted example compounds.
+
+    Uses Murcko scaffolding to find the most common core, then
+    RGroupDecompose to verify and extract attachment points.
+
+    Deterministic, no LM needed, connected by construction.
+
+    Args:
+        example_smiles: SMILES of validated example compounds.
+        min_examples: Minimum examples needed to attempt derivation.
+        top_k_scaffolds: Try this many scaffold candidates.
+
+    Returns:
+        (scaffold_smiles_with_dummies, decomposition_results) or (None, None)
+    """
+    from rdkit.Chem import rdRGroupDecomposition
+    from collections import Counter
+
+    if len(example_smiles) < min_examples:
+        return None, None
+
+    # Parse all examples
+    mols = []
+    for smi in example_smiles:
+        mol = Chem.MolFromSmiles(smi)
+        if mol and mol.GetNumHeavyAtoms() >= 10:
+            mols.append(mol)
+
+    if len(mols) < min_examples:
+        return None, None
+
+    # Step 1: Get Murcko scaffolds and find top candidates
+    scaffold_counter = Counter()
+    for mol in mols:
+        try:
+            scaf = MurckoScaffold.GetScaffoldForMol(mol)
+            scaf_smi = Chem.MolToSmiles(scaf)
+            scaffold_counter[scaf_smi] += 1
+        except Exception:
+            pass
+
+    if not scaffold_counter:
+        return None, None
+
+    # Step 2: Try R-group decomposition with each top scaffold
+    best_scaffold = None
+    best_results = None
+    best_match_count = 0
+
+    for scaf_smi, count in scaffold_counter.most_common(top_k_scaffolds):
+        core_mol = Chem.MolFromSmiles(scaf_smi)
+        if not core_mol or core_mol.GetNumHeavyAtoms() < 8:
+            continue
+
+        try:
+            results, unmatched = rdRGroupDecomposition.RGroupDecompose(
+                [core_mol], mols[:30], asSmiles=True
+            )
+
+            match_count = len(results)
+            if match_count > best_match_count:
+                best_match_count = match_count
+                best_results = results
+                # Extract the core with attachment points from the first result
+                if results:
+                    core_with_dummies = results[0].get('Core', '')
+                    # Convert [*:n] to [n*] for our pipeline
+                    import re
+                    core_with_dummies = re.sub(r'\[\*:(\d+)\]', r'[\1*]', core_with_dummies)
+                    best_scaffold = core_with_dummies
+
+        except Exception as e:
+            logger.debug(f"RGroupDecompose failed on scaffold: {e}")
+            continue
+
+    if best_scaffold and best_match_count >= min_examples // 2:
+        logger.info(
+            f"Example-derived scaffold: {best_match_count}/{len(mols)} examples matched, "
+            f"scaffold={best_scaffold[:50]}..."
+        )
+        return best_scaffold, best_results
+    else:
+        logger.info(f"Example-derived scaffold: no scaffold matched ≥{min_examples // 2} examples")
+        return None, None
+
+
+# ============================================================
+# Scaffold quality scoring
+# ============================================================
+
+def score_scaffold(
+    scaffold_smiles: str,
+    r_labels: set[str],
+    example_mols: list | None = None,
+) -> float:
+    """Score a scaffold candidate for quality.
+
+    Higher score = better scaffold. Patent-agnostic.
+    """
+    mol = Chem.MolFromSmiles(scaffold_smiles)
+    if mol is None:
+        return -1.0
+
+    frags = Chem.GetMolFrags(mol, asMols=True)
+    n_heavy = mol.GetNumHeavyAtoms()
+    n_dummies = sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() == 0)
+
+    score = 0.0
+
+    # Must be single connected component
+    score += 1.0 if len(frags) == 1 else -0.5
+
+    # Reward complexity (but not too much — should be a core, not a full molecule)
+    score += min(n_heavy / 15.0, 1.0)
+
+    # Attachment count should match R-label count (±1)
+    if r_labels:
+        delta = abs(n_dummies - len(r_labels))
+        score += max(0, 1.0 - delta / max(len(r_labels), 1))
+
+    # Bonus: try R-group decomposition validation
+    if example_mols and len(example_mols) >= 3:
+        try:
+            from rdkit.Chem import rdRGroupDecomposition
+            results, _ = rdRGroupDecomposition.RGroupDecompose(
+                [mol], example_mols[:10], asSmiles=True
+            )
+            score += len(results) / 10.0
+        except Exception:
+            pass
+
+    return score
+
+
+# ============================================================
 # Position mapping: scaffold [n*] ↔ patent R-label alignment
 # ============================================================
 
