@@ -544,11 +544,12 @@ def extract_markush_multiagent(
     scaffold_smiles = None
     lm_position_mapping = {}
 
+    data_rgroup_libs = None  # Data-driven R-group libraries
+
     if example_smiles and len(example_smiles) >= 5:
         logger.info(f"  Layer 1: Deriving scaffold from {len(example_smiles)} examples...")
-        derived_scaffold, decomposition = derive_scaffold_from_examples(example_smiles)
+        derived_scaffold, decomposition, rgroup_libs = derive_scaffold_from_examples(example_smiles)
         if derived_scaffold:
-            # Score the derived scaffold
             from rdkit import Chem as _Chem
             example_mols = [_Chem.MolFromSmiles(s) for s in example_smiles[:20] if _Chem.MolFromSmiles(s)]
             r_groups_sym = _symbolic_r_group_parse(patent_id, data_dir)
@@ -557,20 +558,22 @@ def extract_markush_multiagent(
 
             if sc > 1.0:
                 scaffold_smiles = derived_scaffold
-                # Extract position mapping from R-group decomposition column names
+                data_rgroup_libs = rgroup_libs
                 if decomposition:
                     for i, key in enumerate(sorted(k for k in decomposition[0].keys() if k != 'Core')):
                         lm_position_mapping[key] = str(i + 1)
-                # Cache it
+                # Cache scaffold + R-group libraries
                 cache_data = {
                     "scaffold_smiles": scaffold_smiles,
                     "score": sc,
                     "position_mapping": lm_position_mapping,
+                    "rgroup_libraries": rgroup_libs,
                     "source": "example_derived",
                     "description": f"Derived from {len(example_smiles)} examples via Murcko + RGroupDecompose",
                 }
-                cache_path.write_text(json.dumps(cache_data, indent=2))
-                logger.info(f"  Layer 1: SUCCESS — cached scaffold (score={sc:.2f})")
+                cache_path.write_text(json.dumps(cache_data, indent=2, default=list))
+                total_opts = sum(len(v) for v in (rgroup_libs or {}).values())
+                logger.info(f"  Layer 1: SUCCESS — cached scaffold (score={sc:.2f}, {total_opts} R-group options)")
 
     # Agent 1: Formula + Position Mapping (Layer 2+3 — only if Layer 1 failed)
     scaffold_desc = ""
@@ -647,6 +650,36 @@ def extract_markush_multiagent(
         logger.info(f"  PositionMapping: {position_mapping}")
     else:
         logger.info(f"  PositionMapping: unresolved (using positional heuristic)")
+
+    # Merge data-driven R-group libraries into definitions
+    # Align RDKit labels (R1, R2, R3) to patent labels (Y, R19a, R12) via position mapping
+    if data_rgroup_libs and position_mapping:
+        # Build reverse mapping: position_num → patent_label
+        pos_to_patent = {v: k for k, v in position_mapping.items()}
+        # Build RDKit label → position_num mapping (R1→1, R2→2, etc.)
+        rdk_to_pos = {}
+        for rdk_label in data_rgroup_libs:
+            num = re.search(r'\d+', rdk_label)
+            if num:
+                rdk_to_pos[rdk_label] = num.group(0)
+
+        # Align: RDKit label → position → patent label
+        aligned = 0
+        for rdk_label, smiles_list in data_rgroup_libs.items():
+            pos = rdk_to_pos.get(rdk_label)
+            patent_label = pos_to_patent.get(pos) if pos else None
+
+            if patent_label:
+                # Store data-derived SMILES under the PATENT label
+                r_groups[f"_data_{patent_label}"] = smiles_list
+                aligned += 1
+            else:
+                # No alignment found — store under RDKit label
+                r_groups[f"_data_{rdk_label}"] = smiles_list
+
+        total_opts = sum(len(v) for v in data_rgroup_libs.values())
+        logger.info(f"  Data-driven R-groups: {aligned}/{len(data_rgroup_libs)} aligned to patent labels, "
+                     f"{total_opts} total options")
 
     # Determine quality
     if scaffold_smiles and len(r_groups) >= 2:

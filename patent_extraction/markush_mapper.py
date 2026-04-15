@@ -130,21 +130,18 @@ def derive_scaffold_from_examples(
     example_smiles: list[str],
     min_examples: int = 5,
     top_k_scaffolds: int = 3,
-) -> tuple[str | None, list[dict] | None]:
-    """Derive the Markush core scaffold from extracted example compounds.
+) -> tuple[str | None, list[dict] | None, dict[str, list[str]] | None]:
+    """Derive the Markush core scaffold AND R-group libraries from examples.
 
     Uses Murcko scaffolding to find the most common core, then
-    RGroupDecompose to verify and extract attachment points.
+    RGroupDecompose to extract attachment points AND the actual
+    substituent SMILES that occur across examples.
 
     Deterministic, no LM needed, connected by construction.
 
-    Args:
-        example_smiles: SMILES of validated example compounds.
-        min_examples: Minimum examples needed to attempt derivation.
-        top_k_scaffolds: Try this many scaffold candidates.
-
     Returns:
-        (scaffold_smiles_with_dummies, decomposition_results) or (None, None)
+        (scaffold_smiles, decomposition_results, rgroup_libraries) or (None, None, None)
+        rgroup_libraries: {R-label: [list of unique substituent SMILES]}
     """
     from rdkit.Chem import rdRGroupDecomposition
     from collections import Counter
@@ -206,15 +203,50 @@ def derive_scaffold_from_examples(
             logger.debug(f"RGroupDecompose failed on scaffold: {e}")
             continue
 
+    # Step 3: Extract R-group libraries from ALL decomposed examples
+    rgroup_libraries = None
+    if best_results:
+        # Decompose ALL mols (not just first 30) against the best scaffold
+        best_core = Chem.MolFromSmiles(scaffold_counter.most_common(top_k_scaffolds)[0][0])
+        try:
+            all_results, _ = rdRGroupDecomposition.RGroupDecompose(
+                [best_core], mols, asSmiles=True
+            )
+            best_results = all_results
+            best_match_count = len(all_results)
+        except Exception:
+            pass
+
+        rgroup_libraries = {}
+        for result in best_results:
+            for key, smi in result.items():
+                if key == 'Core':
+                    continue
+                # Clean: strip [*:n] attachment dummies and [H]
+                clean = re.sub(r'\[\*:\d+\]', '', smi).strip()
+                clean = re.sub(r'^\[H\]$', '', clean).strip()
+                # Validate the cleaned SMILES
+                if clean and len(clean) > 0:
+                    frag_mol = Chem.MolFromSmiles(clean)
+                    if frag_mol and frag_mol.GetNumHeavyAtoms() >= 1:
+                        canonical = Chem.MolToSmiles(frag_mol)
+                        if key not in rgroup_libraries:
+                            rgroup_libraries[key] = set()
+                        rgroup_libraries[key].add(canonical)
+
+        rgroup_libraries = {k: sorted(v) for k, v in rgroup_libraries.items()}
+        total_opts = sum(len(v) for v in rgroup_libraries.values())
+        logger.info(f"Example-derived R-groups: {len(rgroup_libraries)} labels, {total_opts} total unique substituents")
+
     if best_scaffold and best_match_count >= min_examples // 2:
         logger.info(
             f"Example-derived scaffold: {best_match_count}/{len(mols)} examples matched, "
             f"scaffold={best_scaffold[:50]}..."
         )
-        return best_scaffold, best_results
+        return best_scaffold, best_results, rgroup_libraries
     else:
         logger.info(f"Example-derived scaffold: no scaffold matched ≥{min_examples // 2} examples")
-        return None, None
+        return None, None, None
 
 
 # ============================================================
