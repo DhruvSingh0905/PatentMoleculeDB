@@ -24,6 +24,7 @@ from .layout_router import detect_patent_format
 from .image_pipeline import extract_image_compounds
 from .google_patents import extract_patent_google
 from .google_patents_tables import extract_table_compounds_from_gp
+from .adaptive_extractor import extract_compounds_adaptive
 from .extract_assays import extract_assays_for_patent, attach_assays_to_compounds
 from .context_folding import scan_patent_sections
 from .markush_agents import extract_markush_multiagent
@@ -94,7 +95,18 @@ def run_patent(
             if tc_key not in gp_keys:
                 gp_compounds.append(tc)
                 gp_keys.add(tc_key)
-        logger.info(f"  Google Patents: {len(gp_compounds)} compounds extracted ($0)")
+        # Route 1c: Adaptive extraction (discovers format via small Claude call, ~$0.01)
+        if len(gp_compounds) < 20:
+            # Routes 1a/1b didn't find much — try adaptive discovery
+            adaptive_compounds = extract_compounds_adaptive(patent_id)
+            for ac in adaptive_compounds:
+                ac_key = (ac.example_number or '').lower().replace(' ', '')
+                if ac_key not in gp_keys:
+                    gp_compounds.append(ac)
+                    gp_keys.add(ac_key)
+            if adaptive_compounds:
+                logger.info(f"  Adaptive extraction: +{len(adaptive_compounds)} compounds (~$0.01)")
+        logger.info(f"  Google Patents total: {len(gp_compounds)} compounds")
     except Exception as e:
         logger.warning(f"  Google Patents failed: {e}")
 
