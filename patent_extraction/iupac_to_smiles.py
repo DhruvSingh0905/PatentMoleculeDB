@@ -457,6 +457,12 @@ def _finalize(compound: Compound, smiles: str, stage: str) -> Compound:
                     f"OPSIN={exact_mw:.1f} vs MS={expected_mw:.1f} (Δ={delta:.1f}Da)"
                 )
 
+    # Set stereo trust based on extraction method
+    if stage in ("llm_direct_smiles", "vision_ocr", "vision_ocr_cleaned"):
+        compound.stereo_trusted = False
+    if compound.inferred_stereochemistry:
+        compound.stereo_trusted = False
+
     compound.processing_status = "validated"
     return compound
 

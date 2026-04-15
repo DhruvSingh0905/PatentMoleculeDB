@@ -156,6 +156,31 @@ def _opus_vision_fallback(image_path: str, patent_id: str, cpd_no: str) -> str |
     return None
 
 
+def _sonnet_vision_fallback(image_path: str, patent_id: str, cpd_no: str) -> str | None:
+    """Budget fallback: Sonnet Vision for structures DECIMER can't handle (5x cheaper than Opus)."""
+    from .cost_tracker import cost_tracker
+    # Budget guard: stay under 80% of ceiling
+    if cost_tracker.total_cost > config.COST_CEILING * 0.8:
+        return None
+
+    response = call_claude_vision(
+        prompt="Convert this chemical structure to a canonical SMILES string. "
+               "Preserve stereochemistry. Return ONLY the SMILES string.",
+        image_path=image_path,
+        model=config.MODEL_SONNET,
+        patent_id=patent_id,
+        compound_id=f"{cpd_no}_sonnet_vision",
+    )
+
+    if response:
+        smiles = response.strip().split('\n')[0].strip()
+        if validate_smiles(smiles) and len(smiles) >= MIN_SMILES_LENGTH:
+            mw = molecular_weight(smiles)
+            if mw and MIN_SMILES_MW <= mw <= MAX_SMILES_MW:
+                return smiles
+    return None
+
+
 def extract_image_compounds(
     patent_id: str,
     data_dir: Path | None = None,
@@ -281,7 +306,13 @@ def extract_image_compounds(
         smiles = _decimer_to_smiles(crop_path)
         extraction_method = "decimer_local"
 
+        if smiles is None:
+            # Try Sonnet Vision first (5x cheaper than Opus)
+            smiles = _sonnet_vision_fallback(crop_path, patent_id, cpd_no)
+            extraction_method = "sonnet_vision_fallback"
+
         if smiles is None and use_opus_fallback:
+            # Last resort: Opus Vision
             smiles = _opus_vision_fallback(crop_path, patent_id, cpd_no)
             extraction_method = "opus_vision_fallback"
 

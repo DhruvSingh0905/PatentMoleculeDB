@@ -235,6 +235,25 @@ def run_patent(
         tier_3=tier_counts[3],
     )
 
+    # Step 2.4b: Escalation check — if too many Tier 3 compounds, re-parse failures
+    tier_3_ratio = tier_counts[3] / max(len(compounds), 1)
+    if tier_3_ratio > 0.3 and len(compounds) > 10:
+        failed = [c for c in compounds if c.processing_status == "failed"]
+        if failed:
+            logger.warning(
+                f"Step 2.4b: High Tier 3 ratio ({tier_3_ratio:.0%}). "
+                f"Re-parsing {min(len(failed), 10)} failed compounds with escalated model."
+            )
+            # Re-try failed compounds with more aggressive settings
+            # (capped at 10 to control cost)
+            from .iupac_to_smiles import _convert_single
+            for c in failed[:10]:
+                if c.iupac_name and c.processing_status == "failed":
+                    c.processing_status = "pending"
+                    _convert_single(c)
+                    if c.processing_status == "validated":
+                        logger.info(f"  Escalation recovered: {c.example_number}")
+
     # Step 2.6: Assay data extraction (local, no API)
     logger.info(f"Step 2.6: Assay data extraction")
     assay_data = extract_assays_for_patent(patent_id, data_dir)

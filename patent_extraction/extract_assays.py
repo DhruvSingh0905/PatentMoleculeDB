@@ -65,6 +65,14 @@ def _parse_value(raw: str) -> tuple[float | None, str | None]:
     return None, None
 
 
+def normalize_unit(value: float, unit: str, target_unit: str = "nM") -> float:
+    """Convert assay values to a common unit."""
+    conversions = {"nM": 1.0, "μM": 1000.0, "uM": 1000.0, "µM": 1000.0, "mM": 1e6}
+    if unit in conversions and target_unit in conversions:
+        return value * conversions[unit] / conversions[target_unit]
+    return value
+
+
 def _parse_html_table(table_html: str) -> list[dict]:
     """Parse an HTML table into list of row dicts with header keys."""
     # Extract rows

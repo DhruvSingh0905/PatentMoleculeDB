@@ -240,18 +240,32 @@ def _check_consistency(
     return {"coverage": coverage, "matches": matches, "total": len(example_smiles[:20]), "details": details}
 
 
+def classify_markush_difficulty(r_groups: dict[str, list[str]], scaffold_smiles: str | None) -> str:
+    """Classify Markush as LOW/MED/HIGH difficulty for routing."""
+    n_rgroups = len(r_groups)
+    has_scaffold = scaffold_smiles is not None
+    max_options = max((len(v) for v in r_groups.values()), default=0)
+    total_options = sum(len(v) for v in r_groups.values())
+
+    if has_scaffold and n_rgroups <= 3 and max_options <= 10:
+        return "LOW"
+    elif has_scaffold and n_rgroups <= 8 and total_options <= 50:
+        return "MED"
+    else:
+        return "HIGH"
+
+
 def extract_markush_multiagent(
     patent_id: str,
     manifest,
     data_dir: Path | None = None,
     example_smiles: list[str] | None = None,
 ) -> MarkushContext:
-    """Run multi-agent Markush extraction.
+    """Run multi-agent Markush extraction with difficulty-aware routing.
 
-    Three focused agents with minimal context each:
-    1. FormulaAgent → scaffold SMILES (2-3 pages, ~5K tokens)
-    2. SubstituentAgent → R-group definitions (regex first, LM fallback, ~3K tokens)
-    3. ConsistencyAgent → validate against examples (RDKit only, 0 tokens)
+    LOW difficulty: symbolic-only, skip LM agents
+    MED difficulty: two-path (symbolic + LM), run enumerator if coverage < 50%
+    HIGH difficulty: full multi-agent + consistency checking
 
     Total: ~8K tokens vs ~30K for monolithic approach (73% savings).
     """
@@ -272,9 +286,19 @@ def extract_markush_multiagent(
 
     logger.info(f"  FormulaAgent: scaffold={'valid' if scaffold_smiles else 'text-only'}")
 
-    # Agent 2: Substituents
-    r_groups = _extract_substituents(patent_id, manifest, data_dir)
-    logger.info(f"  SubstituentAgent: {len(r_groups)} R-groups found")
+    # Agent 2: Substituents (symbolic first, LM only if needed)
+    r_groups = _symbolic_r_group_parse(patent_id, data_dir)
+    difficulty = classify_markush_difficulty(r_groups, scaffold_smiles)
+    logger.info(f"  Difficulty: {difficulty} (symbolic found {len(r_groups)} R-groups)")
+
+    # Difficulty-aware routing
+    if difficulty == "LOW":
+        # Symbolic-only, skip LM
+        logger.info(f"  SubstituentAgent: LOW difficulty, symbolic-only")
+    else:
+        # MED/HIGH: supplement with LM
+        r_groups = _extract_substituents(patent_id, manifest, data_dir)
+        logger.info(f"  SubstituentAgent: {len(r_groups)} R-groups found (symbolic + LM)")
 
     # Agent 3: Consistency (free — RDKit only)
     consistency = {"coverage": 0}

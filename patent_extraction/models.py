@@ -115,6 +115,7 @@ class Compound(BaseModel):
     extraction_method: str | None = None       # "opsin_direct", "pubchem", "decimer_local", "opus_vision", etc.
     confidence_score: float | None = None       # 0.0-1.0
     inferred_stereochemistry: bool = False      # True if stereo was lost/inferred
+    stereo_trusted: bool = True                 # False if stereo from LLM/OCR/cis-trans stripping
 
     # Processing status
     processing_status: Literal[
