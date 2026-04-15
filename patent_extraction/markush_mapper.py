@@ -222,17 +222,22 @@ def derive_scaffold_from_examples(
             for key, smi in result.items():
                 if key == 'Core':
                     continue
-                # Clean: strip [*:n] attachment dummies and [H]
-                clean = re.sub(r'\[\*:\d+\]', '', smi).strip()
-                clean = re.sub(r'^\[H\]$', '', clean).strip()
-                # Validate the cleaned SMILES
-                if clean and len(clean) > 0:
-                    frag_mol = Chem.MolFromSmiles(clean)
-                    if frag_mol and frag_mol.GetNumHeavyAtoms() >= 1:
-                        canonical = Chem.MolToSmiles(frag_mol)
-                        if key not in rgroup_libraries:
-                            rgroup_libraries[key] = set()
-                        rgroup_libraries[key].add(canonical)
+                # Keep the [*:n] attachment point — _instantiate_core needs it
+                # But skip pure hydrogen [H][*:n]
+                if re.match(r'^\[H\]\[\*:\d+\]$', smi.strip()):
+                    continue
+                # Skip fragments that span multiple attachment points
+                # (bridging groups like CCN(C[*:3])C[*:4] are complex — skip for now)
+                dummy_count = len(re.findall(r'\[\*:\d+\]', smi))
+                if dummy_count > 1:
+                    continue
+                # Parse as-is with attachment point
+                frag_mol = Chem.MolFromSmiles(smi)
+                if frag_mol and frag_mol.GetNumHeavyAtoms() >= 1:
+                    # Store the raw SMILES with attachment point
+                    if key not in rgroup_libraries:
+                        rgroup_libraries[key] = set()
+                    rgroup_libraries[key].add(smi)
 
         rgroup_libraries = {k: sorted(v) for k, v in rgroup_libraries.items()}
         total_opts = sum(len(v) for v in rgroup_libraries.values())

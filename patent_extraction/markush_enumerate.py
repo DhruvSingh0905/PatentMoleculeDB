@@ -67,9 +67,13 @@ def _instantiate_core(
 
     # Attach each substituent
     for label, sub_name in assignments.items():
-        sub_smi = lookup_substituent(sub_name)
-        if sub_smi is None or sub_smi == "":
-            sub_smi = "[H]"
+        # Check if sub_name is already a SMILES (from RGroupDecompose data)
+        if Chem.MolFromSmiles(sub_name) is not None:
+            sub_smi = sub_name  # Already valid SMILES — use directly
+        else:
+            sub_smi = lookup_substituent(sub_name)
+            if sub_smi is None or sub_smi == "":
+                sub_smi = "[H]"
 
         mapnum = label_to_mapnum.get(label)
         if mapnum is None:
@@ -93,34 +97,57 @@ def _instantiate_core(
         attach_idx = neighbors[0].GetIdx()
 
         # Handle hydrogen substituent: just remove the dummy
-        if sub_smi == "[H]":
+        if sub_smi == "[H]" or sub_smi == "[H][*]":
             core_mol.RemoveAtom(dummy_idx)
             continue
 
         # Parse substituent fragment
+        # Fragment may contain [*:n] attachment point from RGroupDecompose
         frag_mol = Chem.MolFromSmiles(sub_smi)
+        if frag_mol is None:
+            # Try stripping attachment point notation
+            cleaned = re.sub(r'\[\*:\d+\]', '[*]', sub_smi)
+            frag_mol = Chem.MolFromSmiles(cleaned)
         if frag_mol is None:
             continue
 
-        # Combine core + fragment
-        combo = Chem.RWMol(Chem.CombineMols(core_mol, frag_mol))
-
-        # The fragment atoms start after the core atoms
-        frag_start = core_mol.GetNumAtoms()
-
-        # Find a good attachment atom in the fragment (first non-H atom)
-        frag_attach = frag_start  # Default: first atom of fragment
-        for i in range(frag_start, combo.GetNumAtoms()):
-            if combo.GetAtomWithIdx(i).GetAtomicNum() > 1:
-                frag_attach = i
+        # Find the dummy atom in the fragment (the attachment point)
+        frag_dummy_idx = None
+        for atom in frag_mol.GetAtoms():
+            if atom.GetAtomicNum() == 0:  # Dummy atom
+                frag_dummy_idx = atom.GetIdx()
                 break
 
-        # Add bond between core attachment point and fragment attachment point
-        combo.AddBond(attach_idx, frag_attach, Chem.BondType.SINGLE)
+        # Combine core + fragment
+        combo = Chem.RWMol(Chem.CombineMols(core_mol, frag_mol))
+        frag_start = core_mol.GetNumAtoms()
 
-        # Remove the dummy atom (adjust index if needed)
-        # Dummy is still at dummy_idx in the combo mol
-        combo.RemoveAtom(dummy_idx)
+        if frag_dummy_idx is not None:
+            # Fragment has its own dummy — bond the neighbors of both dummies
+            frag_dummy_in_combo = frag_start + frag_dummy_idx
+            frag_dummy_atom = combo.GetAtomWithIdx(frag_dummy_in_combo)
+            frag_neighbors = list(frag_dummy_atom.GetNeighbors())
+
+            if frag_neighbors:
+                frag_attach = frag_neighbors[0].GetIdx()
+                # Bond core attachment to fragment attachment
+                combo.AddBond(attach_idx, frag_attach, Chem.BondType.SINGLE)
+                # Remove BOTH dummies (fragment dummy first since it has higher index)
+                dummies_to_remove = sorted([dummy_idx, frag_dummy_in_combo], reverse=True)
+                for d in dummies_to_remove:
+                    combo.RemoveAtom(d)
+            else:
+                # Fragment dummy has no neighbors — skip
+                combo.RemoveAtom(dummy_idx)
+        else:
+            # No dummy in fragment — attach first heavy atom directly
+            frag_attach = frag_start
+            for i in range(frag_start, combo.GetNumAtoms()):
+                if combo.GetAtomWithIdx(i).GetAtomicNum() > 1:
+                    frag_attach = i
+                    break
+            combo.AddBond(attach_idx, frag_attach, Chem.BondType.SINGLE)
+            combo.RemoveAtom(dummy_idx)
 
         # Update core_mol for next iteration
         try:
@@ -227,8 +254,21 @@ def enumerate_markush(
             assignments = {label: name for label, (name, _) in zip(r_labels, combo)}
             smi_assignments = {label: smi for label, (_, smi) in zip(r_labels, combo)}
 
-            # Try to instantiate
-            smiles = _instantiate_core(markush.core_smiles, smi_assignments)
+            # Build position_mapping from the SMILES themselves
+            # Data-derived SMILES contain [*:n] which tells us the position
+            pos_map = {}
+            for lbl, smi in smi_assignments.items():
+                # Extract position from [*:n] in the SMILES
+                m = re.search(r'\[\*:(\d+)\]', smi)
+                if m:
+                    pos_map[lbl] = m.group(1)
+                else:
+                    # Fallback: try label number
+                    num = re.search(r'\d+', lbl)
+                    if num:
+                        pos_map[lbl] = num.group(0)
+
+            smiles = _instantiate_core(markush.core_smiles, smi_assignments, pos_map or None)
             if smiles:
                 compound = _validate_and_build(markush.patent_id, smiles, assignments)
                 if compound:
