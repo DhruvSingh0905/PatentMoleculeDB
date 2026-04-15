@@ -126,132 +126,113 @@ def lookup_substituent(name: str) -> str | None:
 # Example-derived scaffold via RDKit R-group decomposition
 # ============================================================
 
-def derive_scaffold_from_examples(
+def derive_all_scaffolds_from_examples(
     example_smiles: list[str],
-    min_examples: int = 5,
-    top_k_scaffolds: int = 3,
-) -> tuple[str | None, list[dict] | None, dict[str, list[str]] | None]:
-    """Derive the Markush core scaffold AND R-group libraries from examples.
+    min_match: int = 5,
+    max_scaffolds: int = 10,
+) -> list[dict]:
+    """Derive ALL viable Markush scaffolds from examples, not just the top one.
 
-    Uses Murcko scaffolding to find the most common core, then
-    RGroupDecompose to extract attachment points AND the actual
-    substituent SMILES that occur across examples.
+    Returns a list of scaffold dicts, each with:
+      scaffold_smiles, match_count, rgroup_libraries, decomposition_results
 
-    Deterministic, no LM needed, connected by construction.
-
-    Returns:
-        (scaffold_smiles, decomposition_results, rgroup_libraries) or (None, None, None)
-        rgroup_libraries: {R-label: [list of unique substituent SMILES]}
+    Sorted by match_count descending. Covers multiple chemical series.
     """
     from rdkit.Chem import rdRGroupDecomposition
     from collections import Counter
 
-    if len(example_smiles) < min_examples:
-        return None, None
+    mols = [Chem.MolFromSmiles(s) for s in example_smiles if Chem.MolFromSmiles(s)]
+    if len(mols) < min_match:
+        return []
 
-    # Parse all examples
-    mols = []
-    for smi in example_smiles:
-        mol = Chem.MolFromSmiles(smi)
-        if mol and mol.GetNumHeavyAtoms() >= 10:
-            mols.append(mol)
-
-    if len(mols) < min_examples:
-        return None, None
-
-    # Step 1: Get Murcko scaffolds and find top candidates
     scaffold_counter = Counter()
     for mol in mols:
         try:
             scaf = MurckoScaffold.GetScaffoldForMol(mol)
             scaf_smi = Chem.MolToSmiles(scaf)
-            scaffold_counter[scaf_smi] += 1
+            if scaf_smi:
+                scaffold_counter[scaf_smi] += 1
         except Exception:
             pass
 
-    if not scaffold_counter:
-        return None, None
-
-    # Step 2: Try R-group decomposition with each top scaffold
-    best_scaffold = None
-    best_results = None
-    best_match_count = 0
-
-    for scaf_smi, count in scaffold_counter.most_common(top_k_scaffolds):
+    viable = []
+    for scaf_smi, count in scaffold_counter.most_common(max_scaffolds * 2):
         core_mol = Chem.MolFromSmiles(scaf_smi)
         if not core_mol or core_mol.GetNumHeavyAtoms() < 8:
             continue
 
         try:
-            results, unmatched = rdRGroupDecomposition.RGroupDecompose(
-                [core_mol], mols[:30], asSmiles=True
-            )
-
-            match_count = len(results)
-            if match_count > best_match_count:
-                best_match_count = match_count
-                best_results = results
-                # Extract the core with attachment points from the first result
-                if results:
-                    core_with_dummies = results[0].get('Core', '')
-                    # Convert [*:n] to [n*] for our pipeline
-                    import re
-                    core_with_dummies = re.sub(r'\[\*:(\d+)\]', r'[\1*]', core_with_dummies)
-                    best_scaffold = core_with_dummies
-
-        except Exception as e:
-            logger.debug(f"RGroupDecompose failed on scaffold: {e}")
+            results, _ = rdRGroupDecomposition.RGroupDecompose([core_mol], mols, asSmiles=True)
+        except Exception:
             continue
 
-    # Step 3: Extract R-group libraries from ALL decomposed examples
-    rgroup_libraries = None
-    if best_results:
-        # Decompose ALL mols (not just first 30) against the best scaffold
-        best_core = Chem.MolFromSmiles(scaffold_counter.most_common(top_k_scaffolds)[0][0])
-        try:
-            all_results, _ = rdRGroupDecomposition.RGroupDecompose(
-                [best_core], mols, asSmiles=True
-            )
-            best_results = all_results
-            best_match_count = len(all_results)
-        except Exception:
-            pass
+        if len(results) < min_match:
+            continue
 
-        rgroup_libraries = {}
-        for result in best_results:
+        # Extract R-group libraries
+        rgroup_libs = {}
+        core_with_dummies = None
+        for result in results:
+            if not core_with_dummies:
+                raw_core = result.get('Core', '')
+                core_with_dummies = re.sub(r'\[\*:(\d+)\]', r'[\1*]', raw_core)
             for key, smi in result.items():
                 if key == 'Core':
                     continue
-                # Keep the [*:n] attachment point — _instantiate_core needs it
-                # But skip pure hydrogen [H][*:n]
                 if re.match(r'^\[H\]\[\*:\d+\]$', smi.strip()):
                     continue
-                # Skip fragments that span multiple attachment points
-                # (bridging groups like CCN(C[*:3])C[*:4] are complex — skip for now)
-                dummy_count = len(re.findall(r'\[\*:\d+\]', smi))
-                if dummy_count > 1:
+                if len(re.findall(r'\[\*:\d+\]', smi)) > 1:
                     continue
-                # Parse as-is with attachment point
                 frag_mol = Chem.MolFromSmiles(smi)
                 if frag_mol and frag_mol.GetNumHeavyAtoms() >= 1:
-                    # Store the raw SMILES with attachment point
-                    if key not in rgroup_libraries:
-                        rgroup_libraries[key] = set()
-                    rgroup_libraries[key].add(smi)
+                    if key not in rgroup_libs:
+                        rgroup_libs[key] = set()
+                    rgroup_libs[key].add(smi)
 
-        rgroup_libraries = {k: sorted(v) for k, v in rgroup_libraries.items()}
-        total_opts = sum(len(v) for v in rgroup_libraries.values())
-        logger.info(f"Example-derived R-groups: {len(rgroup_libraries)} labels, {total_opts} total unique substituents")
+        rgroup_libs = {k: sorted(v) for k, v in rgroup_libs.items()}
+        total_opts = sum(len(v) for v in rgroup_libs.values())
 
-    if best_scaffold and best_match_count >= min_examples // 2:
-        logger.info(
-            f"Example-derived scaffold: {best_match_count}/{len(mols)} examples matched, "
-            f"scaffold={best_scaffold[:50]}..."
-        )
-        return best_scaffold, best_results, rgroup_libraries
-    else:
-        logger.info(f"Example-derived scaffold: no scaffold matched ≥{min_examples // 2} examples")
+        viable.append({
+            'scaffold_smiles': core_with_dummies,
+            'murcko_count': count,
+            'match_count': len(results),
+            'rgroup_libraries': rgroup_libs,
+            'total_rgroup_options': total_opts,
+            'decomposition_results': results,
+        })
+
+        if len(viable) >= max_scaffolds:
+            break
+
+    viable.sort(key=lambda x: -x['match_count'])
+    total_covered = sum(v['murcko_count'] for v in viable)
+    logger.info(
+        f"Multi-scaffold derivation: {len(viable)} viable scaffolds covering "
+        f"{total_covered}/{len(mols)} examples ({total_covered/len(mols):.0%})"
+    )
+    return viable
+
+
+def derive_scaffold_from_examples(
+    example_smiles: list[str],
+    min_examples: int = 5,
+    top_k_scaffolds: int = 3,
+) -> tuple[str | None, list[dict] | None, dict[str, list[str]] | None]:
+    """Derive the top Markush core scaffold AND R-group libraries from examples.
+
+    Wrapper around derive_all_scaffolds_from_examples that returns the best one.
+
+    Returns:
+        (scaffold_smiles, decomposition_results, rgroup_libraries) or (None, None, None)
+    """
+    all_scaffolds = derive_all_scaffolds_from_examples(
+        example_smiles, min_match=min_examples, max_scaffolds=top_k_scaffolds
+    )
+    if not all_scaffolds:
         return None, None, None
+
+    best = all_scaffolds[0]
+    return best['scaffold_smiles'], best['decomposition_results'], best['rgroup_libraries']
 
 
 # ============================================================
