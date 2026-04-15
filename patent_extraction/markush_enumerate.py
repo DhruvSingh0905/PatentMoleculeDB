@@ -33,55 +33,123 @@ def _instantiate_core(
     assignments: dict[str, str],
     position_mapping: dict[str, str] | None = None,
 ) -> str | None:
-    """Replace attachment points in core SMILES with substituent SMILES.
+    """Graph-level substituent attachment using RDKit mol editing.
 
-    Uses position_mapping to translate R-labels to placeholder numbers.
-    E.g., if mapping = {"R1": "1", "G": "2"} and assignments = {"R1": "methyl"},
-    replaces [1*] with methyl SMILES.
+    Instead of brittle string replacement, this:
+    1. Converts core SMILES to mol with dummy atoms [*]
+    2. For each R-assignment, finds the dummy atom by map number
+    3. Attaches the substituent fragment at the graph level
+    4. Removes dummy atoms and sanitizes
+
+    This handles ring closures, aromaticity, and valence correctly.
     """
-    result = core_smiles
+    # Normalize core SMILES: convert [n*] to [*:n] (atom map notation)
+    normalized = core_smiles
+    for m in re.finditer(r'\[(\d+)\*\]', core_smiles):
+        n = m.group(1)
+        normalized = normalized.replace(f'[{n}*]', f'[*:{n}]')
 
-    for label, sub_name in assignments.items():
-        sub_smi = lookup_substituent(sub_name)
-        if sub_smi is None:
-            continue  # Skip unresolvable, don't fail entire molecule
-
-        if sub_smi == "" or sub_smi == "[H]":
-            sub_smi = "[H]"
-
-        # Use position mapping if available
-        if position_mapping and label in position_mapping:
-            n = position_mapping[label]
-            pattern = f'[{n}*]'
-            if pattern in result:
-                result = result.replace(pattern, f'({sub_smi})', 1)
-                continue
-
-        # Fallback: try direct label patterns
-        num = re.search(r'\d+', label)
-        if num:
-            n = num.group(0)
-            for pattern in [f'[{n}*]', f'[R{n}]', f'[{label}]']:
-                if pattern in result:
-                    result = result.replace(pattern, f'({sub_smi})', 1)
-                    break
-
-    # Check if any placeholders remain (incomplete assignment)
-    if re.search(r'\[\d+\*\]|\[R\d+\]', result):
-        # Remove unresolved placeholders (treat as hydrogen)
-        result = re.sub(r'\[\d+\*\]|\[R\d+\]', '([H])', result)
-
-    # Validate
-    mol = Chem.MolFromSmiles(result)
-    if mol is None:
+    core_mol = Chem.RWMol(Chem.MolFromSmiles(normalized))
+    if core_mol is None:
         return None
 
-    # Remove explicit hydrogens for cleaner SMILES
+    # Build label → atom map number using position_mapping
+    label_to_mapnum = {}
+    if position_mapping:
+        for label, pos in position_mapping.items():
+            label_to_mapnum[label] = int(pos)
+    else:
+        # Fallback: extract numeric part of label
+        for label in assignments:
+            num = re.search(r'\d+', label)
+            if num:
+                label_to_mapnum[label] = int(num.group(0))
+
+    # Attach each substituent
+    for label, sub_name in assignments.items():
+        sub_smi = lookup_substituent(sub_name)
+        if sub_smi is None or sub_smi == "":
+            sub_smi = "[H]"
+
+        mapnum = label_to_mapnum.get(label)
+        if mapnum is None:
+            continue
+
+        # Find the dummy atom in core with this map number
+        dummy_idx = None
+        for atom in core_mol.GetAtoms():
+            if atom.GetAtomicNum() == 0 and atom.GetAtomMapNum() == mapnum:
+                dummy_idx = atom.GetIdx()
+                break
+
+        if dummy_idx is None:
+            continue
+
+        # Get the neighbor of the dummy (the attachment point in the core)
+        dummy_atom = core_mol.GetAtomWithIdx(dummy_idx)
+        neighbors = list(dummy_atom.GetNeighbors())
+        if not neighbors:
+            continue
+        attach_idx = neighbors[0].GetIdx()
+
+        # Handle hydrogen substituent: just remove the dummy
+        if sub_smi == "[H]":
+            core_mol.RemoveAtom(dummy_idx)
+            continue
+
+        # Parse substituent fragment
+        frag_mol = Chem.MolFromSmiles(sub_smi)
+        if frag_mol is None:
+            continue
+
+        # Combine core + fragment
+        combo = Chem.RWMol(Chem.CombineMols(core_mol, frag_mol))
+
+        # The fragment atoms start after the core atoms
+        frag_start = core_mol.GetNumAtoms()
+
+        # Find a good attachment atom in the fragment (first non-H atom)
+        frag_attach = frag_start  # Default: first atom of fragment
+        for i in range(frag_start, combo.GetNumAtoms()):
+            if combo.GetAtomWithIdx(i).GetAtomicNum() > 1:
+                frag_attach = i
+                break
+
+        # Add bond between core attachment point and fragment attachment point
+        combo.AddBond(attach_idx, frag_attach, Chem.BondType.SINGLE)
+
+        # Remove the dummy atom (adjust index if needed)
+        # Dummy is still at dummy_idx in the combo mol
+        combo.RemoveAtom(dummy_idx)
+
+        # Update core_mol for next iteration
+        try:
+            Chem.SanitizeMol(combo)
+            core_mol = combo
+        except Exception:
+            # Sanitization failed — try to continue with unsanitized mol
+            core_mol = combo
+
+    # Remove remaining dummies (unassigned R-groups → treat as H)
+    atoms_to_remove = []
+    for atom in core_mol.GetAtoms():
+        if atom.GetAtomicNum() == 0:
+            atoms_to_remove.append(atom.GetIdx())
+
+    # Remove in reverse order to preserve indices
+    for idx in sorted(atoms_to_remove, reverse=True):
+        core_mol.RemoveAtom(idx)
+
+    # Final sanitization and canonicalization
     try:
-        mol = Chem.RemoveHs(mol)
+        Chem.SanitizeMol(core_mol)
+        mol = Chem.RemoveHs(core_mol)
         return Chem.MolToSmiles(mol)
     except Exception:
-        return result
+        try:
+            return Chem.MolToSmiles(core_mol)
+        except Exception:
+            return None
 
 
 def enumerate_markush(

@@ -41,6 +41,16 @@ If you cannot determine the scaffold, return:
 {"scaffold_smiles": null, "description": "...", "position_mapping": {}}"""
 
 
+FORMULA_IMAGE_PROMPT = """This is a Markush structure drawing from a pharmaceutical patent (Formula I or equivalent).
+Convert it to a SMILES string with dummy atoms at variable positions.
+
+Use [*:1], [*:2], etc. for attachment points where R-groups are drawn.
+Map each dummy to the R-label shown in the drawing (R1, R2, G, X, etc.).
+
+Return ONLY valid JSON:
+{"scaffold_smiles": "c1cc([*:1])c([*:2])cc1N([*:3])", "position_mapping": {"1": "R1", "2": "R2", "3": "X"}, "description": "brief description"}"""
+
+
 SUBSTITUENT_PROMPT = """Extract all R-group definitions from this patent text.
 For each variable position (R1, R2, R3, G, X, Y, etc.), list the allowed substituents.
 
@@ -68,6 +78,71 @@ For each example, determine:
 
 Return JSON:
 [{{"example": "Cpd 1", "matches_scaffold": true, "r_values": {{"R1": "methyl", "R2": "F"}}}}]"""
+
+
+def _extract_formula_from_image(patent_id: str, manifest, data_dir: Path) -> dict:
+    """FormulaAgent Path B: Extract scaffold from Markush structure images via Vision.
+
+    For patents where Formula I is a drawing, not text. Uses Claude Vision
+    to read the structure and produce scaffold SMILES + position mapping.
+    """
+    import fitz
+    from PIL import Image
+
+    markush_pages = sorted(manifest.markush_pages)[:3]
+    if not markush_pages:
+        return {"scaffold_smiles": None, "description": "No Markush pages", "position_mapping": {}}
+
+    pdf_path = data_dir / patent_id / f"{patent_id}.pdf"
+    if not pdf_path.exists():
+        return {"scaffold_smiles": None, "description": "No PDF", "position_mapping": {}}
+
+    images_dir = config.IMAGES_DIR / patent_id
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    # Render first Markush page and send to Vision
+    for page_num in markush_pages[:2]:
+        img_path = str(images_dir / f"markush_p{page_num:04d}.png")
+
+        try:
+            doc = fitz.open(str(pdf_path))
+            if page_num >= len(doc):
+                doc.close()
+                continue
+            page = doc[page_num]
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            img.save(img_path)
+            doc.close()
+        except Exception as e:
+            logger.warning(f"Failed to render page {page_num}: {e}")
+            continue
+
+        response = call_claude_vision(
+            prompt=FORMULA_IMAGE_PROMPT,
+            image_path=img_path,
+            model=config.MODEL_SONNET,
+            patent_id=patent_id,
+            compound_id="markush_formula_image",
+        )
+
+        if not response:
+            continue
+
+        try:
+            cleaned = response.strip()
+            if '```' in cleaned:
+                m = re.search(r'```(?:json)?\s*(.*?)```', cleaned, re.DOTALL)
+                cleaned = m.group(1) if m else cleaned
+            result = json.loads(cleaned)
+            if result.get("scaffold_smiles") and validate_smiles(result["scaffold_smiles"]):
+                result.setdefault("position_mapping", {})
+                logger.info(f"  FormulaAgent (image): valid scaffold from page {page_num}")
+                return result
+        except (json.JSONDecodeError, Exception):
+            continue
+
+    return {"scaffold_smiles": None, "description": "Vision extraction failed", "position_mapping": {}}
 
 
 def _extract_formula(patent_id: str, manifest, data_dir: Path) -> dict:
@@ -191,6 +266,62 @@ def _extract_substituents(patent_id: str, manifest, data_dir: Path) -> dict[str,
     return r_groups
 
 
+def _clean_rgroup_text(text: str) -> str:
+    """Clean R-group definition text before splitting into options.
+
+    Removes pagination artifacts, figure references, LaTeX fragments,
+    and normalizes whitespace and formatting.
+    """
+    t = text
+    # Remove page references: [123, 456], page 123, FIG. 1
+    t = re.sub(r'\[\[?\d{2,4}[,\s\d]*\]\]?', '', t)
+    t = re.sub(r'(?:page|FIG\.?)\s*\d+', '', t, flags=re.IGNORECASE)
+    # Remove "text" annotations from OCR
+    t = re.sub(r'\btext\b', '', t, flags=re.IGNORECASE)
+    # Remove "(continued)" markers
+    t = re.sub(r'\(continued\)', '', t, flags=re.IGNORECASE)
+    # Remove LaTeX math fragments
+    t = re.sub(r'\\[\(\)]', '', t)
+    t = re.sub(r'\\mathrm\{[^}]*\}', '', t)
+    t = re.sub(r'\\\w+', '', t)
+    # Remove bare numbers that are page/figure refs (3+ digits alone)
+    t = re.sub(r'\b\d{3,}\b', '', t)
+    # Fix "G- 1" → remove if it's a page ref (G-1 followed by G-2 pattern)
+    t = re.sub(r'G-\s*\d+\.?\s*', '', t)
+    # Normalize whitespace
+    t = re.sub(r'\s+', ' ', t).strip()
+    # Fix broken hyphens from line breaks
+    t = re.sub(r'- (\w)', r'-\1', t)
+    return t
+
+
+def _is_valid_rgroup_option(option: str) -> bool:
+    """Filter out junk R-group options (page refs, empty, non-chemical)."""
+    o = option.strip().lower()
+    if len(o) < 2:
+        return False
+    # Reject pure numbers (page refs)
+    if re.match(r'^\d+$', o):
+        return False
+    # Reject "in another embodiment" etc.
+    if any(kw in o for kw in ['embodiment', 'wherein', 'aspect', 'example', 'table', 'figure']):
+        return False
+    # Must contain at least one chemical term or be a known pattern
+    chemical_terms = [
+        'alkyl', 'aryl', 'hetero', 'cyclo', 'phenyl', 'methyl', 'ethyl',
+        'propyl', 'butyl', 'fluoro', 'chloro', 'bromo', 'amino', 'hydroxy',
+        'oxy', 'thio', 'sulfonyl', 'carbonyl', 'hydrogen', 'halogen', 'cyano',
+        'morpholin', 'piperidin', 'pyrrolidin', 'pyridin', 'pyrimidin',
+        'absent', 'h', 'f', 'cl', 'br', 'oh', 'nh',
+    ]
+    if any(term in o for term in chemical_terms):
+        return True
+    # Also accept if it looks like a chemical formula
+    if re.search(r'[CNOS]\d|[a-z]-[a-z]', o):
+        return True
+    return False
+
+
 def _symbolic_r_group_parse(patent_id: str, data_dir: Path) -> dict[str, list[str]]:
     """Regex-based R-group extraction (free, no API calls)."""
     r_groups = {}
@@ -203,14 +334,17 @@ def _symbolic_r_group_parse(patent_id: str, data_dir: Path) -> dict[str, list[st
         text = re.sub(r'<[^>]+>', ' ', text)
 
         for m in re.finditer(
-            r'(R\d+[a-z]?|[GXY])\s+is\s+(?:selected from (?:the group )?consisting of\s+)?(.*?)(?:\.\s+[A-Z]|;\s+[A-Z]|;\s+R\d|\.\s*$)',
+            r'(R\d+[a-z]?|[GXY])\s+is\s+(?:selected from (?:the (?:group|series) )?consisting of\s+)?(.*?)(?:\.\s+[A-Z]|;\s+[A-Z]|;\s+R\d|\.\s*$)',
             text, re.DOTALL
         ):
             label = m.group(1)
             options_text = m.group(2).strip()
-            options_text = re.sub(r'\s+', ' ', options_text)
+            # Clean R-group text before splitting
+            options_text = _clean_rgroup_text(options_text)
             options = re.split(r',\s+|\s+and\s+', options_text)
             options = [o.strip() for o in options if len(o.strip()) > 1]
+            # Filter out junk entries
+            options = [o for o in options if _is_valid_rgroup_option(o)]
             if options:
                 if label not in r_groups:
                     r_groups[label] = []
@@ -298,6 +432,18 @@ def extract_markush_multiagent(
         logger.warning(f"  FormulaAgent: invalid scaffold SMILES, keeping as description")
         scaffold_desc = f"{scaffold_desc} (SMILES: {scaffold_smiles})"
         scaffold_smiles = None
+
+    # If text-based extraction failed, try image-based (Vision)
+    if not scaffold_smiles:
+        logger.info(f"  FormulaAgent (text): no scaffold — trying image path")
+        image_result = _extract_formula_from_image(patent_id, manifest, data_dir)
+        if image_result.get("scaffold_smiles"):
+            scaffold_smiles = image_result["scaffold_smiles"]
+            scaffold_desc = image_result.get("description", scaffold_desc)
+            lm_position_mapping = image_result.get("position_mapping", lm_position_mapping)
+            if scaffold_smiles and not validate_smiles(scaffold_smiles):
+                scaffold_desc = f"{scaffold_desc} (SMILES: {scaffold_smiles})"
+                scaffold_smiles = None
 
     logger.info(f"  FormulaAgent: scaffold={'valid' if scaffold_smiles else 'text-only'}")
 
