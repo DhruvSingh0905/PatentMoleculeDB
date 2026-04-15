@@ -190,6 +190,31 @@ def benchmark_patent(
     our_key_set = set(our_keys.keys())
     matched_full = our_key_set & bdb_keys
 
+    # Stereo-flattened matching (PRIMARY METRIC — accurate molecular recall)
+    from .smiles_utils import get_stereo_flattened_key
+    smiles_col = [c for c in bindingdb_df.columns if 'smiles' in c.lower() and 'ligand' in c.lower()]
+    smiles_col = smiles_col[0] if smiles_col else None
+
+    our_flat = set()
+    for c in our_validated:
+        smi = c.get('canonical_smiles', '')
+        if smi:
+            fk = get_stereo_flattened_key(smi)
+            if fk:
+                our_flat.add(fk)
+
+    bdb_flat = set()
+    if smiles_col:
+        for val in bindingdb_df[smiles_col].dropna():
+            smi = str(val).strip()
+            fk = get_stereo_flattened_key(smi)
+            if fk:
+                bdb_flat.add(fk)
+    else:
+        bdb_flat = bdb_keys  # Fallback to InChIKey if no SMILES column
+
+    matched_flat = our_flat & bdb_flat
+
     # Connectivity-only matching (14 chars)
     our_conn = {get_connectivity_key(k): k for k in our_key_set if k}
     bdb_conn = {get_connectivity_key(k): k for k in bdb_keys if k}
@@ -198,9 +223,12 @@ def benchmark_patent(
     # Metrics
     our_total = len(set(c.get('inchikey') for c in our_validated if c.get('inchikey')))
     bdb_total = len(bdb_keys)
+    bdb_flat_total = len(bdb_flat) if bdb_flat else bdb_total
 
     precision_full = len(matched_full) / max(our_total, 1)
     recall_full = len(matched_full) / max(bdb_total, 1)
+
+    recall_flattened = len(matched_flat) / max(bdb_flat_total, 1)
 
     precision_conn = len(matched_conn) / max(len(our_conn), 1)
     recall_conn = len(matched_conn) / max(len(bdb_conn), 1)
@@ -215,9 +243,11 @@ def benchmark_patent(
         'our_validated': our_total,
         'bindingdb_compounds': bdb_total,
         'matched_full_inchikey': len(matched_full),
+        'matched_flattened': len(matched_flat),
         'matched_connectivity': len(matched_conn),
         'precision_full': round(precision_full, 3),
         'recall_full': round(recall_full, 3),
+        'recall_flattened': round(recall_flattened, 3),
         'precision_connectivity': round(precision_conn, 3),
         'recall_connectivity': round(recall_conn, 3),
         'our_unmatched': len(our_unmatched),

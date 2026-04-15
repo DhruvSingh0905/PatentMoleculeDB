@@ -182,6 +182,97 @@ def _extract_with_discovered_format(
     return compounds
 
 
+def _local_name_extraction(patent_id: str, text: str) -> list[dict]:
+    """Extract compound names using local heuristics — no Claude calls.
+
+    Uses IUPAC fragment density to detect chemical name boundaries in free text.
+    OPSIN validates each candidate (free, instant).
+
+    Algorithm:
+    1. Split text by "Example N" markers
+    2. For each segment, scan for IUPAC fragment density
+    3. Name = first high-density span after the marker
+    4. Validate with OPSIN
+    """
+    from .ocr_autocorrect import IUPAC_FRAGMENTS
+
+    # Synthesis/procedure keywords that signal end of a compound name
+    STOP_WORDS = {
+        'was', 'were', 'added', 'stirred', 'heated', 'cooled', 'dissolved',
+        'mixture', 'solution', 'reaction', 'yield', 'purified', 'obtained',
+        'prepared', 'synthesized', 'treated', 'combined', 'filtered',
+        'evaporated', 'concentrated', 'washed', 'dried', 'chromatography',
+    }
+
+    compounds = []
+    seen = set()
+
+    # Find all Example markers with positions
+    for m in re.finditer(r'Example\s+(\d+)\s+', text):
+        ex_num = m.group(1)
+        if ex_num in seen:
+            continue
+
+        # Get text after the marker (up to next Example or 500 chars)
+        start = m.end()
+        next_ex = re.search(r'Example\s+\d+', text[start:start + 2000])
+        end = start + (next_ex.start() if next_ex else 500)
+        segment = text[start:end]
+
+        # Skip if segment starts with common non-name patterns
+        if segment.strip().startswith(('(i)', '(ii)', 'was ', 'A ')):
+            continue
+
+        # Find IUPAC name: could be one long hyphenated token or multiple words
+        # Strategy: grab text up to first stop marker, then validate with OPSIN
+
+        # Find end of name: (i), (ii), synthesis words, or long gap
+        name_end = len(segment)
+        for stop_pattern in [
+            r'\s+\(i\)\s',         # Intermediate marker
+            r'\s+\(ii\)\s',
+            r'\s+was\s',           # Synthesis procedure
+            r'\s+were\s',
+            r'\s+A\s+(?:solution|mixture|suspension)',
+            r'\s+The\s+',
+            r'\s+To\s+a\s',
+            r'\.\s+[A-Z]',        # Sentence boundary
+        ]:
+            m2 = re.search(stop_pattern, segment)
+            if m2 and m2.start() < name_end:
+                name_end = m2.start()
+
+        candidate = segment[:name_end].strip()
+
+        # Check if candidate has IUPAC fragment content
+        candidate_lower = candidate.lower()
+        fragment_hits = sum(1 for f in IUPAC_FRAGMENTS if f in candidate_lower)
+
+        if fragment_hits < 2 or len(candidate) < 20:
+            continue
+        # Clean line-break hyphens
+        candidate = re.sub(r'- (\w)', r'-\1', candidate)
+        candidate = re.sub(r'\s+', ' ', candidate).strip()
+        # Remove trailing non-name junk
+        candidate = re.sub(r'\s+\d+\.?\d*\s*$', '', candidate)  # Remove trailing numbers (MW etc.)
+
+        if len(candidate) < 20:
+            continue
+
+        # Validate with OPSIN (free)
+        smiles, _ = _try_opsin(candidate)
+        if not smiles:
+            cleaned = rule_based_clean(candidate)
+            smiles, _ = _try_opsin(cleaned)
+
+        if smiles and validate_smiles(smiles) and len(smiles) >= 10:
+            seen.add(ex_num)
+            compounds.append({'num': ex_num, 'name': candidate})
+
+    logger.info(f"Local name extraction {patent_id}: {len(compounds)} compounds (free, no API)")
+    return compounds
+
+
 def _batch_extract_with_claude(patent_id: str, text: str) -> list[dict]:
     """Use Claude to extract ALL compounds from text in chunks.
 
@@ -288,8 +379,19 @@ def extract_compounds_adaptive(patent_id: str) -> list[Compound]:
 
     logger.info(f"Adaptive extractor {patent_id}: regex found {len(raw_compounds)} compound names")
 
-    # Step 4: If regex found <20, use Claude batch extraction (generalizable, not patent-specific)
+    # Step 4: If regex found <20, try local fragment-based detection first (free)
     if len(raw_compounds) < 20:
+        local = _local_name_extraction(patent_id, text)
+        seen_nums = {r['num'] for r in raw_compounds}
+        for entry in local:
+            if entry['num'] not in seen_nums:
+                raw_compounds.append(entry)
+                seen_nums.add(entry['num'])
+        logger.info(f"Adaptive extractor {patent_id}: +{len(local)} from local detection (free)")
+
+    # Step 5: If still <10 AND patent has many examples, use Claude batch (last resort)
+    example_count = len(re.findall(r'Example\s+\d+', text[:200000]))
+    if len(raw_compounds) < 10 and example_count > 20:
         batch = _batch_extract_with_claude(patent_id, text)
         seen_nums = {r['num'] for r in raw_compounds}
         for entry in batch:

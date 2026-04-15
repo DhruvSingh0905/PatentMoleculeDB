@@ -94,6 +94,26 @@ def get_connectivity_key(inchikey: str) -> str:
     return inchikey[:14]
 
 
+def get_stereo_flattened_key(smiles: str) -> str | None:
+    """Generate InChIKey with all stereochemistry removed.
+
+    Gives true molecular identity comparison without stereo penalty.
+    BDB stores 43-97% of compounds with undefined stereo (UHFFFAOYSA).
+    This function flattens our stereo to match, giving accurate recall.
+
+    More precise than connectivity-only (14-char), which could theoretically
+    match different molecular formulas with the same graph.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    Chem.RemoveStereochemistry(mol)
+    inchi_str = inchi.MolToInchi(mol)
+    if not inchi_str:
+        return None
+    return inchi.InchiToInchiKey(inchi_str)
+
+
 def strip_salt(smiles: str) -> dict:
     """Remove salt/counterion from a SMILES and return both forms.
 
