@@ -28,24 +28,36 @@ MIN_MW = 150
 MAX_MW = 1500
 
 
-def _instantiate_core(core_smiles: str, assignments: dict[str, str]) -> str | None:
+def _instantiate_core(
+    core_smiles: str,
+    assignments: dict[str, str],
+    position_mapping: dict[str, str] | None = None,
+) -> str | None:
     """Replace attachment points in core SMILES with substituent SMILES.
 
-    Handles [1*], [2*], ... or [R1], [R2], ... placeholders.
+    Uses position_mapping to translate R-labels to placeholder numbers.
+    E.g., if mapping = {"R1": "1", "G": "2"} and assignments = {"R1": "methyl"},
+    replaces [1*] with methyl SMILES.
     """
     result = core_smiles
 
     for label, sub_name in assignments.items():
         sub_smi = lookup_substituent(sub_name)
         if sub_smi is None:
-            return None  # Can't resolve this substituent
+            continue  # Skip unresolvable, don't fail entire molecule
 
-        # Handle empty substituent (R = absent/hydrogen)
         if sub_smi == "" or sub_smi == "[H]":
             sub_smi = "[H]"
 
-        # Replace placeholder patterns
-        # [1*] style
+        # Use position mapping if available
+        if position_mapping and label in position_mapping:
+            n = position_mapping[label]
+            pattern = f'[{n}*]'
+            if pattern in result:
+                result = result.replace(pattern, f'({sub_smi})', 1)
+                continue
+
+        # Fallback: try direct label patterns
         num = re.search(r'\d+', label)
         if num:
             n = num.group(0)

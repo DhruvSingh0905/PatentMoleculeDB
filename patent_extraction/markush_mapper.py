@@ -123,6 +123,142 @@ def lookup_substituent(name: str) -> str | None:
 
 
 # ============================================================
+# Position mapping: scaffold [n*] ↔ patent R-label alignment
+# ============================================================
+
+def resolve_position_mapping(
+    markush: MarkushFormula,
+    lm_mapping: dict[str, str] | None = None,
+    example_compounds: list[tuple[str, str]] | None = None,  # [(iupac, smiles), ...]
+) -> dict[str, str]:
+    """Resolve the mapping between scaffold [n*] positions and patent R-labels.
+
+    Hybrid approach:
+    1. Start with LM-proposed mapping (from FormulaAgent)
+    2. Validate with structural consistency
+    3. Score against example compounds
+    4. Fall back to positional heuristic if needed
+
+    Returns: {R-label: placeholder_number} e.g. {"R1": "1", "G": "2"}
+    """
+    if not markush.core_smiles:
+        return {}
+
+    # Count placeholders in scaffold
+    import re
+    placeholders = set(re.findall(r'\[(\d+)\*\]', markush.core_smiles))
+    r_labels = set(markush.r_groups.keys())
+
+    if not placeholders or not r_labels:
+        return {}
+
+    # Step 1: Use LM mapping if available
+    if lm_mapping:
+        # Validate: does each mapped placeholder exist?
+        valid_mapping = {}
+        for pos, label in lm_mapping.items():
+            if pos in placeholders and label in r_labels:
+                valid_mapping[label] = pos
+            elif label in r_labels:
+                # LM might have used different notation — try fuzzy match
+                for p in placeholders:
+                    if p not in valid_mapping.values():
+                        valid_mapping[label] = p
+                        break
+        if valid_mapping:
+            return valid_mapping
+
+    # Step 2: Structural consistency — check atom environments
+    mapping = _structural_environment_mapping(markush)
+    if mapping:
+        return mapping
+
+    # Step 3: Positional heuristic — map in order
+    # Sort R-labels by numeric value, map to placeholders in order
+    sorted_labels = sorted(r_labels, key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 999)
+    sorted_positions = sorted(placeholders, key=int)
+
+    return {label: pos for label, pos in zip(sorted_labels, sorted_positions)}
+
+
+def _structural_environment_mapping(markush: MarkushFormula) -> dict[str, str] | None:
+    """Try to map R-labels to positions based on chemical environment."""
+    if not markush.core_smiles:
+        return None
+
+    mol = Chem.MolFromSmiles(markush.core_smiles)
+    if mol is None:
+        return None
+
+    import re
+    # Find placeholder atoms and their neighbors
+    placeholder_envs = {}
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() == '*':
+            # Find which [n*] this is by position in SMILES
+            idx = atom.GetIdx()
+            neighbors = [mol.GetAtomWithIdx(n.GetIdx()) for n in atom.GetNeighbors()]
+            neighbor_symbols = [n.GetSymbol() for n in neighbors]
+            neighbor_aromatic = [n.GetIsAromatic() for n in neighbors]
+            placeholder_envs[str(idx)] = {
+                'neighbors': neighbor_symbols,
+                'aromatic': any(neighbor_aromatic),
+            }
+
+    # Match environments to R-group constraints from text
+    mapping = {}
+    for label, rdef in markush.r_groups.items():
+        # Analyze R-group options to infer expected environment
+        opts_lower = ' '.join(rdef.options_text).lower()
+        expected_on_n = 'amino' in opts_lower or 'amine' in opts_lower or 'n(' in opts_lower
+        expected_on_o = 'oxy' in opts_lower or 'hydroxy' in opts_lower
+        expected_halogen = 'halogen' in opts_lower or 'fluoro' in opts_lower or 'chloro' in opts_lower
+
+        # Try to find a matching placeholder
+        for pos, env in placeholder_envs.items():
+            if pos in mapping.values():
+                continue  # Already assigned
+            if expected_on_n and 'N' in env['neighbors']:
+                mapping[label] = pos
+                break
+            elif expected_on_o and 'O' in env['neighbors']:
+                mapping[label] = pos
+                break
+            elif expected_halogen and 'C' in env['neighbors'] and not env['aromatic']:
+                mapping[label] = pos
+                break
+
+    return mapping if mapping else None
+
+
+def score_mapping_with_examples(
+    markush: MarkushFormula,
+    mapping: dict[str, str],
+    examples: list[tuple[str, str]],  # [(iupac, smiles), ...]
+) -> float:
+    """Score a position mapping by how many examples it can explain.
+
+    For each example, try to instantiate the Markush core with R-values
+    that produce a molecule matching the example's connectivity.
+    """
+    if not markush.core_smiles or not examples:
+        return 0.0
+
+    explained = 0
+    for iupac, smiles in examples:
+        example_mol = Chem.MolFromSmiles(smiles)
+        if not example_mol:
+            continue
+
+        # Try the symbolic alignment with this mapping applied
+        aligned = _symbolic_alignment(markush, smiles)
+        if aligned.confidence in ('high', 'medium'):
+            explained += 1
+
+    return explained / max(len(examples), 1)
+
+
+# ============================================================
 # Path A: Symbolic alignment (free)
 # ============================================================
 

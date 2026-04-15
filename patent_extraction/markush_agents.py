@@ -31,10 +31,14 @@ Extract the core chemical scaffold (Formula I or equivalent):
 2. A brief description of the core structure.
 
 Return ONLY valid JSON:
-{"scaffold_smiles": "...", "description": "..."}
+{"scaffold_smiles": "...", "description": "...", "position_mapping": {"1": "R1", "2": "G", "3": "X"}}
+
+The position_mapping tells which [n*] placeholder in the SMILES corresponds to which
+R-group label from the patent text. Look at both the Formula drawing/text AND the
+R-group definition section to determine this mapping.
 
 If you cannot determine the scaffold, return:
-{"scaffold_smiles": null, "description": "..."}"""
+{"scaffold_smiles": null, "description": "...", "position_mapping": {}}"""
 
 
 SUBSTITUENT_PROMPT = """Extract all R-group definitions from this patent text.
@@ -67,32 +71,38 @@ Return JSON:
 
 
 def _extract_formula(patent_id: str, manifest, data_dir: Path) -> dict:
-    """FormulaAgent: Extract scaffold from Markush pages (focused, minimal context)."""
-    # Only send the first 2-3 Markush pages, not all of them
-    markush_pages = sorted(manifest.markush_pages)[:3]
-    if not markush_pages:
-        return {"scaffold_smiles": None, "description": "No Markush pages found"}
+    """FormulaAgent: Extract scaffold + position mapping from Markush pages.
 
-    # Build focused context — just the claims text, stripped of images
+    Sends both scaffold pages AND R-group definition pages so the LM can
+    produce the [n*] ↔ R-label mapping alongside the scaffold SMILES.
+    """
+    markush_pages = sorted(manifest.markush_pages)[:5]  # More pages for mapping context
+    if not markush_pages:
+        return {"scaffold_smiles": None, "description": "No Markush pages found", "position_mapping": {}}
+
+    # Build focused context — scaffold pages + R-group definition pages
     context_parts = []
     total_chars = 0
+
+    # Include pages with Formula/scaffold AND pages with R-group definitions
     for page_num in markush_pages:
         for subdir in ['iupacs_clean', 'all_pages']:
             page_path = data_dir / patent_id / subdir / f"page_{page_num:04d}.md"
             if page_path.exists():
                 text = page_path.read_text()
-                # Strip image markers to save tokens
                 text = re.sub(r'<\|ref\|>.*?<\|/det\|>', '', text)
                 text = re.sub(r'\s+', ' ', text).strip()
-                if len(text) > 100:
-                    context_parts.append(f"--- Page {page_num} ---\n{text[:5000]}")
-                    total_chars += min(len(text), 5000)
+                # Prioritize pages with R-group definitions or Formula references
+                has_rgroups = bool(re.search(r'R\d+\s+is|selected from|Formula\s*\(?[IVX]', text, re.IGNORECASE))
+                if len(text) > 100 and (has_rgroups or total_chars < 5000):
+                    context_parts.append(f"--- Page {page_num} ---\n{text[:4000]}")
+                    total_chars += min(len(text), 4000)
                 break
-        if total_chars > 12000:
+        if total_chars > 15000:
             break
 
     if not context_parts:
-        return {"scaffold_smiles": None, "description": "No readable Markush text"}
+        return {"scaffold_smiles": None, "description": "No readable Markush text", "position_mapping": {}}
 
     prompt = FORMULA_PROMPT + "\n\nPatent text:\n" + "\n".join(context_parts)
 
@@ -105,7 +115,7 @@ def _extract_formula(patent_id: str, manifest, data_dir: Path) -> dict:
     )
 
     if not response:
-        return {"scaffold_smiles": None, "description": "API call failed"}
+        return {"scaffold_smiles": None, "description": "API call failed", "position_mapping": {}}
 
     try:
         # Parse JSON from response
@@ -113,7 +123,11 @@ def _extract_formula(patent_id: str, manifest, data_dir: Path) -> dict:
         if '```' in cleaned:
             cleaned = re.search(r'```(?:json)?\s*(.*?)```', cleaned, re.DOTALL)
             cleaned = cleaned.group(1) if cleaned else response
-        return json.loads(cleaned)
+        result = json.loads(cleaned)
+        # Ensure position_mapping is always present
+        if 'position_mapping' not in result:
+            result['position_mapping'] = {}
+        return result
     except json.JSONDecodeError:
         return {"scaffold_smiles": None, "description": response[:200]}
 
@@ -274,10 +288,11 @@ def extract_markush_multiagent(
 
     logger.info(f"Markush multi-agent: {patent_id}")
 
-    # Agent 1: Formula
+    # Agent 1: Formula + Position Mapping
     formula_result = _extract_formula(patent_id, manifest, data_dir)
     scaffold_smiles = formula_result.get("scaffold_smiles")
     scaffold_desc = formula_result.get("description", "")
+    lm_position_mapping = formula_result.get("position_mapping", {})
 
     if scaffold_smiles and not validate_smiles(scaffold_smiles):
         logger.warning(f"  FormulaAgent: invalid scaffold SMILES, keeping as description")
@@ -306,6 +321,28 @@ def extract_markush_multiagent(
         consistency = _check_consistency(patent_id, scaffold_smiles, r_groups, example_smiles)
         logger.info(f"  ConsistencyAgent: {consistency['coverage']:.0%} scaffold coverage")
 
+    # Resolve position mapping: [n*] ↔ R-label
+    from .markush_mapper import resolve_position_mapping
+    from .models import MarkushFormula, RGroupDef
+
+    # Build temporary MarkushFormula for mapping resolution
+    temp_rgroups = {
+        label: RGroupDef(label=label, options_text=opts)
+        for label, opts in r_groups.items()
+    }
+    temp_formula = MarkushFormula(
+        patent_id=patent_id, core_smiles=scaffold_smiles, r_groups=temp_rgroups,
+    )
+    position_mapping = resolve_position_mapping(
+        temp_formula,
+        lm_mapping=lm_position_mapping,
+        example_compounds=[(s, s) for s in (example_smiles or [])[:5]],
+    )
+    if position_mapping:
+        logger.info(f"  PositionMapping: {position_mapping}")
+    else:
+        logger.info(f"  PositionMapping: unresolved (using positional heuristic)")
+
     # Determine quality
     if scaffold_smiles and len(r_groups) >= 2:
         quality = "high_confidence"
@@ -319,5 +356,6 @@ def extract_markush_multiagent(
         scaffold_smiles=scaffold_smiles,
         scaffold_description=scaffold_desc,
         r_group_definitions=r_groups,
+        position_mapping=position_mapping,
         quality=quality,
     )

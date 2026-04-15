@@ -50,6 +50,7 @@ class MarkushContext(BaseModel):
     scaffold_smiles: str | None = None          # RDKit-validated scaffold SMILES
     scaffold_description: str = ""              # Natural language description
     r_group_definitions: dict[str, list[str]] = Field(default_factory=dict)
+    position_mapping: dict[str, str] = Field(default_factory=dict)  # {R-label: placeholder_num}
     quality: Literal["high_confidence", "partial", "failed"] = "failed"
     # high_confidence: valid SMILES + complete R-group defs
     # partial: natural language only, SMILES invalid or absent
