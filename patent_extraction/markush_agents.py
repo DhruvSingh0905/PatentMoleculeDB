@@ -25,30 +25,52 @@ logger = logging.getLogger(__name__)
 
 
 FORMULA_PROMPT = """You are analyzing a pharmaceutical patent's claims section.
-Extract the core chemical scaffold (Formula I or equivalent):
 
-1. The scaffold SMILES with attachment points marked as [1*], [2*], etc.
-2. A brief description of the core structure.
+STEP 1: Extract the core chemical scaffold (Formula I or equivalent) as SMILES.
+Use [*:1], [*:2], etc. at every variable (R-group) position.
+
+STEP 2: For EVERY attachment point [*:n] in your scaffold, determine which R-group
+label from the patent it corresponds to. Examine:
+- The Formula (I) text or drawing to see where each R-label appears
+- The R-group definition sections ("R1 is...", "R2 is...", "G is...", "X is...")
+- Any descriptions like "R1 is attached to the nitrogen of the amide"
+
+You MUST account for ALL [*:n] positions. For each one, either:
+- Assign it to an R-label with brief evidence, OR
+- Mark r_label as null if it is a fixed part of the core (not variable)
 
 Return ONLY valid JSON:
-{"scaffold_smiles": "...", "description": "...", "position_mapping": {"1": "R1", "2": "G", "3": "X"}}
+{
+  "scaffold_smiles": "...[*:1]...[*:6]...",
+  "positions": [
+    {"pos": 1, "r_label": "R2", "evidence": "R2 is on the cyclopentyl carbon"},
+    {"pos": 2, "r_label": "R1a", "evidence": "R1a connects to the piperidine N"},
+    {"pos": 3, "r_label": "G", "evidence": "G is the pyrimidine substituent"},
+    {"pos": 4, "r_label": null, "evidence": "Fixed methyl, not variable"}
+  ]
+}
 
-The position_mapping tells which [n*] placeholder in the SMILES corresponds to which
-R-group label from the patent text. Look at both the Formula drawing/text AND the
-R-group definition section to determine this mapping.
-
-If you cannot determine the scaffold, return:
-{"scaffold_smiles": null, "description": "...", "position_mapping": {}}"""
+If you cannot determine the scaffold at all, return:
+{"scaffold_smiles": null, "positions": [], "description": "why it failed"}"""
 
 
 FORMULA_IMAGE_PROMPT = """This is a Markush structure drawing from a pharmaceutical patent (Formula I or equivalent).
-Convert it to a SMILES string with dummy atoms at variable positions.
 
-Use [*:1], [*:2], etc. for attachment points where R-groups are drawn.
-Map each dummy to the R-label shown in the drawing (R1, R2, G, X, etc.).
+STEP 1: Convert the drawn structure to SMILES with [*:1], [*:2], etc. at every
+position where an R-group label (R1, R2, G, X, Y, etc.) is drawn.
+
+STEP 2: For EVERY [*:n], identify which R-label is drawn next to that bond.
+You MUST map ALL attachment points — the labels are visible in the drawing.
 
 Return ONLY valid JSON:
-{"scaffold_smiles": "c1cc([*:1])c([*:2])cc1N([*:3])", "position_mapping": {"1": "R1", "2": "R2", "3": "X"}, "description": "brief description"}"""
+{
+  "scaffold_smiles": "...[*:1]...[*:6]...",
+  "positions": [
+    {"pos": 1, "r_label": "R1", "evidence": "R1 drawn on the nitrogen bond"},
+    {"pos": 2, "r_label": "R2", "evidence": "R2 drawn on the carbon"},
+    {"pos": 3, "r_label": "G", "evidence": "G label at the ring position"}
+  ]
+}"""
 
 
 SUBSTITUENT_PROMPT = """Extract all R-group definitions from this patent text.
@@ -78,6 +100,70 @@ For each example, determine:
 
 Return JSON:
 [{{"example": "Cpd 1", "matches_scaffold": true, "r_values": {{"R1": "methyl", "R2": "F"}}}}]"""
+
+
+def _parse_formula_result(raw_result: dict) -> dict:
+    """Parse FormulaAgent output into standardized format with position_mapping.
+
+    Validates that mapping position numbers actually exist in the scaffold SMILES.
+    If LM used wrong indices, attempts to re-map by sequential order.
+    """
+    result = dict(raw_result)
+
+    # Ensure scaffold_smiles uses [n*] notation (some LMs output [*:n])
+    smi = result.get('scaffold_smiles')
+    if smi:
+        smi = re.sub(r'\[\*:(\d+)\]', r'[\1*]', smi)
+        result['scaffold_smiles'] = smi
+
+    # Get actual placeholder positions from scaffold
+    scaffold_positions = set()
+    if smi:
+        scaffold_positions = set(re.findall(r'\[(\d+)\*\]', smi))
+
+    # Convert positions array to position_mapping dict
+    if 'positions' in result:
+        mapping = {}
+        ordered_labels = []  # Track order for fallback
+        for p in result['positions']:
+            r_label = p.get('r_label')
+            pos = p.get('pos')
+            if r_label and pos is not None:
+                pos_str = str(pos)
+                if pos_str in scaffold_positions:
+                    # Direct match — pos number exists in scaffold
+                    mapping[str(r_label)] = pos_str
+                ordered_labels.append(str(r_label) if r_label else None)
+
+        # If few direct matches, LM likely used array indices instead of [n*] numbers
+        # Fall back to sequential assignment
+        if len(mapping) < len(scaffold_positions) // 2 and ordered_labels:
+            sorted_positions = sorted(scaffold_positions, key=int)
+            valid_labels = [l for l in ordered_labels if l is not None]
+            sequential_mapping = {}
+            for label, pos in zip(valid_labels, sorted_positions):
+                sequential_mapping[label] = pos
+
+            # Use sequential if it covers more positions
+            if len(sequential_mapping) > len(mapping):
+                logger.info(f"  Position mapping: using sequential fallback ({len(sequential_mapping)} vs {len(mapping)} direct)")
+                mapping = sequential_mapping
+
+        result['position_mapping'] = mapping
+    elif 'position_mapping' not in result:
+        result['position_mapping'] = {}
+    else:
+        # Validate existing position_mapping against scaffold
+        if scaffold_positions:
+            validated = {}
+            for label, pos in result['position_mapping'].items():
+                if str(pos) in scaffold_positions:
+                    validated[label] = str(pos)
+            if len(validated) < len(result['position_mapping']):
+                logger.warning(f"  Dropped {len(result['position_mapping']) - len(validated)} invalid position mappings")
+            result['position_mapping'] = validated
+
+    return result
 
 
 def _extract_formula_from_image(patent_id: str, manifest, data_dir: Path) -> dict:
@@ -134,10 +220,10 @@ def _extract_formula_from_image(patent_id: str, manifest, data_dir: Path) -> dic
             if '```' in cleaned:
                 m = re.search(r'```(?:json)?\s*(.*?)```', cleaned, re.DOTALL)
                 cleaned = m.group(1) if m else cleaned
-            result = json.loads(cleaned)
+            raw = json.loads(cleaned)
+            result = _parse_formula_result(raw)
             if result.get("scaffold_smiles") and validate_smiles(result["scaffold_smiles"]):
-                result.setdefault("position_mapping", {})
-                logger.info(f"  FormulaAgent (image): valid scaffold from page {page_num}")
+                logger.info(f"  FormulaAgent (image): valid scaffold from page {page_num}, mapping={result.get('position_mapping', {})}")
                 return result
         except (json.JSONDecodeError, Exception):
             continue
@@ -186,25 +272,23 @@ def _extract_formula(patent_id: str, manifest, data_dir: Path) -> dict:
         model=config.MODEL_SONNET,
         patent_id=patent_id,
         compound_id="markush_formula",
-        max_tokens=500,
+        max_tokens=1000,
     )
 
     if not response:
         return {"scaffold_smiles": None, "description": "API call failed", "position_mapping": {}}
 
     try:
-        # Parse JSON from response
         cleaned = response.strip()
         if '```' in cleaned:
-            cleaned = re.search(r'```(?:json)?\s*(.*?)```', cleaned, re.DOTALL)
-            cleaned = cleaned.group(1) if cleaned else response
-        result = json.loads(cleaned)
-        # Ensure position_mapping is always present
-        if 'position_mapping' not in result:
-            result['position_mapping'] = {}
+            m = re.search(r'```(?:json)?\s*(.*?)```', cleaned, re.DOTALL)
+            cleaned = m.group(1) if m else cleaned
+        raw = json.loads(cleaned)
+        result = _parse_formula_result(raw)
+        logger.info(f"  FormulaAgent (text): mapping={result.get('position_mapping', {})}")
         return result
     except json.JSONDecodeError:
-        return {"scaffold_smiles": None, "description": response[:200]}
+        return {"scaffold_smiles": None, "description": response[:200], "position_mapping": {}}
 
 
 def _extract_substituents(patent_id: str, manifest, data_dir: Path) -> dict[str, list[str]]:
@@ -423,27 +507,34 @@ def extract_markush_multiagent(
     logger.info(f"Markush multi-agent: {patent_id}")
 
     # Agent 1: Formula + Position Mapping
-    formula_result = _extract_formula(patent_id, manifest, data_dir)
+    # Image-first: most direct R-label signal (labels are drawn next to bonds)
+    logger.info(f"  FormulaAgent: trying image path first (most direct R-label signal)")
+    formula_result = _extract_formula_from_image(patent_id, manifest, data_dir)
     scaffold_smiles = formula_result.get("scaffold_smiles")
     scaffold_desc = formula_result.get("description", "")
     lm_position_mapping = formula_result.get("position_mapping", {})
 
     if scaffold_smiles and not validate_smiles(scaffold_smiles):
-        logger.warning(f"  FormulaAgent: invalid scaffold SMILES, keeping as description")
         scaffold_desc = f"{scaffold_desc} (SMILES: {scaffold_smiles})"
         scaffold_smiles = None
 
-    # If text-based extraction failed, try image-based (Vision)
+    # If image failed, fall back to text-based extraction
     if not scaffold_smiles:
-        logger.info(f"  FormulaAgent (text): no scaffold — trying image path")
-        image_result = _extract_formula_from_image(patent_id, manifest, data_dir)
-        if image_result.get("scaffold_smiles"):
-            scaffold_smiles = image_result["scaffold_smiles"]
-            scaffold_desc = image_result.get("description", scaffold_desc)
-            lm_position_mapping = image_result.get("position_mapping", lm_position_mapping)
-            if scaffold_smiles and not validate_smiles(scaffold_smiles):
-                scaffold_desc = f"{scaffold_desc} (SMILES: {scaffold_smiles})"
-                scaffold_smiles = None
+        logger.info(f"  FormulaAgent: image path failed — trying text")
+        text_result = _extract_formula(patent_id, manifest, data_dir)
+        scaffold_smiles = text_result.get("scaffold_smiles")
+        scaffold_desc = text_result.get("description", scaffold_desc)
+        lm_position_mapping = text_result.get("position_mapping", lm_position_mapping)
+        if scaffold_smiles and not validate_smiles(scaffold_smiles):
+            scaffold_desc = f"{scaffold_desc} (SMILES: {scaffold_smiles})"
+            scaffold_smiles = None
+    elif not lm_position_mapping:
+        # Image gave scaffold but no mapping — try text for mapping only
+        text_result = _extract_formula(patent_id, manifest, data_dir)
+        text_mapping = text_result.get("position_mapping", {})
+        if text_mapping:
+            lm_position_mapping = text_mapping
+            logger.info(f"  FormulaAgent: using text mapping to supplement image scaffold")
 
     logger.info(f"  FormulaAgent: scaffold={'valid' if scaffold_smiles else 'text-only'}")
 
