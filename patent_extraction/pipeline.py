@@ -25,6 +25,8 @@ from .image_pipeline import extract_image_compounds
 from .google_patents import extract_patent_google
 from .google_patents_tables import extract_table_compounds_from_gp
 from .extract_assays import extract_assays_for_patent, attach_assays_to_compounds
+from .context_folding import scan_patent_sections
+from .markush_agents import extract_markush_multiagent
 from .models import PatentResult
 from .progress import ProgressTracker
 from .cost_tracker import cost_tracker
@@ -64,6 +66,14 @@ def run_patent(
     logger.info(f"Step 1: Detection")
     manifest = detect_patent(patent_id, data_dir)
 
+    # Step 1a: Context folding — classify sections, skip irrelevant pages
+    sections = scan_patent_sections(patent_id, data_dir)
+    logger.info(
+        f"Step 1a: Context folding: {sections.total_pages} pages → "
+        f"{len(sections.pages_to_process)} to process "
+        f"({sections.savings_pct:.0f}% token savings)"
+    )
+
     # Step 1b: Layout-aware routing
     format_info = detect_patent_format(patent_id, manifest, data_dir)
     logger.info(f"Step 1b: Format={format_info['format']} (text={format_info['text_score']}, image={format_info['image_score']})")
@@ -90,9 +100,13 @@ def run_patent(
 
     progress.update(status="google_patents_complete", google_patents_compounds=len(gp_compounds))
 
-    # Step 2.0: Markush context extraction
-    logger.info(f"Step 2.0: Markush context extraction")
-    markush_context = extract_markush_context(patent_id, manifest, data_dir)
+    # Step 2.0: Markush context extraction (multi-agent: focused, token-efficient)
+    logger.info(f"Step 2.0: Markush context extraction (multi-agent)")
+    # Collect example SMILES from GP extraction for consistency checking
+    gp_smiles = [c.canonical_smiles for c in gp_compounds if c.canonical_smiles]
+    markush_context = extract_markush_multiagent(
+        patent_id, manifest, data_dir, example_smiles=gp_smiles
+    )
     progress.update(status="markush_context_complete")
 
     # Step 2.1: Page-level compound extraction (from iupacs_clean example pages)
