@@ -124,6 +124,34 @@ class Compound(BaseModel):
     failure_reason: str | None = None
 
 
+class RGroupDef(BaseModel):
+    """Definition of a single R-group position in a Markush structure."""
+    label: str                                  # "R1", "R2", "G", "X"
+    options_text: list[str] = Field(default_factory=list)  # ["C1-C6 alkyl", "phenyl"]
+    options_smiles: list[str] = Field(default_factory=list)  # ["C", "CC", "c1ccccc1"]
+    option_type: str = "discrete"               # "discrete", "range", "nested"
+
+
+class MarkushFormula(BaseModel):
+    """Canonical Markush representation — ground truth for enumeration."""
+    patent_id: str
+    formula_name: str = "Formula I"             # "Formula I", "Formula II"
+    core_smarts: str | None = None              # RDKit SMARTS with R-attachment points
+    core_smiles: str | None = None              # Flat SMILES with [1*], [2*] placeholders
+    r_groups: dict[str, RGroupDef] = Field(default_factory=dict)
+    exceptions: list[str] = Field(default_factory=list)
+    difficulty: str = "HIGH"                    # LOW/MED/HIGH
+    source: str = "text"                        # "text", "image", "reconciled"
+
+
+class MarkushMapping(BaseModel):
+    """Result of mapping an IUPAC name to R-group assignments."""
+    r_assignments: dict[str, str] = Field(default_factory=dict)  # {R1: "methyl"}
+    instance_smiles: str | None = None          # Built from core + R-values
+    confidence: str = "low"                     # "high", "medium", "low"
+    alignment_method: str = "unknown"           # "symbolic", "lm", "reconciled"
+
+
 class MarkushDefinition(BaseModel):
     """A parsed Markush structure definition from patent claims."""
     formula_name: str                           # "Formula I", "Formula II"
