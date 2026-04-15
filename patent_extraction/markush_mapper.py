@@ -32,16 +32,38 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 SUBSTITUENT_LIBRARY = {
-    # Alkyl
-    "hydrogen": "[H]", "methyl": "C", "ethyl": "CC", "propyl": "CCC",
-    "isopropyl": "CC(C)", "butyl": "CCCC", "isobutyl": "CC(C)C",
-    "tert-butyl": "C(C)(C)C", "pentyl": "CCCCC", "hexyl": "CCCCCC",
+    # Alkyl — common patent notations
+    "hydrogen": "[H]", "h": "[H]",
+    "methyl": "C", "ethyl": "CC", "propyl": "CCC", "n-propyl": "CCC",
+    "isopropyl": "CC(C)", "i-propyl": "CC(C)",
+    "butyl": "CCCC", "n-butyl": "CCCC", "isobutyl": "CC(C)C",
+    "tert-butyl": "C(C)(C)C", "t-butyl": "C(C)(C)C",
+    "pentyl": "CCCCC", "hexyl": "CCCCCC",
+    # Patent-style alkyl ranges (use representative)
     "c1 alkyl": "C", "c2 alkyl": "CC", "c3 alkyl": "CCC",
-    "c1-c6 alkyl": "C",  # Representative
-    "c1-c4 alkyl": "C",
-    # Cycloalkyl
+    "c1-c6 alkyl": "C", "c1-c4 alkyl": "C", "c1-c3 alkyl": "C",
+    "(c1-c4)-alkyl": "C", "(c1-c3)-alkyl": "C", "(c1- c4)- alkyl": "C",
+    "(c1- c2)- alkyl": "C", "c1-c8 alkyl": "C",
+    # Patent-style shorthand
+    "- ch3": "C", "- ch2ch2": "CC", "- cf3": "C(F)(F)F",
+    "- cd3": "C([2H])([2H])[2H]", "- chf2": "C(F)F",
+    "ch3": "C", "cf3": "C(F)(F)F", "chf2": "C(F)F",
+    # Cycloalkyl — with patent notations
     "cyclopropyl": "C1CC1", "cyclobutyl": "C1CCC1", "cyclopentyl": "C1CCCC1",
-    "cyclohexyl": "C1CCCCC1", "c3-c6 cycloalkyl": "C1CCCC1",
+    "cyclohexyl": "C1CCCCC1", "cycloheptyl": "C1CCCCCC1",
+    "c3-c6 cycloalkyl": "C1CCCC1", "c3-c7 cycloalkyl": "C1CCCC1",
+    "(c3-c7)-cycloalkyl": "C1CCCC1", "(c3- c7)- cycloalkyl": "C1CCCC1",
+    "c3-c10 cycloalkyl": "C1CCCC1",
+    # Alkyl-cycloalkyl combos
+    "- (c1- c2)- alkyl- (c3- c7)- cycloalkyl": "CC1CCCC1",
+    "- (c1- c4)- alkyl- (c3- c7)- cycloalkyl": "CC1CCCC1",
+    "c1-3 alkyl-cyclopropyl": "CC1CC1", "c1-3 alkyl-cyclobutyl": "CC1CCC1",
+    # Linkers
+    "- ch2- ch2-": "CC", "-ch2-ch2-": "CC", "- o- ch2-": "OC",
+    "-o-ch2-": "OC", "- s- ch2-": "SC", "s-(o)2-ch2": "CS(=O)(=O)",
+    "-ch2-": "C", "ch2": "C",
+    # Oxetanyl
+    "oxetanyl": "C1COC1", "oxetane": "C1COC1",
     # Aryl
     "phenyl": "c1ccccc1", "4-fluorophenyl": "c1cc(F)ccc1",
     "4-chlorophenyl": "c1cc(Cl)ccc1", "4-methoxyphenyl": "c1cc(OC)ccc1",

@@ -16,33 +16,56 @@
       ],
       "bdb_compounds": 630,
       "our_validated": 40,
+      "bdb_matched": 24,
       "named_examples": [
         {
-          "bdb_inchikey": "RNKISESIRDOYOA-UHFFFAOYSA-N",
-          "bdb_smiles": "Cc1n[nH]c2nc(ncc12)-c1ccc(NS(=O)(=O)c2cc(Cl)ccc2Cl)cc1",
-          "bdb_name": "CHEMBL3355025::US9718825, Example 1"
+          "example_number": "Example 1",
+          "iupac_name": "2,5-Dichloro-N-[4-(3-methyl-1H-pyrazolo[3,4-d]pyrimidin-6-yl)-phenyl]-benzenesulfonamide",
+          "canonical_smiles": "Cc1[nH]nc2nc(-c3ccc(NS(=O)(=O)c4cc(Cl)ccc4Cl)cc3)ncc12",
+          "inchikey": "RNKISESIRDOYOA-UHFFFAOYSA-N"
         },
         {
-          "bdb_inchikey": "SZBMXDUCOKQSHQ-UHFFFAOYSA-N",
-          "bdb_smiles": "Clc1ccc(Cl)c(c1)S(=O)(=O)Nc1ccc(cc1)-c1nc(N2CCOCC2)c2cn[nH]c2n1",
-          "bdb_name": "2,5-Dichloro-N-[4-(4-morpholin-4-yl-1H-pyrazolo[3,4-d]pyrimidin-6-yl)-phenyl]-be"
+          "example_number": "Example 3, step (iii)",
+          "iupac_name": "5-Chloro-2-fluoro-N-{4-[4-(4-hydroxy-cyclohexyloxy)-1H-pyrazolo[3,4-d]pyrimidin-6-yl]-phenyl}-benzenesulfonamide",
+          "canonical_smiles": "O=S(=O)(Nc1ccc(-c2nc(OC3CCC(O)CC3)c3cn[nH]c3n2)cc1)c1cc(Cl)ccc1F",
+          "inchikey": "IKBMUGXVSJZWGW-UHFFFAOYSA-N"
         }
       ],
       "sample_r_groups": {
         "X": [
           "selected from the series consisting of N",
           "CH",
-          "and the compounds of the formula I thus are N-[4-(1H-pyrazolo[3"
+          "and the compounds of the formula I thus are N-[4-(1H-pyrazolo[3",
+          "4-d]pyrimidin-6-yl)-phenyl]-sulfonamides",
+          "CH"
         ],
         "R1": [
           "selected from the series consisting of H",
           "- N(R11)- R12",
-          "- N(R13)- C(O)- R14"
+          "- N(R13)- C(O)- R14",
+          "- N(R13)- S(O)2- R15",
+          "- N(R13)- C(O)- NH- R16"
         ],
         "R13": [
           "selected from the series consisting of H",
           "(C1- C4)- alkyl",
-          "(C3- C7)- cycloalkyl; text [[496"
+          "(C3- C7)- cycloalkyl; text [[496",
+          "103",
+          "860"
+        ],
+        "R32": [
+          "selected from the series consisting of halogen",
+          "(C1- C4)- alkyl",
+          "(C3- C7)- cycloalkyl",
+          "- (C1- C2)- alkyl- (C3- C7)- cycloalkyl",
+          "- (C1- C4)- alkyl- (C3- C7)- cycloalkyl"
+        ],
+        "R17": [
+          "(C1-C3)-alkyl",
+          "in another embodiment it is (C1-C2)-alkyl",
+          "in another embodiment it is methyl",
+          "(C1-C4)-alkyl",
+          "in another embodiment R17 is hydrogen"
         ]
       }
     },
@@ -61,34 +84,56 @@
         "R2"
       ],
       "bdb_compounds": 380,
-      "our_validated": 235,
+      "our_validated": 230,
+      "bdb_matched": 33,
       "named_examples": [
         {
-          "bdb_inchikey": "LYRJXVTYMMUZBH-UHFFFAOYSA-N",
-          "bdb_smiles": "N#Cc1ccc(OCCCN2CCC(CC2)C2(CNCc3ccccc23)C2CCCC2)cc1",
-          "bdb_name": "4-(3-(4-(4-cyclopentyl- 1,2,3,4- tetrahydroisoquinolin-4- yl)piperidin-1- yl)pro"
+          "example_number": "Cpd. No. 148",
+          "iupac_name": "4-cyclopentyl-2-ethyl-4-(1-((1-(4-(pyridin-4-ylsulfonyl)phenyl)azetidin-3-yl)methyl)piperidin-4-yl)-1,2,3,4-tetrahydroisoquinoline",
+          "canonical_smiles": "CCN1Cc2ccccc2C(C2CCCC2)(C2CCN(CC3CN(c4ccc(S(=O)(=O)c5ccncc5)cc4)C3)CC2)C1",
+          "inchikey": "MIDBFVUJIVFIOM-UHFFFAOYSA-N"
         },
         {
-          "bdb_inchikey": "RMQGHEMHHRDOSM-UHFFFAOYSA-N",
-          "bdb_smiles": "N#Cc1ccc(OCCCN2CCC(CC2)C(C#N)(C2CCCC2)c2ccccc2)cc1",
-          "bdb_name": "4-(3-(4- (cyano(cyclopentyl)(phenyl) methyl)piperidin-1- yl)propoxy)benzonitrile"
+          "example_number": "Cpd. No. 129",
+          "iupac_name": "4-(3-((4-(1-cyclopentyl-1,2,3,4-tetrahydroisoquinolin-1-yl)piperidin-1-yl)methyl)azetidin-1-yl)benzonitrile",
+          "canonical_smiles": "N#Cc1ccc(N2CC(CN3CCC(C4(C5CCCC5)NCCc5ccccc54)CC3)C2)cc1",
+          "inchikey": "TUXUFVPCUVQKJJ-UHFFFAOYSA-N"
         }
       ],
       "sample_r_groups": {
         "G": [
           "G- 1",
           "G- 2",
-          "G- 3"
+          "G- 3",
+          "G- 1. text [[503",
+          "556"
         ],
         "X": [
           "\\(\\mathrm{- N(R^{1a})}\\)",
           "and is attached to the A- ring",
-          "Y is \\(\\mathrm{- C(\\Omega = O)}\\)"
+          "Y is \\(\\mathrm{- C(\\Omega = O)}\\)",
+          "and is attached to \\(\\mathrm{- C(R^{2})(G)}\\) ; when \\(\\mathrm{X} - \\mathrm{Y}\\) is \\(\\mathrm{- C(\\Omega = O)}\\)",
+          "X is \\(\\mathrm{- C(\\Omega = O)}\\)"
         ],
         "Y": [
           "cyano",
           "\\(\\mathrm{CH}_2\\mathrm{R}^{12}\\) . text [[123",
-          "131"
+          "131",
+          "479",
+          "159]] In another embodiment"
+        ],
+        "R18": [
+          "\u2014OC(=O)-amino",
+          "e.g.",
+          "\u2014OC(=O)N(H)CH3",
+          "and \u2014NHC (=O)\u2014R19b",
+          "e.g."
+        ],
+        "R24": [
+          "hydrogen",
+          "fluoro",
+          "and R3a",
+          "R3b are as defined are as defined in connection with Formula I"
         ]
       }
     },
@@ -104,33 +149,52 @@
       ],
       "bdb_compounds": 774,
       "our_validated": 852,
+      "bdb_matched": 685,
       "named_examples": [
         {
-          "bdb_inchikey": "APPWEVYLYRMDII-UHFFFAOYSA-N",
-          "bdb_smiles": "NC(=O)c1cc(ccc1F)-c1cc(-c2ccnn2C2CCCCC2)c2c(N)ncnn12",
-          "bdb_name": "5-(4-Amino-5-(1-cyclohexyl-1H-pyrazol-5-yl)pyrrolo[2,1-f][1,2,4]triazin-7-yl)-2-"
+          "example_number": "Example 111",
+          "iupac_name": "(cis)-1-(3-(4-amino-5-(1-cyclopropyl-1H-pyrazol-5-yl)pyrolo[2,1-f][1,2,4]triazin-7-yl)phenyl)-N-cyclopropyl-3-methoxycyclobutane carboxamide",
+          "canonical_smiles": "COC1CC(C(=O)NC2CC2)(c2cccc(-c3cc(-c4ccnn4C4CC4)c4c(N)ncnn34)c2)C1",
+          "inchikey": "JQYMLBADIZZIHP-UHFFFAOYSA-N"
         },
         {
-          "bdb_inchikey": "XDHGMLBRWCIULH-UHFFFAOYSA-N",
-          "bdb_smiles": "NCc1cccc(c1)-c1cc(-c2ccnn2C2CCCCC2)c2c(N)ncnn12",
-          "bdb_name": "7-(3-(aminomethyl)phenyl)-5-(1-cyclohexyl-1H- pyrazol-5-yl)pyrrolo[2,1-f][1,2,4]"
+          "example_number": "Example 1",
+          "iupac_name": "or a salt thereof. One embodiment provides a compound of Formula (I) or a salt thereof, wherein said compound is selected from 5-(4- amino- 5- (1- cyclohexyl- 1H- pyrrazol- 5- yl) pyrrolo [2,1- f][1,2,4]triazin- 7- yl)- 2- fluorobenzamide",
+          "canonical_smiles": "NC(=O)c1cc(-c2cc(-c3ccnn3C3CCCCC3)c3c(N)ncnn23)ccc1F",
+          "inchikey": "APPWEVYLYRMDII-UHFFFAOYSA-N"
         }
       ],
       "sample_r_groups": {
         "X": [
           "N or CH",
           "N or CH",
-          "N;"
+          "N;",
+          "\\(\\mathrm{Q}_1\\)",
+          "\\(\\mathrm{R}_1\\)"
         ],
         "R3": [
           "piperazinyl substituted with zero to 8 substituents independently selected from D",
           "OH",
-          "CH3"
+          "CH3",
+          "CH (CH3)2",
+          "CF3"
         ],
         "R1": [
           "H;",
           "R2",
-          "R4"
+          "R4",
+          "R5",
+          "and R6 are defined in the first aspect"
+        ],
+        "R6": [
+          "- CH3",
+          "- CD3",
+          "- CHF2",
+          "- CF3",
+          "- CH2CH2"
+        ],
+        "R2": [
+          "H or F"
         ]
       }
     },
@@ -141,23 +205,28 @@
       ],
       "bdb_compounds": 131,
       "our_validated": 286,
+      "bdb_matched": 67,
       "named_examples": [
         {
-          "bdb_inchikey": "JETZUWPAUAUYPN-UHFFFAOYSA-N",
-          "bdb_smiles": "CC(C)N(C(C)C)C(=O)c1cc(F)ccc1-n1cc(C(=O)[C@H]2CCN(C[C@H]3CC[C@@H](CC3)NS(C)(=O)=O)C2)c2ccncc12 |r,wU:21.21,29.33,wD:26.26,(-5.54,-1.86,;-4.21,-2.63,;-4.21,-4.17,;-2.88,-1.86,;-2.88,-.32,;-4.21,.45,;-1.54,.45,;-1.54,-2.63,;-.21,-1.86,;-1.54,-4.17,;-2.88,-4.94,;-2.88,-6.48,;-4.21,-7.25,;-1.54,-7.25,;-.21,-6.48,;-.21,-4.94,;1.12,-4.17,;1.29,-2.64,;2.79,-2.32,;3.19,-.83,;4.68,-.43,;2.1,.26,;.56,.26,;.09,1.72,;1.33,2.63,;1.33,4.17,;2.67,4.94,;4,4.17,;5.33,4.94,;5.33,6.48,;4,7.25,;2.67,6.48,;6.67,7.25,;6.67,8.79,;8,9.56,;5.33,9.56,;8,8.02,;2.58,1.72,;3.56,-3.65,;5.07,-3.97,;5.54,-5.44,;4.51,-6.58,;3.01,-6.26,;2.53,-4.8,)|",
-          "bdb_name": "US20240335431, Example 1"
+          "example_number": "Example 2",
+          "iupac_name": "2-(3-((S)-1-((1R,3S,4S)-2-Azabicyclo[2.2.1]heptane-3-carbonyl)pyrrolidine-3-carbonyl)-1H-pyrrolo[2,3-c]pyridin-1-yl)-5-fluoro-N,N-diisopropylbenzamide",
+          "canonical_smiles": "CC(C)N(C(=O)c1cc(F)ccc1-n1cc(C(=O)[C@H]2CCN(C(=O)[C@H]3N[C@@H]4CC[C@H]3C4)C2)c2ccncc21)C(C)C",
+          "inchikey": "TUAVWTQJOHDGIF-QPQWRFRXSA-N"
         },
         {
-          "bdb_inchikey": "TUAVWTQJOHDGIF-UHFFFAOYSA-N",
-          "bdb_smiles": "CC(C)N(C(C)C)C(=O)c1cc(F)ccc1-n1cc(C(=O)[C@H]2CCN(C2)C(=O)[C@H]2N[C@@H]3CC[C@H]2C3)c2ccncc12 |r|",
-          "bdb_name": "US20240335431, Example 2"
+          "example_number": "Example 5",
+          "iupac_name": "2-(3-(1-((1R,3S,4S)-2-Azabicyclo[2.2.1]heptane-3-carbonyl)azetidine-3-carbonyl)-1H-pyrrolo[2,3-c]pyridin-1-yl)-5-fluoro-N,N-diisopropylbenzamide",
+          "canonical_smiles": "CC(C)N(C(=O)c1cc(F)ccc1-n1cc(C(=O)C2CN(C(=O)[C@H]3N[C@@H]4CC[C@H]3C4)C2)c2ccncc21)C(C)C",
+          "inchikey": "YSGLADAPUDXPCM-AZCYMXHYSA-N"
         }
       ],
       "sample_r_groups": {
         "X": [
           "\\(\\mathrm{- C(R^9 - - R^9)}\\) ; \\(\\mathrm{R}^9\\) is hydrogen; \\(\\mathrm{R}^4\\) is methyl; r",
           "and t are independently 0 or 1; the \\(\\mathrm{R}^{11}\\) cyclohexyl present in the structure of Formula I- 53 is optionally substituted with one or more substituents independently selected from the group. consisting of \\(\\mathrm{C_{1 - 4}}\\) - alkyl",
-          "\\(\\mathrm{- NR^{15}R^{16}}\\)"
+          "\\(\\mathrm{- NR^{15}R^{16}}\\)",
+          "and \\(\\mathrm{- N(R^{17})SO}\\) \\(\\mathrm{R}^{18}\\) ; the \\(\\mathrm{R}^{12}\\) heterocycyl present in the structures of Formula I- 43 through Formula I- 52 is optionally substituted with one or more substituent independently selected from the group consisting of fluoro",
+          "\\(\\mathrm{C_{1 - 4}}\\) - alkyl"
         ]
       }
     },
@@ -169,28 +238,35 @@
       ],
       "bdb_compounds": 77,
       "our_validated": 152,
+      "bdb_matched": 108,
       "named_examples": [
         {
-          "bdb_inchikey": "nan",
-          "bdb_smiles": "Cc1c(CN2CCC3(CC2)CN(c2ncnc4ccc(OC(F)(F)F)cc24)C3)ccc2c1cc(C#N)n2C[C@@H]1CNC(=O)CO1",
-          "bdb_name": "4-methyl-1-[(2S)-5- oxomorpholin-2- (trifluoromethoxy) quinazolin-4-yl]-2,7- dia"
+          "example_number": "Example 3",
+          "iupac_name": "4-methyl-1-[[(2S)-5-oxomorpholin-2-yl]methyl]-5-[[2-[6-(trifluoromethoxy)quinazolin-4-yl]-2,7-diazaspiro[3.5]nonan-7-yl]methyl]indole-2-carbonitrile",
+          "canonical_smiles": "Cc1c(CN2CCC3(CC2)CN(c2ncnc4ccc(OC(F)(F)F)cc24)C3)ccc2c1cc(C#N)n2C[C@@H]1CNC(=O)CO1",
+          "inchikey": "CVHMWMRDVRJQFI-DEOSSOPVSA-N"
         },
         {
-          "bdb_inchikey": "nan",
-          "bdb_smiles": "Cc1c(CN2CCC3(CC2)CN(c2ncnc4ccc(CC(F)(F)F)cc24)C3)ccc2c1cc(C#N)n2CC1CCNC(=O)CO1",
-          "bdb_name": "4-methyl-1-[(3-oxo- 1,4-oxazepan-7- yl)methyl]-5- [[2-[6-(2,2,2- trifluoroethyl)"
+          "example_number": "Example 4",
+          "iupac_name": "4-methyl-1-[(3-oxo-1,4-oxazepan-7-yl)methyl]-5-[[2-[6-(2,2,2-trifluoroethyl)quinazolin-4-yl]-2,7-diazaspiro[3.5]nonan-7-yl]methyl]indole-2-carbonitrile",
+          "canonical_smiles": "Cc1c(CN2CCC3(CC2)CN(c2ncnc4ccc(CC(F)(F)F)cc24)C3)ccc2c1cc(C#N)n2CC1CCNC(=O)CO1",
+          "inchikey": "KDRDTKBAZPOURC-UHFFFAOYSA-N"
         }
       ],
       "sample_r_groups": {
         "R2": [
           "independently selected from halogen",
           "OH",
-          "CN"
+          "CN",
+          "C1- C6 alkyl",
+          "C1- C6 alkoxy"
         ],
         "G": [
           "selected from \\(\\mathrm{CH}_2\\)",
           "NH",
-          "all other variables are as defined herein. text [[503"
+          "all other variables are as defined herein. text [[503",
+          "701",
+          "860"
         ]
       }
     },
@@ -202,28 +278,35 @@
       ],
       "bdb_compounds": 376,
       "our_validated": 233,
+      "bdb_matched": 29,
       "named_examples": [
         {
-          "bdb_inchikey": "CXLXAKXNVQSHKR-UHFFFAOYSA-N",
-          "bdb_smiles": "Oc1c2C(=O)N3CN(C(c4ccccc4)c4ccccc4CC=CCC3)n2ccc1=O",
-          "bdb_name": "US11312727, Compound 1"
+          "example_number": "Example 1",
+          "iupac_name": "4-hydroxy-16-phenyl-7,8,11,16-tetrahydro-6,17-methanobenzo[k]pyrido[1,2-b][1,2,5]triazacyclotridecine-3,5-dione",
+          "canonical_smiles": "O=C1c2c(O)c(=O)ccn2N2CN1CCC=CCc1ccccc1C2c1ccccc1",
+          "inchikey": "CXLXAKXNVQSHKR-UHFFFAOYSA-N"
         },
         {
-          "bdb_inchikey": "CXLXAKXNVQSHKR-UHFFFAOYSA-N",
-          "bdb_smiles": "Oc1c2C(=O)N3CN(C(c4ccccc4)c4ccccc4CC=CCC3)n2ccc1=O",
-          "bdb_name": "US11312727, Compound 1"
+          "example_number": "Compound 1",
+          "iupac_name": "4-hydroxy-16-phenyl-7,8,11,16-tetrahydro-6,17-methanobenzol[k]pyrido[1,2-b][1,2,5]triazacyclotridecine-3,5-dione",
+          "canonical_smiles": "O=C1c2c(O)c(=O)ccn2N2CN1CCC=CCc1ccccc1C2c1ccccc1",
+          "inchikey": "CXLXAKXNVQSHKR-UHFFFAOYSA-N"
         }
       ],
       "sample_r_groups": {
         "R1": [
           "CH2",
           "\u2014CH2\u2014CH2\u2014O\u2014",
-          "C3-6cycloalkyl"
+          "C3-6cycloalkyl",
+          "oxetanyl",
+          "C1-3alkyl-cyclopropyl"
         ],
         "R4": [
           "absent",
           "or is \u2014CH2\u2014CH2\u2014",
-          "\u2014O\u2014CH2\u2014"
+          "\u2014O\u2014CH2\u2014",
+          "or \u2014S\u2014CH2\u2014 each optionally substituted by one or more substituents independently selected from halo",
+          "oxo"
         ]
       }
     }
