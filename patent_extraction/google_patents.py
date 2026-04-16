@@ -143,12 +143,27 @@ def extract_compounds_from_clean_text(
         compounds.append({'num': num, 'name': name, 'source': 'claims_list'})
 
     # Pattern 2: "Example N: IUPAC_NAME" in description
+    # Lookahead handles: Step markers, next Example, Intermediate, Table headers, double newlines
     for m in re.finditer(
-        r'Example\s+(\d+)[:\s]+([\w\-\(\)\[\],\s]{30,200}?)(?=Example\s+\d+|Intermediate|Table|\.\s)',
+        r'Example\s+(\d+)[:\s]+([\w\-\(\)\[\],\s]{30,500}?)'
+        r'(?=\s*(?:Step|STEP)\s+\d|Example\s+\d+|Intermediate|Table\s+\d|\n\n|\.\s[A-Z])',
         text
     ):
         num = int(m.group(1))
         name = m.group(2).strip()
+
+        # Strip "Synthesis of" prefix
+        name = re.sub(r'^(?:Synthesis|Preparation)\s+of\s+', '', name, flags=re.IGNORECASE)
+
+        # Strip trailing compound ID like "(S9)" or "(Cpd. No. 148)"
+        name = re.sub(r'\s*\((?:S\d+|Cpd\.?\s*(?:No\.?\s*)?\d+)\)\s*$', '', name)
+
+        # Filter assay-only examples (not synthetic)
+        name_lower = name.lower()
+        if any(kw in name_lower for kw in ['binding', 'assay', 'mechanism', 'affinity',
+                                            'cell growth', 'the following', 'fluorescence']):
+            continue
+
         if num not in seen and len(name) > 20:
             seen.add(num)
             compounds.append({'num': num, 'name': name, 'source': 'example_section'})

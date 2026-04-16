@@ -67,8 +67,7 @@ def export_patent_csv(patent_ids=None, output_path=None, versions=None):
     if output_path is None:
         output_path = config.OUTPUT_DIR / "PatentMoleculeDB_export.csv"
     if versions is None:
-        # Prefer LLM-validated results over Google Patents (which has OPSIN race bugs)
-        versions = ["final_v2", "decimer_v1", "google_patents_v1", "v13"]
+        versions = []  # Not needed — canonical path used
 
     # First pass: collect all rows + discover assay columns per patent
     raw_rows = []
@@ -76,14 +75,19 @@ def export_patent_csv(patent_ids=None, output_path=None, versions=None):
     assay_columns_set = set()
 
     for pid in patent_ids:
-        # Find results file
+        # Try canonical output first, then fallback to old version dirs
         data = None
-        for ver in versions:
-            path = config.OUTPUT_DIR / ver / f"{pid}.json"
-            if path.exists():
-                with open(path) as f:
-                    data = json.load(f)
-                break
+        canonical = config.RESULTS_DIR / pid / "combined.json"
+        if canonical.exists():
+            with open(canonical) as f:
+                data = json.load(f)
+        else:
+            for ver in ["final_v2", "v13"]:
+                path = config.OUTPUT_DIR / ver / f"{pid}.json"
+                if path.exists():
+                    with open(path) as f:
+                        data = json.load(f)
+                    break
         if data is None:
             continue
 

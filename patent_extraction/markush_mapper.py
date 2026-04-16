@@ -123,6 +123,177 @@ def lookup_substituent(name: str) -> str | None:
 
 
 # ============================================================
+# Multi-level core derivation (shallow → deep)
+# ============================================================
+
+def derive_multi_level_cores(
+    example_smiles: list[str],
+    min_match: int = 5,
+    max_cores: int = 5,
+) -> list[dict]:
+    """Derive candidate cores at multiple depths: shallow (few R-positions, rich diversity)
+    through deep (many R-positions, specific sub-series).
+
+    Strategy:
+    1. Extract all ring systems across examples
+    2. Try each as a core via RGroupDecompose
+    3. Score by: coverage x position_richness / num_positions
+    4. Return top cores sorted by score (best first)
+
+    Returns list of scaffold dicts (same format as derive_all_scaffolds_from_examples).
+    """
+    from rdkit.Chem import rdRGroupDecomposition
+    from collections import Counter
+
+    mols = [Chem.MolFromSmiles(s) for s in example_smiles if Chem.MolFromSmiles(s)]
+    if len(mols) < min_match:
+        return []
+
+    # ---- Step 1: Collect candidate ring systems ----
+    ring_systems = Counter()
+
+    for mol in mols:
+        # Level A: Full Murcko scaffold
+        try:
+            scaf = MurckoScaffold.GetScaffoldForMol(mol)
+            ring_systems[Chem.MolToSmiles(scaf)] += 1
+        except Exception:
+            pass
+
+        # Level B: Individual ring systems
+        ri = mol.GetRingInfo()
+        for ring in ri.AtomRings():
+            if len(ring) >= 5:  # Skip 3-4 membered rings
+                frag = Chem.MolFragmentToSmiles(mol, ring)
+                if frag:
+                    ring_systems[frag] += 1
+
+    # Also try combining frequent ring pairs via MCS or manual
+    # For now, add the most common individual rings as shallow cores
+    candidates = []
+
+    for ring_smi, count in ring_systems.most_common(max_cores * 5):
+        core_mol = Chem.MolFromSmiles(ring_smi)
+        if not core_mol:
+            continue
+        n_heavy = core_mol.GetNumHeavyAtoms()
+        if n_heavy < 4 or n_heavy > 40:
+            continue
+
+        # Must be a single connected fragment
+        frags = Chem.GetMolFrags(core_mol, asMols=True)
+        if len(frags) != 1:
+            continue
+
+        candidates.append((ring_smi, core_mol, count))
+
+    # ---- Step 2: Score each candidate via RGroupDecompose ----
+    scored = []
+
+    for ring_smi, core_mol, murcko_count in candidates:
+        try:
+            results, unmatched = rdRGroupDecomposition.RGroupDecompose(
+                [core_mol], mols, asSmiles=True
+            )
+        except Exception:
+            continue
+
+        n_matched = len(mols) - len(unmatched)
+        if n_matched < min_match:
+            continue
+
+        coverage = n_matched / len(mols)
+
+        # Count R-positions with real (non-H) diversity
+        rgroup_libs = {}
+        core_with_dummies = None
+        position_richness = 0
+        total_non_h = 0
+
+        for result in results:
+            if not core_with_dummies:
+                raw_core = result.get('Core', '')
+                core_with_dummies = re.sub(r'\[\*:(\d+)\]', r'[\1*]', raw_core)
+            for key, smi in result.items():
+                if key == 'Core':
+                    continue
+                if re.match(r'^\[H\]\[\*:\d+\]$', smi.strip()):
+                    continue
+                frag_mol = Chem.MolFromSmiles(smi)
+                if frag_mol and frag_mol.GetNumHeavyAtoms() >= 1:
+                    if key not in rgroup_libs:
+                        rgroup_libs[key] = set()
+                    rgroup_libs[key].add(smi)
+                    total_non_h += 1
+
+        rgroup_libs = {k: sorted(v) for k, v in rgroup_libs.items()}
+        n_positions = len(rgroup_libs)
+
+        for label, opts in rgroup_libs.items():
+            if len(opts) >= 3:
+                position_richness += 1
+
+        if n_positions == 0:
+            continue
+
+        # Score: high coverage + few positions + each position richly populated
+        quality = coverage * position_richness / n_positions
+
+        scored.append({
+            'scaffold_smiles': core_with_dummies or ring_smi,
+            'murcko_count': murcko_count,
+            'match_count': n_matched,
+            'rgroup_libraries': rgroup_libs,
+            'total_rgroup_options': sum(len(v) for v in rgroup_libs.values()),
+            'decomposition_results': results,
+            'n_positions': n_positions,
+            'position_richness': position_richness,
+            'quality_score': quality,
+            'core_heavy_atoms': core_mol.GetNumHeavyAtoms(),
+        })
+
+        if len(scored) >= max_cores * 3:
+            break
+
+    # ---- Step 3: Select diverse top cores ----
+    # Sort by quality, then deduplicate by coverage overlap
+    scored.sort(key=lambda x: -x['quality_score'])
+
+    selected = []
+    for s in scored:
+        # Skip if this core is too similar to one already selected
+        # (similar = >80% same compounds matched)
+        if selected:
+            duplicate = False
+            for prev in selected:
+                # Quick check: if same match count and similar heavy atoms, likely duplicate
+                if (abs(s['match_count'] - prev['match_count']) < 5 and
+                    abs(s['core_heavy_atoms'] - prev['core_heavy_atoms']) < 3):
+                    duplicate = True
+                    break
+            if duplicate:
+                continue
+
+        selected.append(s)
+        if len(selected) >= max_cores:
+            break
+
+    logger.info(
+        f"Multi-level core derivation: {len(selected)} cores from "
+        f"{len(candidates)} candidates (examples: {len(mols)})"
+    )
+    for i, s in enumerate(selected):
+        logger.info(
+            f"  Core {i+1}: {s['core_heavy_atoms']} atoms, "
+            f"{s['match_count']}/{len(mols)} coverage, "
+            f"{s['n_positions']} R-pos ({s['position_richness']} rich), "
+            f"score={s['quality_score']:.3f}"
+        )
+
+    return selected
+
+
+# ============================================================
 # Example-derived scaffold via RDKit R-group decomposition
 # ============================================================
 
@@ -181,8 +352,7 @@ def derive_all_scaffolds_from_examples(
                     continue
                 if re.match(r'^\[H\]\[\*:\d+\]$', smi.strip()):
                     continue
-                if len(re.findall(r'\[\*:\d+\]', smi)) > 1:
-                    continue
+                # Allow multi-dummy (bridging) fragments — _instantiate_core handles them
                 frag_mol = Chem.MolFromSmiles(smi)
                 if frag_mol and frag_mol.GetNumHeavyAtoms() >= 1:
                     if key not in rgroup_libs:

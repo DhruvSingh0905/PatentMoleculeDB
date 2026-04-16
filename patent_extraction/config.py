@@ -55,6 +55,27 @@ IMAGE_DPI_HIGH = 400
 IMAGE_MIN_SIZE = 50  # Minimum pixel dimension for valid structure images
 IMAGE_VARIANCE_THRESHOLD = 100  # Minimum pixel variance to not be blank
 
+# Results — canonical output location
+RESULTS_DIR = OUTPUT_DIR / "results"
+
+# Step versions — bump when you change a step's logic.
+# Downstream steps auto-invalidate via the DAG in step_cache.py.
+STEP_VERSIONS = {
+    "detect":           "v1",
+    "context_fold":     "v1",
+    "format_route":     "v1",
+    "google_patents":   "v2",  # regex fix: Step/STEP lookahead + prefix strip
+    "google_tables":    "v1",
+    "adaptive":         "v1",
+    "markush_context":  "v1",
+    "page_extraction":  "v1",
+    "table_extraction": "v1",
+    "iupac_to_smiles":  "v1",
+    "image_pipeline":   "v1",
+    "cross_validate":   "v1",
+    "assay_extraction": "v1",
+}
+
 # Markush
 MARKUSH_ENUMERATION_CAP = 1_000_000
 MARKUSH_BRANCH_PRUNE_THRESHOLD = 10_000_000
