@@ -47,3 +47,15 @@ tests/
 patent_extraction_v2/tests/
 patent_extraction_v2/scripts/
 scripts/eval/
+
+# ── MinerU OCR output (regenerated per run) ───────────────────────
+mineru_output/
+
+# ── Markdown docs: block everything except the three keepers ──────
+# CLAUDE.md / README.md / ARCH.md are the only docs that should
+# travel with the repo. Walkthroughs, phase notes, benchmark write-ups,
+# and ad-hoc analysis stay local.
+*.md
+!CLAUDE.md
+!README.md
+!ARCH.md
