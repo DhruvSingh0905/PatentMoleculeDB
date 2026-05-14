@@ -1,30 +1,49 @@
+# ── Python / venv / build artifacts ───────────────────────────────
 __pycache__/
 *.pyc
-.ipynb_checkpoints/
-.DS_Store
-output/
 *.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+.DS_Store
 dist/
 build/
-.env
 venv/
-.pytest_cache/
-*.tsv
-*.zip
+venv_mineru/
+.env
 /tmp/
 
-# Patent data files (large)
+# ── v1 codebase (frozen; kept locally for side-by-side benchmark) ──
+patent_extraction/
+run_markush_enum.py
+run_4patent_bench.py
+bench_below_threshold.py
+scripts/debug/
+scripts/strategy/
+scripts/utils/
+
+# ── Extraction outputs (regenerable, large) ───────────────────────
+output/
+output_v2/
+patent_extraction_v2/output/
+
+# ── Patent source files (large; pulled fresh per-run) ─────────────
 US*/
 *.pdf
 
-# Tests (local only)
-tests/
-
-# Large data files
+# ── Reference data (huge dumps; subset committed if needed) ───────
+*.tsv
+*.zip
 BindingDB_*.tsv
 BindingDB_*.zip
-
-# Google Patents cache
-output/gpatents_cache/
-.env
 test_set/
+data/
+
+# ── Local agent + tooling state ───────────────────────────────────
+.claude/
+graphify-out/
+
+# ── Local-only tests + eval scripts ───────────────────────────────
+tests/
+patent_extraction_v2/tests/
+patent_extraction_v2/scripts/
+scripts/eval/
