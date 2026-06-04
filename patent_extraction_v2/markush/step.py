@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
@@ -310,3 +311,141 @@ def run_markush_enumeration(
         f"(from {len(scaffolds)} scaffolds, {cache_hits} cached)"
     )
     return new_compounds
+
+
+# ── Explicit scaffold + substituent-table path ────────────────────────
+# `run_markush_enumeration` (above) MINES scaffolds from ≥10 already-
+# extracted FULL compounds, then recombines their decomposed R-groups.
+# That fails for genus patents whose drawn examples are R-group FRAGMENTS,
+# not whole molecules — there are no ≥10 full compounds to mine, so the
+# < 10 guard trips and it returns []. US9718825 is exactly this case.
+#
+# This second path is the one the user described: DECIMER reads the drawn
+# genus scaffold into a core SMILES carrying R-group attachment points,
+# the patent's TEXT substituent table (routes.text_markush.extract_
+# markush_dict — proven to parse 246 SMILES for $0 on US9718825) supplies
+# the per-R option lists, and we enumerate species directly. No prior full
+# compounds, no decomposition, no LM at enumerate time.
+#
+# DECIMER is the ONLY held dependency: it supplies `scaffold_core_smiles`.
+# Pass that in (parameter) so the rest of the path runs today and DECIMER
+# plugs into the same seam when it is un-held.
+
+# Match a BRACKETED R-label pseudo-atom only — `[R1]`, `[R19a]`, `[R1:1]`.
+# Bare unbracketed `R1` is NOT valid SMILES (R is not an element), and the
+# greedy `[a-z]?` suffix would otherwise eat the following aromatic atom in
+# `[R1]c1cc...`-style cores. The label number → attachment position;
+# matching the engine's own `re.search(r'\d+', label)` mapping, a trailing
+# letter (R19a/R19b) collapses to the numeric position (known limitation,
+# consistent with enumerate_markush's pos_map).
+_RLABEL_TO_STAR = re.compile(r"\[R(\d+)[a-z]?(?::\d+)?\]")
+
+
+def normalize_scaffold_rlabels(scaffold_smiles: str) -> str:
+    """Convert DECIMER-style bracketed R-group labels in a scaffold SMILES
+    to the `[*:n]` attachment-point form that `enumerate_markush` expects.
+
+    DECIMER (and image→SMILES tools) emit drawn R-groups as bracketed
+    pseudo-atoms: `[R1]`, `[R19a]`. `_instantiate_core` keys substitution
+    off `[*:n]` (or `[n*]`), so normalize `[R1]` → `[*:1]`. SMILES already
+    in `[*:n]`/`[n*]` form is returned untouched. Patent-agnostic: matches
+    the label SHAPE, no patent IDs.
+    """
+    if not scaffold_smiles:
+        return scaffold_smiles
+    return _RLABEL_TO_STAR.sub(lambda m: f"[*:{m.group(1)}]", scaffold_smiles)
+
+
+def enumerate_from_scaffold_table(
+    patent_id: str,
+    scaffold_core_smiles: str,
+    rgroup_options: "dict[str, list[str]]",
+    cap: int = 500,
+    existing_conn: "set[str] | None" = None,
+    formula_name: str = "Formula I",
+    mode: str = "sample",
+) -> list[Compound]:
+    """Enumerate specific compounds from a drawn scaffold + parsed table.
+
+    The DECIMER-scaffold + text-table Markush path. Unlike
+    `run_markush_enumeration`, this needs NO prior full compounds — it
+    works for fragment-drawn genus patents (US9718825) where the mining
+    path returns 0.
+
+    Args:
+        patent_id: for logging + Compound provenance.
+        scaffold_core_smiles: genus core with R-group attachment points
+            (`[*:1]`/`[1*]`/`R1`...). DECIMER supplies this; we normalize
+            R-labels to `[*:n]`.
+        rgroup_options: {label -> [resolved SMILES options]} from the text
+            substituent table (decoupled from routes.text_markush so this
+            module has no upward import).
+        cap: max species to emit (sample/exhaustive are capped — the raw
+            combinatorial space is astronomically large).
+        existing_conn: connectivity keys we already have; emitted species
+            with a matching key are dropped as duplicates.
+        mode: "sample" (random product up to cap) or "exhaustive".
+
+    Returns:
+        New unique Compound objects with extraction_method tagged.
+    """
+    if not scaffold_core_smiles:
+        logger.info(
+            f"Markush table-enum {patent_id}: no scaffold core SMILES "
+            f"(DECIMER held / not supplied); skipping"
+        )
+        return []
+
+    core = normalize_scaffold_rlabels(scaffold_core_smiles)
+    r_groups = {
+        label: RGroupDef(
+            label=label, options_text=[],
+            options_smiles=[s for s in opts if s],
+        )
+        for label, opts in rgroup_options.items()
+        if any(opts)
+    }
+    if not r_groups:
+        logger.info(
+            f"Markush table-enum {patent_id}: no resolvable R-group options "
+            f"in table; skipping"
+        )
+        return []
+
+    formula = MarkushFormula(
+        patent_id=patent_id, formula_name=formula_name,
+        core_smiles=core, r_groups=r_groups, source="image",
+    )
+    logger.info(
+        f"Markush table-enum {patent_id}: scaffold={core[:60]} | "
+        f"{len(r_groups)} R-groups | "
+        f"{sum(len(d.options_smiles) for d in r_groups.values())} total options | "
+        f"cap={cap}"
+    )
+    compounds = enumerate_markush(formula, cap=cap, mode=mode)
+
+    # Dedup against connectivity keys we already have (and within this run).
+    out: list[Compound] = []
+    seen_new: set[str] = set()
+    for c in compounds:
+        if not c.canonical_smiles:
+            continue
+        ik = get_inchikey(c.canonical_smiles)
+        conn = get_connectivity_key(ik) if ik else None
+        if conn and existing_conn and conn in existing_conn:
+            continue
+        if conn and conn in seen_new:
+            continue
+        if conn:
+            seen_new.add(conn)
+        # Force the table-path route tag so the audit can distinguish this
+        # (DECIMER-scaffold + text-table) path from run_markush_enumeration's
+        # scaffold-mining path. The engine sets "markush_enumeration"; override.
+        c.extraction_method = "markush_table_enumeration"
+        out.append(c)
+
+    logger.info(
+        f"Markush table-enum {patent_id}: {len(out)} new species "
+        f"({len(compounds)} enumerated, {len(compounds) - len(out)} dup/empty)"
+    )
+    return out

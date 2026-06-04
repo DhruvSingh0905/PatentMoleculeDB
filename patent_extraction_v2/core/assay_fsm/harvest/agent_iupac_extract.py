@@ -48,6 +48,19 @@ LLM. Common formats:
 
 Return STRICT JSON. No prose before/after the JSON block.
 
+CRITICAL — `pattern_meta.regex_or_heuristic` must be a PURE Python
+regex with TWO named capture groups: `(?P<cid>...)` for the compound
+id and `(?P<iupac>...)` for the IUPAC name. The pipeline applies
+this regex across the FULL patent text via re.finditer (MULTILINE |
+DOTALL) to harvest pairs the LLM didn't see in chunks — the same
+"library replay" amplification the assay-row regexes get. Without
+named groups the regex is filed as documentation only and never fires.
+
+Examples of usable regex (escape backslashes for JSON):
+  "Compound\\\\s+(?P<cid>\\\\d+)\\\\s*[-—:]\\\\s*(?P<iupac>[A-Z(][^\\\\n]+)"
+  "Example\\\\s+(?P<cid>\\\\d+)[\\\\s:.]+(?P<iupac>[A-Z(][^\\\\n]+?)(?=\\\\n\\\\s*Example\\\\s+\\\\d|\\\\Z)"
+  "(?P<cid>\\\\d+)\\\\.\\\\s+(?P<iupac>[A-Z(].+?(?:one|amine|amide|acid|ester)\\\\b)"
+
 Schema:
 {{
   "pairs": [
@@ -56,9 +69,8 @@ Schema:
   ],
   "pattern_meta": {{
     "pattern_name": "TABLE_COMMA_ORDERED_LIST",
-    "description": "TABLE 1 lists IUPAC names separated by top-level commas; \
-position implies compound number",
-    "regex_or_heuristic": "after r'\\\\bTABLE\\\\s*1\\\\b', depth-aware split on commas"
+    "description": "Plain English: what does the regex match, where does it appear?",
+    "regex_or_heuristic": "Compound\\\\s+(?P<cid>\\\\d+)\\\\s*[-—:]\\\\s*(?P<iupac>[A-Z(][^\\\\n]+)"
   }}
 }}
 

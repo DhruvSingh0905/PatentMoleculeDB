@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..adaptive_extraction_cache import RealignedRow
+from ..assay_name_guard import is_valid_assay_name
 from ..models import AssayResult
 from .row_aligner import AlignedRow, ValueCell
 
@@ -133,10 +134,27 @@ def cross_validate(
 
 
 def _norm_id(s: str | None) -> str:
-    """Normalize a compound id for cross-side matching."""
+    """Normalize a compound id for cross-side matching AND for the
+    output dict key.
+
+    Must agree with `core.compound_id.normalize_cid_key` because the
+    HARVEST path uses that function — if these two normalizers disagree,
+    the same molecule gets split across two keys in assay_tables (e.g.
+    HARVEST writes ``I-0020`` while the FSM path writes ``i-0020``),
+    which produces thousands of orphan rows that never join back to
+    `example_index`. See US9718790: 2,087 lowercase ``i-NNNN`` keys
+    were stranded while ``I-NNNN`` keys held the HARVEST rows.
+
+    Falls back to a defensive ``strip().upper().replace(" ", "")`` only
+    when ``normalize_cid_key`` rejects the input (e.g. pure letters).
+    """
     if not s:
         return ""
-    return s.strip().lower().replace(" ", "")
+    from ..compound_id import normalize_cid_key
+    norm = normalize_cid_key(s)
+    if norm:
+        return norm
+    return s.strip().upper().replace(" ", "")
 
 
 def _llm_to_results(
@@ -145,6 +163,14 @@ def _llm_to_results(
 ) -> list[AssayResult]:
     out: list[AssayResult] = []
     for assay_name, value in (row.values or {}).items():
+        # GUARD: defense in depth — the realigner already filters via the
+        # same guard, but if any placeholder (`Activity1`, `col_0`,
+        # `col1_IC50`) or non-assay column (`[M+H]`, `Method`, `Molecular
+        # Weight`) slips through (e.g. from a legacy cached RealignedTable
+        # in adaptive_extraction_rules.json), reject it here too — this is
+        # the last node before AssayResult flows into assay_tables.json.
+        if not is_valid_assay_name(assay_name):
+            continue
         try:
             v_num = float(value)
         except (TypeError, ValueError):
@@ -163,6 +189,13 @@ def _llm_to_results(
     return out
 
 
+# Max positional cells a single FSM row may have before we treat it as a
+# table misparse (and drop it) rather than a real multi-assay row. Real assay
+# tables top out at a handful of readout columns; US9718790's misparse rows
+# carried 76-131 cells.
+_MAX_FSM_FALLBACK_COLS = 12
+
+
 def _fsm_to_results(
     row: AlignedRow,
     units: dict[str, str],
@@ -170,36 +203,66 @@ def _fsm_to_results(
     """Convert an FSM AlignedRow into AssayResult records.
 
     The FSM row has *positional* cells (col 0, col 1, ...) without
-    canonical assay names. We map them to "col_0", "col_1", etc.
-    The LLM is normally the one that supplies canonical names — when
-    the FSM stands alone (LLM truncated or failed), the column names
-    will be generic. The cross_validator's "prefer-LLM" rule means
-    these generic names only appear when the LLM didn't extract this
-    compound at all.
+    canonical assay names. Previously we emitted them with placeholder
+    `col_0`, `col_1` names — but those placeholders then became the most
+    frequent "assay" on patents where the LLM truncated (US11292791 had
+    962 of 1,438 rows zero-valued under `Activity1`/`col_N` placeholders,
+    dominating `_v2_canonical_assays` → every workbook row showed
+    `activity1_uM = 0` → 0/660 value-matches against BDB).
+
+    GUARD: we now refuse to emit FSM-only cells without a real assay
+    name. The data point is logged (so audit/vocab_learner can see the
+    loss) but NOT written into AssayResult under a placeholder. This is
+    strictly safer than fabricating a name: the realigner / HARVEST path
+    produces properly-named rows whenever they exist; on patents where
+    they don't, we accept the data loss rather than poison
+    `assay_tables.json` with phantom assays.
     """
     out: list[AssayResult] = []
+    # This path fires ONLY when the realigner produced nothing for this
+    # compound (see `cross_validate`), so it's a pure fallback — no
+    # duplication with named LLM columns. Two failure modes to avoid:
+    #   1. Phantom pollution — zero/null placeholder cells dominating the
+    #      workbook (US11292791 had 962 zero-valued col_N). → drop null/zero.
+    #   2. Table misparse — a single wide row exploded into dozens of
+    #      positional cells (US9718790: 76-131 cells/row → 166 phantom
+    #      columns). → drop the whole row when implausibly wide.
+    # A NARROW row with REAL non-zero values is a genuine assay table the
+    # realigner just failed to label (US10544143: 3 coherent columns over
+    # ~500 compounds, real IC50-range values). Emit those under an explicit
+    # `unidentified_assay_N` name so a reviewer knows the value is real but
+    # the assay is unlabeled (and can recover it from the patent).
+    if len(row.cells) > _MAX_FSM_FALLBACK_COLS:
+        logger.debug("fsm_to_results: dropped wide row (%d cells > %d) — "
+                     "likely table misparse, not real columns",
+                     len(row.cells), _MAX_FSM_FALLBACK_COLS)
+        return out
+    emitted = dropped = 0
     for col_idx, cell in enumerate(row.cells):
-        col_name = f"col_{col_idx}"
-        if cell.is_null:
-            out.append(AssayResult(
-                assay_name=col_name,
-                value_raw=cell.raw or "",
-                value_numeric=None,
-                qualifier=None,
-                unit=units.get(col_name, ""),
-                n_runs=cell.n_runs,
-            ))
+        if cell.is_null or cell.value is None:
+            dropped += 1
             continue
-        if cell.value is None:
+        try:
+            v = float(cell.value)
+        except (TypeError, ValueError):
+            dropped += 1
             continue
+        if v == 0:  # zero placeholder cell — the phantom-pollution case
+            dropped += 1
+            continue
+        name = f"unidentified_assay_{col_idx}"
         out.append(AssayResult(
-            assay_name=col_name,
+            assay_name=name,
             value_raw=cell.raw or str(cell.value),
-            value_numeric=cell.value,
+            value_numeric=v,
             qualifier=cell.qualifier,
-            unit=units.get(col_name, ""),
+            unit=units.get(f"col_{col_idx}", "") or units.get(name, ""),
             n_runs=cell.n_runs,
         ))
+        emitted += 1
+    if emitted or dropped:
+        logger.debug("fsm_to_results: emitted %d real-valued unidentified "
+                     "cell(s), dropped %d null/zero", emitted, dropped)
     return out
 
 

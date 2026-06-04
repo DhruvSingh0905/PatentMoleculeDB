@@ -50,11 +50,45 @@ _LETTER_GRADE_ROW_RE = re.compile(
 # Compound-id-shape near assay keyword. Used to estimate "expected
 # compound count" — every patent that lists 100 compound IDs near
 # assay keywords ought to have 100 extracted compounds.
-_COMPOUND_NEAR_ASSAY_RE = re.compile(
-    r"(?:Cpd\.?\s*(?:No\.?)?|Compound|Example|Cmp\.?\s*(?:No\.?)?|Ex\.?)\s*"
-    r"(\d{1,4}[A-Za-z]{0,3})",
-    re.IGNORECASE,
-)
+#
+# Built dynamically from `core.compound_id._load_prefixes()` so that
+# LLM-discovered patent-specific prefixes (e.g. `Z` for US11254686's
+# Z1…Z700 codes) are picked up automatically. Hardcoding the prefixes
+# here was a silent bug: any patent that didn't use the standard
+# Cpd/Compound/Example labels matched zero, the density signal never
+# fired, and HARVEST never got dispatched — exactly the case where
+# the LLM safety net was most needed.
+
+
+def _build_compound_near_assay_re() -> "re.Pattern[str]":
+    """Construct the cid-near-assay matcher from the live vocabulary.
+    Reads canonical + auto_loaded `COMPOUND_ID_PREFIX` surface forms
+    via the same loader the tokenizer uses, so discovery additions take
+    effect immediately on the next call.
+    """
+    try:
+        from ..compound_id import _load_prefixes
+        prefixes = _load_prefixes()
+    except Exception:
+        prefixes = ["Cpd", "Cpd.", "Compound", "Example", "Ex", "Ex.",
+                    "Cmp", "Cmp.", "Cmp No.", "Cmp. No.", "Cpd. No.",
+                    "Compound No.", "Example No."]
+    alts = []
+    for p in prefixes:
+        esc = re.escape(p).replace(r"\.", r"\.?").replace(r"\ ", r"\s*")
+        alts.append(esc)
+    return re.compile(
+        rf"(?:{'|'.join(alts)})\s*(\d{{1,4}}[A-Za-z]{{0,3}})",
+        re.IGNORECASE,
+    )
+
+
+def _compound_near_assay_re() -> "re.Pattern[str]":
+    """Lazy accessor — rebuilt each call so vocabulary edits (LLM
+    discoveries appended mid-pipeline) take effect immediately. Cheap:
+    ~50 regex alternations + compile.
+    """
+    return _build_compound_near_assay_re()
 
 
 @dataclass
@@ -87,9 +121,26 @@ def score(
     out.n_assay_keywords = len(list(_ASSAY_KEYWORD_RE.finditer(text)))
     out.n_value_unit_hits = len(list(_VALUE_UNIT_RE.finditer(text)))
     out.n_letter_grade_hits = len(list(_LETTER_GRADE_ROW_RE.finditer(text)))
-    out.n_compound_id_mentions = len(set(
-        m.group(1).lower() for m in _COMPOUND_NEAR_ASSAY_RE.finditer(text)
-    ))
+    # Dynamic vocab-aware matcher — picks up LLM-discovered prefixes.
+    pat = _compound_near_assay_re()
+    # Count BOTH prefixed forms (e.g. "Compound 5") AND bare-cid-shape
+    # mentions of any known prefix's stem (e.g. "Z5" when "Z" is in vocab).
+    mentions = set(m.group(1).lower() for m in pat.finditer(text))
+    # Augment: for every single-letter prefix in vocabulary, also count
+    # bare `<letter><digits>` forms (Z1, A12, etc.) — these are how
+    # most patent-specific cids actually appear in body text.
+    try:
+        from ..compound_id import _load_prefixes
+        for p in _load_prefixes():
+            if len(p) <= 3 and p.isalpha():
+                bare = re.compile(
+                    rf"(?<![A-Za-z0-9]){re.escape(p)}-?(\d{{1,4}}[A-Za-z]{{0,3}})\b",
+                    re.IGNORECASE,
+                )
+                mentions.update(m.group(1).lower() for m in bare.finditer(text))
+    except Exception:
+        pass
+    out.n_compound_id_mentions = len(mentions)
     out.n_compounds_extracted = len(fsm_results)
 
     # Signal 1: zero output + signal present

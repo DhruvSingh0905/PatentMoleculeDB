@@ -39,6 +39,7 @@ from ..adaptive_extraction_cache import (
     realign_table_via_llm,
 )
 from .region_detector import Region
+from ..cost_tracker import cost_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +47,17 @@ logger = logging.getLogger(__name__)
 # ── Chunker ──────────────────────────────────────────────────────
 
 
-# Same row-detection regex as `region_detector._ROW_DETECT_RE`,
-# kept in sync. Used here only to find chunk boundaries; not for
-# extraction.
+# Row-detection regex for finding chunk boundaries (NOT extraction). Must
+# count a row whose first data cell is EITHER a number ("Z1 5.2") OR a
+# letter grade ("Z1 D" — A/B/C/D/E binned assays), and accept prefixed
+# compound ids ("Z1", "I-0020"). Counting only numeric-first rows made
+# US11254686's 645-row letter-grade table count as 36 rows → 1 chunk → the
+# realigner sent all 16k chars in one LLM call and truncated at ~79 rows.
 _CHUNK_ROW_RE = re.compile(
     r"(?<![A-Za-z0-9.])"
-    r"([A-Z]?\d{1,4}[A-Za-z]{0,3})"
+    r"([A-Z]{0,3}-?\d{1,4}[A-Za-z]{0,3})"
     r"\s+"
-    r"(?:[<>≤≥~≈]?\s*\d+(?:\.\d+)?)",
+    r"(?:[A-E](?![A-Za-z])|[<>≤≥~≈]?\s*\d+(?:\.\d+)?)",
     re.IGNORECASE,
 )
 
@@ -143,14 +147,42 @@ def realign_region(
         cache = AdaptiveExtractionCache()
 
     fp = _build_fingerprint(region.text)
-    cache_key = f"plaintext:{fp}"
+    # CROSS-PATENT CONTAMINATION FIX: include patent_id in the cache key.
+    # Previously `f"plaintext:{fp}"` meant patent A's cached rows (with
+    # patent A's compound IDs, patent A's assay names like RORγ Binding)
+    # would be returned to patent B if their fingerprints collided. Verified
+    # contamination: 14 different patents share the cache file, with
+    # patent-specific row data stored under a "structural" fingerprint. The
+    # tradeoff for correctness is more LM calls — accepted, since cross-
+    # patent contamination silently poisons every downstream report.
+    cache_key = f"plaintext:{patent_id or 'unknown'}:{fp}"
+    # Hydration guard import (used below).
+    from ..assay_name_guard import is_valid_assay_name
 
     # Cache hit?
     cached_entry = cache._cache.get(cache_key)
     if cached_entry:
         try:
-            rows = [RealignedRow(**r) for r in cached_entry["rule"].get("rows", [])]
-            units = cached_entry["rule"].get("units", {})
+            raw_rows = cached_entry["rule"].get("rows", [])
+            rows = []
+            for r in raw_rows:
+                # Filter legacy/cached rows for invalid assay names — even
+                # though the new realigner-output guard prevents writes,
+                # the cache file may still contain pre-guard entries.
+                values = {k: v for k, v in (r.get("values") or {}).items()
+                          if is_valid_assay_name(k)}
+                if not values:
+                    continue
+                quals = {k: v for k, v in (r.get("qualifiers") or {}).items()
+                         if is_valid_assay_name(k)}
+                n_runs = {k: v for k, v in (r.get("n_runs") or {}).items()
+                          if is_valid_assay_name(k)}
+                rows.append(RealignedRow(
+                    compound_id=r.get("compound_id", ""),
+                    values=values, qualifiers=quals, n_runs=n_runs,
+                ))
+            units = {k: v for k, v in (cached_entry["rule"].get("units", {}) or {}).items()
+                     if is_valid_assay_name(k)}
             notes = cached_entry["rule"].get("notes", "")
             cached_entry["n_uses"] = cached_entry.get("n_uses", 0) + 1
             cached_entry["last_used"] = str(date.today())
@@ -174,8 +206,23 @@ def realign_region(
     seen_cids: set[str] = set()
 
     for chunk_idx, chunk_text in enumerate(chunks):
+        # Per-patent realigner budget gate (its own cap, separate from the LM
+        # cap). A pathological table can't run the realigner past
+        # PER_PATENT_REALIGN_CAP; cache hits above this loop stay free.
+        if patent_id and cost_tracker.patent_realign_exceeded(patent_id):
+            from .. import config as _cfg
+            logger.warning(
+                "llm_realigner: COST-GATED on %s at chunk %d/%d — realigner "
+                "spend $%.3f >= cap $%.2f; %d chunks skipped (table partly "
+                "extracted). Raise PER_PATENT_REALIGN_CAP to continue.",
+                patent_id, chunk_idx + 1, len(chunks),
+                cost_tracker.patent_realign_spend(patent_id),
+                _cfg.PER_PATENT_REALIGN_CAP, len(chunks) - chunk_idx,
+            )
+            break
         result = realign_table_via_llm(
             chunk_text, max_text_chars=6000, max_tokens=8000,
+            patent_id=patent_id or "",
         )
         if result is None:
             logger.warning(
@@ -242,6 +289,12 @@ def _build_fingerprint(region_text: str) -> str:
     in the region: synthetic headers (compound id token + first 6
     surface tokens), row count, sample cell signatures.
 
+    Includes a vocabulary-hash suffix so that when the LLM cid-prefix
+    discovery (or any other discovery) appends entries to
+    `data/assay_vocabulary.discoveries.json`, prior cached results
+    are invalidated — otherwise the tokenizer would never re-parse
+    the same chunk with the newly-recognized prefixes.
+
     Generic — independent of patent ids, target names, compound ids.
     """
     rows = list(_CHUNK_ROW_RE.finditer(region_text))
@@ -249,12 +302,26 @@ def _build_fingerprint(region_text: str) -> str:
         # Fall back to a hash over the leading 4000 chars
         synth_headers = ["plain_text_table"]
         sample_cells = [region_text[:60]]
-        return fingerprint_table_shape(synth_headers, len(rows), sample_cells)
+        base_fp = fingerprint_table_shape(synth_headers, len(rows), sample_cells)
+    else:
+        first = rows[0]
+        synth_headers = ["plain_text_table"] + [
+            t for t in re.split(r"\s+", first.group(0).strip()) if t
+        ][:6]
+        sample_cells = [r.group(0)[:40] for r in rows[:5]]
+        base_fp = fingerprint_table_shape(synth_headers, len(rows), sample_cells)
+    return f"{base_fp}_{_vocab_fingerprint()}"
 
-    first = rows[0]
-    # Take a synthesized header from the first row's neighborhood
-    synth_headers = ["plain_text_table"] + [
-        t for t in re.split(r"\s+", first.group(0).strip()) if t
-    ][:6]
-    sample_cells = [r.group(0)[:40] for r in rows[:5]]
-    return fingerprint_table_shape(synth_headers, len(rows), sample_cells)
+
+def _vocab_fingerprint() -> str:
+    """Hash the canonical + auto-loaded COMPOUND_ID_PREFIX surface forms.
+    Stable across runs unless discoveries change. Cheap — 8-char prefix
+    of the SHA-256 over a sorted, joined surface-form string.
+    """
+    try:
+        from ..compound_id import _load_prefixes
+        joined = "|".join(_load_prefixes())
+    except Exception:
+        joined = ""
+    import hashlib
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:8]

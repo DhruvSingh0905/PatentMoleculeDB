@@ -63,9 +63,12 @@ class TokenStream:
 # resolved by checking the previous token.
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
-# Compound-id shape — letter? + digits + letter-suffix? (no dots, no
-# decimals — those would be numbers).
-_COMPOUND_ID_RE = re.compile(r"[A-Z]?\d{1,5}[A-Za-z]{0,3}\b")
+# Compound-id shape — letter(s)? + optional dash + digits + letter-suffix?
+# (no dots, no decimals — those would be numbers). The dash variant
+# catches the common `I-0020` / `II-12a` patent formats — without it
+# the tokenizer breaks dashed cids into separate tokens and the FSM
+# never sees them as compound ids.
+_COMPOUND_ID_RE = re.compile(r"[A-Z]{0,3}-?\d{1,5}[A-Za-z]{0,3}\b")
 
 # Whitespace and row-break detection.
 _WHITESPACE_RE = re.compile(r"[ \t\xa0]+")

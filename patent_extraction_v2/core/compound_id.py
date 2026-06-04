@@ -28,23 +28,68 @@ from functools import lru_cache
 from pathlib import Path
 
 
-_VOCAB_PATH = Path(__file__).resolve().parent.parent / "data" / "assay_vocabulary.json"
+_VOCAB_PATH       = Path(__file__).resolve().parent.parent / "data" / "assay_vocabulary.json"
+_DISCOVERIES_PATH = Path(__file__).resolve().parent.parent / "data" / "assay_vocabulary.discoveries.json"
+
+
+@lru_cache(maxsize=1)
+def _load_canonical_prefixes() -> list[str]:
+    """Canonical COMPOUND_ID_PREFIX surface forms ONLY — the curated
+    set from `assay_vocabulary.json` (Cpd / Compound / Example / …).
+    Used by the prefix-strip regex when building dict keys: stripping
+    "Compound 5" to "5" is safe because "Compound" is universal noise.
+    """
+    out: list[str] = []
+    if _VOCAB_PATH.exists():
+        for entry in json.loads(_VOCAB_PATH.read_text()).get("tokens", []):
+            if entry.get("class") == "COMPOUND_ID_PREFIX":
+                out.extend(entry.get("surface_forms", []))
+    else:
+        out.extend([
+            "Cpd", "Cpd.", "Compound", "Example", "Ex", "Ex.",
+            "Cmp", "Cmp.", "Cmp No.", "Cmp. No.", "Cpd. No.",
+            "Compound No.", "Example No.",
+        ])
+    return sorted(set(out), key=lambda s: (-len(s), s))
 
 
 @lru_cache(maxsize=1)
 def _load_prefixes() -> list[str]:
-    """Read COMPOUND_ID_PREFIX surface forms from canonical vocab."""
-    if not _VOCAB_PATH.exists():
-        return ["Cpd", "Cpd.", "Compound", "Example", "Ex", "Ex.",
-                "Cmp", "Cmp.", "Cmp No.", "Cmp. No.", "Cpd. No.",
-                "Compound No.", "Example No."]
-    data = json.loads(_VOCAB_PATH.read_text())
-    out = []
-    for entry in data.get("tokens", []):
-        if entry.get("class") == "COMPOUND_ID_PREFIX":
-            out.extend(entry.get("surface_forms", []))
-    # Sort longest-first so "Compound No." matches before "Compound"
+    """Canonical + LLM-discovered COMPOUND_ID_PREFIX surface forms.
+    Used by the cid-DETECTION regex (`_build_compound_id_regex`) so
+    patent-specific prefixes like `Z` get tokenized as cid starts.
+
+    IMPORTANT: discoveries DO NOT feed the prefix-strip regex — see
+    `_load_canonical_prefixes`. Stripping a discovered single-letter
+    prefix like `Z` from `Z20` would silently collapse it to `20`,
+    colliding with the patent's separately-numbered Compound 20. The
+    discovery's job is to make the tokenizer say "Z20 is a cid"; the
+    storage key should preserve the Z so the namespaces stay distinct.
+    """
+    out = list(_load_canonical_prefixes())
+    if _DISCOVERIES_PATH.exists():
+        try:
+            for entry in json.loads(_DISCOVERIES_PATH.read_text()).get("tokens", []):
+                if (
+                    entry.get("class") == "COMPOUND_ID_PREFIX"
+                    and entry.get("status") in ("auto_loaded", "promoted")
+                ):
+                    out.extend(entry.get("surface_forms", []))
+        except (OSError, json.JSONDecodeError):
+            pass
     return sorted(set(out), key=lambda s: (-len(s), s))
+
+
+def reload_prefixes() -> None:
+    """Invalidate the vocabulary cache so newly-discovered prefixes take
+    effect on the next call to `parse_compound_id` / `normalize_cid_key`.
+    Discovery scanners call this after appending to the discoveries file.
+    """
+    _load_canonical_prefixes.cache_clear()
+    _load_prefixes.cache_clear()
+    _build_compound_id_regex.cache_clear()
+    _build_paren_compound_regex.cache_clear()
+    _build_prefix_strip_regex.cache_clear()
 
 
 @lru_cache(maxsize=1)
@@ -152,21 +197,25 @@ def find_all_compound_ids(text: str) -> list[tuple[int, str]]:
 import html as _html
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
-# Match the canonical key shape: optional letter prefix + 1-5 digits + 0-3 letter suffix.
-_VALID_KEY_RE = re.compile(r"^[A-Za-z]*\d{1,5}[A-Za-z]{0,3}$")
+# Match the canonical key shape: optional letter prefix, optional dash,
+# 1-5 digits, optional 1-3 letter suffix. The dash variant catches the
+# common `I-0020` / `II-12a` / `Cmpd-5b` patent formats — without it
+# every row from a table that uses dashed cids gets silently rejected.
+_VALID_KEY_RE = re.compile(r"^[A-Za-z]*-?\d{1,5}[A-Za-z]{0,3}$")
 
 
 @lru_cache(maxsize=1)
 def _build_prefix_strip_regex() -> re.Pattern[str]:
-    """Anchored regex that strips any known compound-id prefix from a string.
-    Built from the same vocabulary as `_build_compound_id_regex` so adding
-    a new surface form to the JSON updates BOTH parser and key-normalizer.
+    """Anchored regex that strips canonical compound-id prefixes from a
+    string so the stored dict key is just the bare id ("Cpd. No. 5" → "5").
 
-    Whitespace WITHIN the prefix is optional (`\\s*`) so "Cpd.No. 5" is
-    handled the same as "Cpd. No. 5". Trailing whitespace between prefix
-    and the id is stripped by the caller.
+    Uses CANONICAL prefixes only (`_load_canonical_prefixes`), NOT
+    LLM discoveries. Reason: a discovered single-letter prefix like
+    `Z` should make the detector recognize `Z20` as a cid, but the
+    storage key needs to preserve the `Z` so `Z20` doesn't silently
+    collapse into the patent's separately-numbered Compound 20.
     """
-    prefixes = _load_prefixes()
+    prefixes = _load_canonical_prefixes()
     alts = []
     for p in prefixes:
         esc = re.escape(p).replace(r"\.", r"\.?").replace(r"\ ", r"\s*")

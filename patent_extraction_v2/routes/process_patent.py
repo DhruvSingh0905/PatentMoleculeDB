@@ -587,21 +587,90 @@ def _strategy5_after_classification(
 
     Mutates example_index in place. Returns it.
     """
+    # ── Pre-library pass — apply auto-promoted IUPAC patterns first ──
+    # Mirrors the assay-pattern library re-application in harvest_burst:
+    # any patterns that the LLM has discovered on PRIOR patents and
+    # auto-promoted (≥3 fingerprints) fire here against the full text
+    # for free (regex-only). Reduces the LLM gap for the burst below.
+    from ..core.assay_fsm.iupac_pattern_library import IupacPatternLibrary
+    lib = IupacPatternLibrary.default()
+    prelib_pairs: dict[str, str] = {}
+    try:
+        for row in lib.apply_patterns_to_text(text, patent_id=patent_id):
+            cid = row.get("compound_id")
+            nm = row.get("iupac_name")
+            if cid and nm and cid not in prelib_pairs:
+                prelib_pairs[cid] = nm
+    except Exception as e:
+        logger.warning("%s: IUPAC pre-library pass failed: %r", patent_id, e)
+    if prelib_pairs:
+        logger.info(
+            "%s: IUPAC pre-library pass extracted %d pairs (zero LLM cost) "
+            "BEFORE iupac_burst",
+            patent_id, len(prelib_pairs),
+        )
+
     # Run broad-mode iupac_burst in `force=True` so it returns ALL pairs
     # the LLM extracted, not just ones for cids we don't already have.
     # We then decide per-cid whether to overwrite based on the policy flag.
+    existing_pairs_for_burst: dict[str, str] = {} if overwrite_on_collision else {
+        cid: rec.get("iupac_name", "")
+        for cid, rec in example_index.items()
+        if rec.get("iupac_name")
+    }
+    # Pre-library pairs ALSO count as "already known" so the LLM uses
+    # its budget on cids the library didn't catch.
+    if not overwrite_on_collision:
+        for cid, nm in prelib_pairs.items():
+            existing_pairs_for_burst.setdefault(cid, nm)
+
     new_pairs = iupac_burst(
         patent_id=patent_id,
         text=text,
-        existing_pairs={} if overwrite_on_collision else {
-            cid: rec.get("iupac_name", "")
-            for cid, rec in example_index.items()
-            if rec.get("iupac_name")
-        },
+        existing_pairs=existing_pairs_for_burst,
         n_assay_compounds=n_assay_compounds,
         cost_tracker=cost_tracker,
         force=True,  # bypass gap check; we want to extract from this patent
+        library=lib,
     )
+
+    # ── Post-LLM library re-application ──
+    # iupac_burst registers any LLM-discovered patterns into the library
+    # (in "pending" status until 3 patents corroborate). Within THIS
+    # patent run we want the immediate amplification: re-apply ALL
+    # active patterns (canonical + freshly-pending from this run) across
+    # the full text and pick up pairs the LLM didn't see in its chunks.
+    try:
+        post_lib_pairs = lib.apply_patterns_to_text(
+            text,
+            fresh_patterns=lib.list_pending(),
+            patent_id=patent_id,
+        )
+    except Exception as e:
+        logger.warning("%s: IUPAC post-LLM re-application failed: %r", patent_id, e)
+        post_lib_pairs = []
+    n_post_added = 0
+    for row in post_lib_pairs:
+        cid = row.get("compound_id")
+        nm = row.get("iupac_name")
+        if not (cid and nm):
+            continue
+        if cid not in new_pairs and cid not in existing_pairs_for_burst:
+            new_pairs[cid] = nm
+            n_post_added += 1
+    if n_post_added:
+        logger.info(
+            "%s: IUPAC post-LLM re-application added %d pairs across "
+            "%d active patterns (zero LLM cost)",
+            patent_id, n_post_added, len(lib.list_pending()),
+        )
+
+    # Merge pre-library pairs into new_pairs so the downstream OPSIN
+    # loop processes them with the same dedup logic.
+    for cid, nm in prelib_pairs.items():
+        if cid not in new_pairs:
+            new_pairs[cid] = nm
+
     if not new_pairs:
         return example_index
 
@@ -609,40 +678,149 @@ def _strategy5_after_classification(
     from ..core.iupac_to_smiles import _try_opsin
     from ..core.smiles_utils import get_inchikey, validate_smiles
 
-    n_added = 0
-    n_overwrote = 0
+    # ── Pass 1: OPSIN each (cid, iupac). Collect the names OPSIN can't
+    # parse so we can batch a single LLM-direct-SMILES fallback for them.
+    # Complex fused-ring / macrocyclic nomenclature (benzo[e]indole,
+    # cycloundecaphane, …) defeats OPSIN — verified on US10273259 where
+    # 5/5 sampled BDB compounds had their IUPAC verbatim in the patent
+    # text but OPSIN returned nothing, so the compound was silently
+    # skipped and never matched BDB. The LLM-direct fallback converts
+    # those names; batching keeps it cheap (50% discount + concurrent).
+    cid_to_smiles: dict[str, str] = {}
+    opsin_failures: list[tuple[str, str]] = []  # (cid, cleaned_iupac)
     for cid, iupac in new_pairs.items():
-        # Strip non-IUPAC stereo descriptors that OPSIN doesn't accept
-        # ("racemic", "rac", "meso") — same cleanup the manual extraction
-        # script and `_clean_name` apply.
         cleaned = re.sub(
             r"^(?:racemic|rac\.?|meso)\s+", "", iupac, flags=re.IGNORECASE,
         ).strip()
         smiles, _err = _try_opsin(cleaned)
-        if not (smiles and validate_smiles(smiles)):
-            continue
+        if smiles and validate_smiles(smiles):
+            cid_to_smiles[cid] = smiles
+        elif cleaned:
+            opsin_failures.append((cid, cleaned))
+
+    n_llm_recovered = 0
+    if opsin_failures:
+        from ..core.api_client import call_claude_text_batch
+        from ..core.iupac_to_smiles import SMILES_FALLBACK_PROMPT
+        reqs = [
+            {
+                # Sonnet, not Opus — IUPAC→SMILES recovery doesn't need the
+                # premium model and Opus was burning 5× the credits for
+                # basic name recovery. Verified 9/15 recovery on US10273259.
+                "prompt": SMILES_FALLBACK_PROMPT.format(raw_name=name),
+                "model": config.DEFAULT_MODEL,
+                "max_tokens": 200,
+                "cache_key": f"smiles_fallback:{name}",
+            }
+            for _cid, name in opsin_failures
+        ]
+        results = call_claude_text_batch(reqs, patent_id=patent_id)
+        for (cid, _name), resp in zip(opsin_failures, results):
+            if not resp:
+                continue
+            cand = resp.strip().split("\n")[0].strip()
+            if validate_smiles(cand):
+                cid_to_smiles[cid] = cand
+                n_llm_recovered += 1
+        logger.info(
+            "%s: Strategy 5 broad — OPSIN failed on %d names; LLM-direct "
+            "recovered %d (batched)",
+            patent_id, len(opsin_failures), n_llm_recovered,
+        )
+
+    n_added = 0
+    n_overwrote = 0
+    n_alias_added = 0
+    for cid, smiles in cid_to_smiles.items():
+        iupac = new_pairs[cid]
+        opsin_ik = get_inchikey(smiles) or ""
         rec = {
             "compound_id": f"Cpd. No. {cid}",
             "iupac_name": iupac,
             "canonical_smiles": smiles,
-            "inchikey": get_inchikey(smiles) or "",
+            "inchikey": opsin_ik,
             "source": "iupac_harvest_broad" if overwrite_on_collision else "iupac_harvest",
             "extraction_method": "strategy5_iupac_harvest_broad",
         }
         if cid in example_index:
             existing = example_index[cid]
             if not overwrite_on_collision and existing.get("canonical_smiles"):
-                # Conservative mode: keep regex-extracted SMILES
+                # Conservative mode: keep regex-extracted (typically
+                # GP-embedded) SMILES as primary, BUT preserve the
+                # OPSIN-derived IK as an alias so the BDB cross-ref
+                # can still match the molecule via the IK that BDB
+                # happens to track. Fixes US10273259-class patents
+                # where GP <meta itemprop="smiles"> disagrees with
+                # the patent's own IUPAC text — verified: 5/5 sampled
+                # BDB IKs in US10273259 were unmatched-by-primary but
+                # OPSIN of the verbatim patent text reproduces them.
+                existing_ik = (existing.get("inchikey") or "").strip()
+                if opsin_ik and opsin_ik != existing_ik:
+                    aliases = existing.get("inchikey_aliases") or []
+                    if opsin_ik not in aliases:
+                        aliases.append(opsin_ik)
+                        existing["inchikey_aliases"] = aliases
+                        n_alias_added += 1
                 continue
             n_overwrote += 1
         else:
             n_added += 1
         example_index[cid] = rec
     logger.info(
-        "%s: Strategy 5 broad → +%d added, %d overwrote (LLM produced %d pairs, overwrite=%s)",
-        patent_id, n_added, n_overwrote, len(new_pairs), overwrite_on_collision,
+        "%s: Strategy 5 broad → +%d added, %d overwrote, +%d OPSIN-IK aliases "
+        "preserved (LLM produced %d pairs, overwrite=%s)",
+        patent_id, n_added, n_overwrote, n_alias_added,
+        len(new_pairs), overwrite_on_collision,
     )
     return example_index
+
+
+def _detect_patent_cid_prefixes(patent_id: str) -> list[str]:
+    """Return the patent's discovered compound-id prefixes (e.g. ``['I-']``
+    for US9718790, learned by `cid_prefix_discovery`). Sorted longest-first
+    so multi-char prefixes match before single-char ones (``II-`` before
+    ``I-``).
+
+    Empty list = no patent-specific prefix discovered, fall back to bare
+    digit candidates only.
+    """
+    from pathlib import Path
+    import json as _json
+    disc_path = Path(__file__).resolve().parent.parent / "data" / "assay_vocabulary.discoveries.json"
+    if not disc_path.exists():
+        return []
+    try:
+        d = _json.loads(disc_path.read_text())
+    except (OSError, _json.JSONDecodeError):
+        return []
+    out: list[str] = []
+    for tok in d.get("tokens", []):
+        if tok.get("class") != "COMPOUND_ID_PREFIX":
+            continue
+        if tok.get("status") not in ("auto_loaded", "promoted"):
+            continue
+        if patent_id in tok.get("fingerprints_observed", []) \
+                or tok.get("first_seen_patent") == patent_id:
+            out.extend(tok.get("surface_forms", []))
+    return sorted(set(out), key=lambda s: (-len(s), s))
+
+
+def _detect_cid_pad_width(prefixes: list[str], assay_tables: dict) -> int:
+    """Inspect assay_tables keys to learn the zero-pad width the patent
+    uses for its cid digits. E.g. US9718790 uses ``I-0020`` (width 4),
+    while US11254686 uses ``Z1`` (width 1). Returns 0 if no prefixed
+    cids are found in assay_tables.
+    """
+    from collections import Counter
+    widths: Counter[int] = Counter()
+    for k in assay_tables:
+        for p in prefixes:
+            if k.startswith(p):
+                tail = k[len(p):]
+                if tail.isdigit():
+                    widths[len(tail)] += 1
+                break
+    return widths.most_common(1)[0][0] if widths else 0
 
 
 def _bridge_gp_to_harvest_cids(
@@ -745,44 +923,251 @@ def _bridge_gp_to_harvest_cids(
     )
     positional_alignment_trusted = aligned_pairs >= 5
 
-    cids_to_rename = {}
+    # Stage B+ — patent-prefixed candidates.
+    #
+    # Many patents number their compounds with a non-canonical prefix
+    # (US9718790: `I-0020`, US11254686: `Z1`). Strategy 0 names them
+    # `GP107` (positional) and Strategy 5/HARVEST names them `I-0107` —
+    # so even when Stage A finds zero shared InChIKeys (e.g. when
+    # Strategy-5 OPSIN is unreliable for the patent's IUPAC syntax),
+    # we can still bridge via positional alignment to the patent's
+    # natural cid form. Trust signal: ≥25 % of GP{N} indices have a
+    # corresponding `<prefix><N_padded>` key in assay_tables.
+    patent_prefixes = _detect_patent_cid_prefixes(patent_id)
+    pad_width = _detect_cid_pad_width(patent_prefixes, assay_tables) if patent_prefixes else 0
+
+    prefix_aligned_pairs = 0
+    digit_aligned_pairs = 0
+    n_gp_with_digits = 0
+    gp_ints: list[int] = []
+    for c in example_index:
+        if c.startswith("GP") and c[2:].isdigit():
+            gp_ints.append(int(c[2:]))
+            n_gp_with_digits += 1
+
+    if patent_prefixes and pad_width:
+        for n in gp_ints:
+            n_padded = str(n).zfill(pad_width)
+            for p in patent_prefixes:
+                if f"{p}{n_padded}" in assay_tables:
+                    prefix_aligned_pairs += 1
+                    break
+
+    # Bare-digit positional signal: even patents without a discovered
+    # cid prefix (e.g. US11292791 uses just "1", "31", "250" as Example
+    # numbers) can be bridged when GP{N} indexes line up 1:1 with the
+    # patent's digit-keyed assay rows. Count distinct alignments —
+    # include Stage A merges (already removed from example_index)
+    # because they're confirmed positional pairs.
+    n_ay_digits = sum(1 for k in assay_tables if k.isdigit())
+    if n_ay_digits:
+        stage_a_gp_ints = {
+            int(c[2:]) for c in cids_to_delete
+            if c.startswith("GP") and c[2:].isdigit()
+        }
+        gp_int_set = set(gp_ints) | stage_a_gp_ints
+        for k in assay_tables:
+            if k.isdigit() and int(k) in gp_int_set:
+                digit_aligned_pairs += 1
+
+    prefix_alignment_trusted = (
+        n_gp_with_digits >= 20
+        and prefix_aligned_pairs >= max(20, n_gp_with_digits // 4)
+    )
+    # For digit-only patents, fire when most digit ay keys have a
+    # corresponding GP{int}. Threshold is generous because the signal
+    # is fragile when the patent is small.
+    digit_alignment_trusted = (
+        n_ay_digits >= 3
+        and digit_aligned_pairs >= max(3, n_ay_digits * 3 // 4)
+    )
+    if patent_prefixes or n_ay_digits:
+        logger.info(
+            "%s: bridge — patent prefixes %s, pad_width=%d, prefix-aligned "
+            "%d/%d GP, digit-aligned %d/%d ay-digit (trusted: prefix=%s digit=%s)",
+            patent_id, patent_prefixes, pad_width,
+            prefix_aligned_pairs, n_gp_with_digits,
+            digit_aligned_pairs, n_ay_digits,
+            prefix_alignment_trusted, digit_alignment_trusted,
+        )
+
+    # Trust signal for the IK-OVERWRITE path. We re-enable overwriting,
+    # but the rename loop preserves the displaced IK as
+    # ``inchikey_aliases`` so downstream cross-refs can match against
+    # either form. That removes the only reason overwrite was unsafe
+    # before (the 28 BDB matches lost on US9718790's 2nd-pass test were
+    # all cases where BDB's curation tracked the Strategy-5 / OPSIN-
+    # derived IK; the alias list now lets BDB still find them).
+    #
+    # Empirical net on US10246453: +41 v2_has_ay (111 → 152), 0 BDB
+    # matches lost (smart-overwrite simulation).
+    overwrite_trusted = (
+        positional_alignment_trusted
+        or prefix_alignment_trusted
+        or digit_alignment_trusted
+    )
+
+    def _candidates_for(suffix: str) -> list[tuple[str, str]]:
+        """Enumerate assay_tables candidate keys for a GP{suffix}.
+        Patent-prefixed candidates first (preferred — they're the
+        patent's natural identifier), then bare-digit fallback.
+
+        Returns ``(candidate_cid, mode)`` pairs where mode is one of:
+          - ``"fresh"``    — target is not in example_index yet
+          - ``"fill"``     — target is in example_index but lacks an IK;
+                             we'll inject GP's IK (always safe)
+          - ``"overwrite"``— target is in example_index with a different
+                             IK (probably Strategy-5 OPSIN-derived);
+                             we'll replace it with GP's authoritative
+                             IK so BDB can find the molecule. Only
+                             emitted when `overwrite_trusted` is True
+                             (positional alignment empirically
+                             validated), otherwise we'd risk mis-
+                             association on patents where GP{N} doesn't
+                             line up with the patent's Example N.
+
+        The IK-missing branch lets us recover patents like US11292791
+        where Strategy 5 added bare-digit entries (``"1"``, ``"31"``)
+        for assay rows but had no IUPAC to compute an IK from.
+
+        The IK-overwrite branch recovers patents like US10246453 where
+        Strategy 5's OPSIN parses gave wrong IKs to the digit entries
+        (66 such cases empirically); without overwriting them, BDB
+        matches the GP* (which has authoritative IK but no assays)
+        and we lose the rows the digit entry actually has.
+        """
+        cands: list[tuple[str, str]] = []
+
+        def _classify(c: str) -> str | None:
+            if c not in assay_tables:
+                return None
+            if c not in example_index:
+                return "fresh"
+            existing_ik = (example_index.get(c, {}).get("inchikey") or "").strip()
+            if not existing_ik:
+                return "fill"
+            if overwrite_trusted:
+                return "overwrite"
+            return None
+
+        if patent_prefixes and pad_width and suffix.isdigit():
+            n_padded = str(int(suffix)).zfill(pad_width)
+            for p in patent_prefixes:
+                cand = f"{p}{n_padded}"
+                mode = _classify(cand)
+                if mode:
+                    cands.append((cand, mode))
+        if suffix.isdigit():
+            mode = _classify(suffix)
+            if mode:
+                cands.append((suffix, mode))
+        return cands
+
+    cids_to_rename: dict[str, tuple[str, str]] = {}  # gp_cid → (new_cid, mode)
     for gp_cid, ik in orphan_gp:
-        # Try positional match: GP107 → HARVEST cid 107
         suffix = gp_cid[2:]
-        if not (suffix.isdigit() and suffix in assay_tables and suffix not in example_index):
+        cands = _candidates_for(suffix)
+        if not cands:
             continue
+        new_cid, mode = cands[0]
         # We can't verify InChIKey match here (HARVEST cid has no SMILES,
         # else Stage A would have caught it). Use the strongest available
         # signal: MS [M+H]+ — gate by ±5 Da against stored MW. Without
-        # MS, only rename when Stage A established positional alignment
-        # for the patent (i.e., GP indexing matches patent numbering).
+        # MS, only rename when *some* positional-alignment signal is
+        # trusted (Stage A or the new prefix-based signal).
         from ..core.smiles_utils import molecular_weight
         stored_mw = molecular_weight(example_index[gp_cid].get("canonical_smiles", "")) or 0
         ms_mh = None
-        for a in assay_tables[suffix]:
+        for a in assay_tables[new_cid]:
             name = (a.get("assay_name") or "").lower()
             if "ms" in name or "m+h" in name:
                 ms_mh = a.get("value_numeric")
                 break
-        if ms_mh is not None:
-            if abs((ms_mh - 1.008) - stored_mw) <= 5.0:
-                cids_to_rename[gp_cid] = suffix
-        elif positional_alignment_trusted:
-            cids_to_rename[gp_cid] = suffix
-        # else: no MS, no Stage A alignment → skip (avoid silent mis-rename)
+        ms_verified = (
+            ms_mh is not None
+            and stored_mw
+            and abs((ms_mh - 1.008) - stored_mw) <= 5.0
+        )
+        if (
+            ms_verified
+            or positional_alignment_trusted
+            or prefix_alignment_trusted
+            or digit_alignment_trusted
+        ):
+            # Take the rename: either MS confirms or the positional /
+            # prefix alignment signal is strong enough on its own.
+            #
+            # Note: a *failing* MS check is NOT treated as evidence
+            # against the rename. Patent MS columns are unreliable:
+            # they may be [M+Na]+ adducts (+22 Da), [M-H]- in
+            # negative mode (-2 Da), fragment ions, integer-rounded
+            # parent masses, or — most often on US9718790 — column-
+            # misaligned LLM extractions where the "MS" cell holds
+            # a different column's value. Verified empirically:
+            # at every positional offset -5..+14 only 7-9 % of MS
+            # values agree within 5 Da of the GP-stored MW, with no
+            # peak — so MS is statistical noise on this patent and
+            # mustn't gate the bridge. Prefix-alignment at 94 % is
+            # the trustworthy signal.
+            cids_to_rename[gp_cid] = (new_cid, mode)
+        # else: no MS, no alignment signal → skip (avoid silent mis-rename)
 
-    for gp_cid, new_cid in cids_to_rename.items():
+    n_overwritten = 0
+    for gp_cid, (new_cid, mode) in cids_to_rename.items():
         rec = example_index.pop(gp_cid)
         rec["compound_id"] = f"Cpd. No. {new_cid}"
-        # Don't replace existing — only move when target cid is empty
         if new_cid not in example_index:
+            # mode == "fresh"
             example_index[new_cid] = rec
-            n_renamed_b += 1
+        else:
+            # mode in {"fill", "overwrite"}. Target already exists in
+            # example_index. We inject GP's authoritative SMILES/IK so
+            # the BDB cross-reference can match this entry. For
+            # "fill" (target has no IK) this is purely additive. For
+            # "overwrite" (target has a Strategy-5 IK that conflicts
+            # with GP's) we trust GP for the primary IK because Google
+            # Patents' embedded structured data is the same source BDB
+            # curates from. The displaced Strategy-5 IK is preserved
+            # in ``inchikey_aliases`` so BDB rows whose curation
+            # happened to follow the OPSIN derivation are still
+            # findable.
+            existing = example_index[new_cid]
+            if rec.get("canonical_smiles"):
+                if mode == "overwrite" or not (existing.get("canonical_smiles") or "").strip():
+                    existing["canonical_smiles"] = rec["canonical_smiles"]
+            if rec.get("inchikey"):
+                if mode == "overwrite" or not (existing.get("inchikey") or "").strip():
+                    if mode == "overwrite":
+                        # Preserve the displaced IK as an alias so the
+                        # BDB cross-ref can match against either form.
+                        old_ik = (existing.get("inchikey") or "").strip()
+                        if old_ik and old_ik != rec["inchikey"]:
+                            aliases = existing.get("inchikey_aliases") or []
+                            if old_ik not in aliases:
+                                aliases.append(old_ik)
+                            existing["inchikey_aliases"] = aliases
+                        n_overwritten += 1
+                    existing["inchikey"] = rec["inchikey"]
+                elif (
+                    rec["inchikey"] != (existing.get("inchikey") or "").strip()
+                    and rec["inchikey"]
+                ):
+                    # Even when we don't overwrite the primary IK,
+                    # collect GP's IK as an alias so BDB still finds
+                    # this entry via either form. Happens when
+                    # overwrite_trusted is False or _classify returned
+                    # "fresh" (path that doesn't go through here).
+                    aliases = existing.get("inchikey_aliases") or []
+                    if rec["inchikey"] not in aliases:
+                        aliases.append(rec["inchikey"])
+                    existing["inchikey_aliases"] = aliases
+        n_renamed_b += 1
 
     if n_merged_a or n_renamed_b:
         logger.info(
-            "%s: bridge — %d GP+patent merged (Stage A), %d orphan GP renamed (Stage B)",
-            patent_id, n_merged_a, n_renamed_b,
+            "%s: bridge — %d GP+patent merged (Stage A), %d orphan GP renamed "
+            "(Stage B; %d Strategy-5 IK overwrites)",
+            patent_id, n_merged_a, n_renamed_b, n_overwritten,
         )
     return example_index
 
@@ -801,6 +1186,31 @@ def _resolve_text_sources(patent_id: str) -> tuple[str, str, str, str]:
 
     Raises RuntimeError if no text source is available.
     """
+    # Stage 0: ensure MinerU OCR has been run. The FSM / HARVEST table
+    # parser needs `<table>` structure to produce real assay-column names
+    # (without it, every assay name collapses to a `col_N` placeholder).
+    # `run_mineru_for_patent` is idempotent: if `{pid}/all_pages/` already
+    # has pages it returns instantly; otherwise it downloads the PDF and
+    # runs MinerU (~5-10 min CPU). Failures are logged but non-fatal —
+    # extraction continues on GP description alone.
+    pages_dir = config.DATA_DIR / patent_id / "all_pages"
+    has_pages = pages_dir.exists() and any(pages_dir.glob("page_*.md"))
+    if not has_pages:
+        try:
+            from ..core.mineru_runner import run_mineru_for_patent
+            logger.info(
+                "process_patent %s: no MinerU pages on disk — running OCR now "
+                "(one-time, ~5-10 min)",
+                patent_id,
+            )
+            run_mineru_for_patent(patent_id)
+        except Exception as e:
+            logger.warning(
+                "process_patent %s: MinerU OCR failed (%r) — continuing with "
+                "GP description only; assay-column names will degrade to col_N",
+                patent_id, e,
+            )
+
     text, src_format = load_patent_description(patent_id, prefer_format="auto")
     if not text:
         td = fetch_patent_text(patent_id)
@@ -851,6 +1261,21 @@ def _collect_pre_extraction(
     The merge uses _SOURCE_RANK + _looks_clean to pick the cleanest IUPAC
     when multiple sources produce the same molecule.
     """
+    # Stage 0 — discover any patent-specific compound-id prefixes (e.g.
+    # `Z1, Z2, …` in US11254686). Adds confirmed prefixes to the
+    # auto-loaded vocabulary so the rest of pre-extraction + HARVEST
+    # can parse them. Fires at most once per patent; ~1 LLM call per
+    # unknown prefix that survives the frequency filter.
+    try:
+        from ..core.cid_prefix_discovery import discover_cid_prefixes
+        discover_cid_prefixes(text, patent_id)
+    except Exception as e:
+        logger.warning(
+            "%s: cid_prefix_discovery failed (%r) — continuing with "
+            "canonical vocabulary only",
+            patent_id, e,
+        )
+
     examples = extract_compounds_from_clean_text(
         patent_id, text,
         skip_strategy_5=True,
@@ -922,12 +1347,137 @@ def _post_process(
     example_index = _bridge_gp_to_harvest_cids(
         patent_id, example_index, assay_tables,
     )
+    # Generalized InChIKey-keyed cid collapse. The GP↔patent_cid bridge
+    # above only handles one class of namespace collision (positional
+    # GP{idx} merging with the patent's own numbering). The pattern
+    # feedback loop creates another class: pattern_library rows under
+    # `I-0020` while example_index already has the molecule under bare
+    # `0020`. Same InChIKey, different cid surface form → join fails.
+    # This pass walks both maps, groups cids by InChIKey, picks a
+    # canonical surface form per cluster, and migrates assay rows.
+    _collapse_cids_by_inchikey(patent_id, example_index, assay_tables)
     try:
         from ..core.iupac_backfill import backfill_iupacs_for_example_index
         backfill_iupacs_for_example_index(example_index)
     except Exception as e:
         logger.warning("%s: iupac_backfill failed: %r", patent_id, e)
     return example_index, n_attempted, n_recovered
+
+
+def _collapse_cids_by_inchikey(
+    patent_id: str,
+    example_index: dict,
+    assay_tables: dict,
+) -> None:
+    """Generalized cid-namespace collapse. Mutates both dicts in place.
+
+    Two passes:
+
+    A. For each assay_tables cid that has no matching example_index
+       entry, search for a near-match cid in example_index (surface-form
+       variants: case-fold, strip leading zeros, strip dash, etc.) and
+       migrate the assay rows under that example_index cid. Otherwise
+       the rows are orphan — the workbook can't render them.
+
+    B. For each InChIKey present in example_index under multiple cid
+       surface forms, pick a canonical cid (preference order: non-GP,
+       most assay rows, shortest cid string, alphabetic). Migrate assay
+       rows from every other cid → canonical cid; drop duplicate
+       example_index entries.
+
+    Patent-agnostic. Eliminates the bug class where the same molecule
+    appears under different cid keys depending on extraction path.
+    """
+    from collections import defaultdict
+    # ── Pass A: orphan assay_tables cids → nearest example_index cid ──
+    n_orphan_migrated = 0
+    ex_keys = set(example_index.keys())
+    ex_keys_lower = {k.lower(): k for k in ex_keys}
+    for ay_cid in list(assay_tables.keys()):
+        if ay_cid in ex_keys:
+            continue
+        variants = [
+            ay_cid.lower(),
+            ay_cid.upper(),
+            ay_cid.lstrip("0"),                          # "0020" → "20"
+            ay_cid.replace("-", ""),                     # "I-0020" → "I0020"
+            ay_cid.replace("-", "").lstrip("0"),         # "I-0020" → "I0020" → "I0020"
+        ]
+        # Also: if the cid has a letter prefix, try stripping it
+        if ay_cid[:1].isalpha():
+            tail = ay_cid.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-")
+            if tail:
+                variants.append(tail)
+                variants.append(tail.lstrip("0"))
+        target = None
+        for v in variants:
+            if v and v in ex_keys:
+                target = v
+                break
+            if v and v.lower() in ex_keys_lower:
+                target = ex_keys_lower[v.lower()]
+                break
+        if target and target != ay_cid:
+            assay_tables.setdefault(target, []).extend(assay_tables[ay_cid])
+            del assay_tables[ay_cid]
+            n_orphan_migrated += 1
+
+    # ── Pass B: collapse duplicate cids sharing one InChIKey ─────────
+    ik_to_cids: dict[str, list[str]] = defaultdict(list)
+    for cid, rec in example_index.items():
+        ik = (rec.get("inchikey") or "").strip()
+        if ik:
+            ik_to_cids[ik].append(cid)
+
+    def _canon_rank(cid: str) -> tuple:
+        # Prefer: non-GP (patent native), then most assay rows, then
+        # shortest cid (cleaner namespace), then alpha tiebreak.
+        return (
+            cid.startswith("GP"),
+            -len(assay_tables.get(cid, [])),
+            len(cid),
+            cid,
+        )
+
+    # Option A: keep example_index entries for ALL surface forms so any
+    # downstream join (workbook builder, BDB cross-ref) can still resolve
+    # any cid surface form to its InChIKey. Only the assay_tables rows
+    # get migrated to the canonical cid (so the workbook reads them
+    # consistently).
+    #
+    # To make the BDB cross-ref deterministic, every non-canonical
+    # surface form also gets a ``canonical_cid`` pointer back to the
+    # row-holding entry. Without this, a BDB-IK → cid lookup over the
+    # dict could land on the wrong sibling (the one Pass B left empty),
+    # and the cross-ref would falsely report v2_has_ay=0 for that
+    # molecule even though the rows exist under the canonical cid. On
+    # US10246453, 168 InChIKeys have ≥2 surface forms in example_index
+    # and 64 of them returned a row-less sibling under non-deterministic
+    # dict iteration — exactly the −16 ``v2_has_ay`` regression we
+    # observed earlier.
+    n_collapsed = 0
+    for ik, cids in ik_to_cids.items():
+        if len(cids) < 2:
+            continue
+        canon = min(cids, key=_canon_rank)
+        for c in cids:
+            if c == canon:
+                continue
+            if c in assay_tables:
+                assay_tables.setdefault(canon, []).extend(assay_tables.pop(c))
+                n_collapsed += 1
+            # DO NOT pop example_index[c] — keep the surface form so
+            # joins from any extraction path still resolve. But mark
+            # the alias so cross-refs can hop to the canonical cid.
+            if c in example_index and c != canon:
+                example_index[c]["canonical_cid"] = canon
+
+    if n_orphan_migrated or n_collapsed:
+        logger.info(
+            "%s: cid-collapse — migrated %d orphan assay cids + collapsed "
+            "%d duplicate-InChIKey cids",
+            patent_id, n_orphan_migrated, n_collapsed,
+        )
 
 
 def _run_text_dominant(
@@ -1070,26 +1620,49 @@ def _run_markush_dominant(
     patent_id: str,
     text: str,
     example_index: dict,
+    *,
+    text_source_format: str = "",
 ) -> tuple[dict, dict, list]:
-    """Markush-dominant branch — STUBBED until Markush pipeline is ready.
+    """Markush-dominant branch.
 
-    Currently:
-      - Keeps regex-extracted text matches as-is (already in example_index)
-      - Skips HARVEST burst (assay_tables empty)
-      - Returns markush_enumerated = [] (stub)
+    Even Markush-heavy patents almost always contain SPECIFIC exemplified
+    compounds: numbered synthesis examples with IUPAC names + assay tables
+    keyed by compound id. The previous implementation STUBBED this branch
+    to ``return example_index, {}, []`` — skipping HARVEST + Strategy 5
+    entirely. That threw away all the extractable specific-compound data
+    and made richly-populated patents return 0.
 
-    When Markush pipeline goes live, replace with:
-        from ..markush.step import should_enumerate_markush, run_markush_enumeration
-        validated = [c for c in pre_compounds if c.canonical_smiles]
-        if should_enumerate_markush(audit, validated, completeness=0.0)[0]:
-            markush_enumerated = run_markush_enumeration(patent_id, validated)
+    Verified failure: US11566007 routes here (0 GP-embedded SMILES + 23
+    Markush phrase hits) yet has 155 Examples, A-prefix compound ids
+    (A208, A193, A89a…), and TABLE 4 "Biological Assay Data for
+    Representative Compounds" with real EC50/IC50 values. Stubbing it
+    returned 0 of its ~700 BDB-curated compounds.
+
+    Fix: ALWAYS run the text path (HARVEST burst + Strategy 5 + bridge)
+    so specific compounds are captured regardless of the Markush
+    classification. Markush *genus* enumeration (expanding the claimed
+    formula into virtual compounds) is layered on top and remains
+    stubbed until that pipeline is production-ready — but it is now
+    purely ADDITIVE, never a replacement for specific-compound
+    extraction.
     """
-    logger.info(
-        "%s: route=markush_dominant — Markush enumeration stubbed "
-        "(not yet production-ready); returning text matches only",
-        patent_id,
+    example_index, assay_tables = _run_text_dominant(
+        patent_id, text, example_index, text_source_format=text_source_format,
     )
-    return example_index, {}, []
+
+    # Markush genus enumeration — stubbed until production-ready. When it
+    # goes live, append enumerated virtual compounds here:
+    #   from ..markush.step import should_enumerate_markush, run_markush_enumeration
+    #   if should_enumerate_markush(audit, validated, completeness)[0]:
+    #       markush_enumerated = run_markush_enumeration(patent_id, validated)
+    markush_enumerated: list = []
+    logger.info(
+        "%s: route=markush_dominant — ran text path (%d compounds, %d assay "
+        "cids); Markush genus enumeration stubbed (additive, not a "
+        "replacement)",
+        patent_id, len(example_index), len(assay_tables),
+    )
+    return example_index, assay_tables, markush_enumerated
 
 
 def _write_outputs(
@@ -1170,29 +1743,105 @@ def process_patent(
     )
 
     # ── STAGE 4 — branch (LLM-augmented HARVEST or Markush stub) ──
-    markush_result: list = []
-    if decision.route_class == "markush_dominant":
-        example_index, assay_tables, markush_result = _run_markush_dominant(
-            patent_id, text, pre_example_index,
-        )
-    else:
-        # text_dominant or mixed — both run text path (HARVEST + Strategy 5)
-        example_index, assay_tables = _run_text_dominant(
-            patent_id, text, pre_example_index,
-            text_source_format=src_format,
-        )
-        if decision.route_class == "mixed":
-            # If mixed and completeness < 95%, the Markush stub is still []
-            # for now (per user). When live, fire it here.
-            n_smi = sum(1 for r in example_index.values() if r.get("canonical_smiles"))
-            n_assay = len(assay_tables) or 1
-            completeness = n_smi / n_assay if n_assay else 0.0
-            if completeness < 0.95:
+    # No route GATE. EVERY patent runs the full text-extraction path —
+    # specific exemplified compounds (numbered examples + assay tables)
+    # exist in nearly every patent, Markush-heavy or not. The old
+    # `markush_dominant` branch stubbed those patents to 0 and lost real
+    # data (US11566007: 155 examples + A-prefix assay table → 0). The
+    # classifier's verdict is retained only as an informational tag.
+    example_index, assay_tables = _run_text_dominant(
+        patent_id, text, pre_example_index,
+        text_source_format=src_format,
+    )
+
+    # Markush-genus region TAGS — additive metadata for a downstream
+    # enumeration step. Tagging does NOT change what we extract here; it
+    # marks WHERE the claimed genus is defined so a future Markush
+    # enumerator can expand R-groups from the right windows.
+    from ..core.route_classifier import tag_markush_regions, tag_structure_image_figures
+    markush_regions = tag_markush_regions(text)
+    markush_result: list = []   # enumerated virtual compounds — stubbed
+
+    # Conservative structure-image tag (positive evidence only): does the
+    # patent draw its compounds as figure images? Read GP figure URLs and
+    # count C-figures (inline structures) / D-figures (drawing pages).
+    # NEVER inferred from extraction shortfall — a fully-text-extracted
+    # patent still gets its figures tagged. Downstream image recognition
+    # uses this to know which patents/figures hold drawn structures.
+    structure_image_tag = None
+    _n_indep_text = 0
+    try:
+        _gp_cache = config.OUTPUT_DIR / "gpatents_cache" / f"{patent_id}.json"
+        if _gp_cache.exists():
+            _gp = json.loads(_gp_cache.read_text())
+            _fig_urls = _gp.get("figure_image_urls", []) or []
+            # GP stores machine-read structures under `embedded_compounds`
+            # (each {smiles, inchi_key}); count those with a real SMILES.
+            _n_embed = sum(
+                1 for e in (_gp.get("embedded_compounds", []) or [])
+                if isinstance(e, dict) and (e.get("smiles") or "").strip()
+            )
+            # Independent-text corroboration: structures whose SMILES came from
+            # a NON-GP route (OPSIN/LLM/PubChem off a text IUPAC), i.e. NOT
+            # GP's own machine chem-OCR. When GP is the lone reader (few
+            # independent structures relative to many GP-embedded SMILES), GP's
+            # SMILES are unverified — the old gate trusted GP's OCR *count*, not
+            # its *correctness* (US10273259: 1,118 GP structures, ~6% text-
+            # corroborated, only 12% BDB-correct → GP chem-OCR was wrong).
+            _n_indep_text = sum(
+                1 for r in example_index.values()
+                if r.get("canonical_smiles")
+                and r.get("extraction_method") != "gp_embedded_meta"
+            )
+            structure_image_tag = tag_structure_image_figures(
+                _fig_urls, n_gp_embedded_smiles=_n_embed,
+                n_independent_text_structures=_n_indep_text,
+            )
+            if structure_image_tag.needs_image_recognition:
                 logger.info(
-                    "%s: mixed route — completeness %.0f%% < 95%%, would run "
-                    "Markush enumeration here (currently stubbed)",
-                    patent_id, completeness * 100,
+                    "%s: structure-image tag — NEEDS IMAGE RECOGNITION: %d C-figs "
+                    "+ %d D-pages drawn, only %d machine-read by GP → %d unresolved "
+                    "drawn structures (image recognition target)",
+                    patent_id,
+                    structure_image_tag.n_structure_figures_c,
+                    structure_image_tag.n_drawing_pages_d,
+                    structure_image_tag.n_gp_embedded_smiles,
+                    structure_image_tag.unresolved_gap,
                 )
+            elif structure_image_tag.gp_structures_unverified:
+                logger.info(
+                    "%s: structure-image tag — GP-UNVERIFIED: %d C-figs drawn, "
+                    "%d machine-read by GP, but only %d independent-text "
+                    "structures (%.0f%% corroboration < threshold) → GP is the "
+                    "lone reader; its SMILES are flagged for image validation "
+                    "(DECIMER-Seg will confirm-or-correct)",
+                    patent_id,
+                    structure_image_tag.n_structure_figures_c,
+                    structure_image_tag.n_gp_embedded_smiles,
+                    _n_indep_text,
+                    100.0 * _n_indep_text / max(1, structure_image_tag.n_gp_embedded_smiles),
+                )
+            elif structure_image_tag.n_structure_figures_c:
+                logger.info(
+                    "%s: structure-image tag — %d C-figs drawn, %d machine-read "
+                    "by GP (gap %d < threshold; structures already resolved, no "
+                    "image recognition needed)",
+                    patent_id,
+                    structure_image_tag.n_structure_figures_c,
+                    structure_image_tag.n_gp_embedded_smiles,
+                    structure_image_tag.unresolved_gap,
+                )
+    except Exception as e:
+        logger.warning("%s: structure-image tagging failed: %r", patent_id, e)
+    if markush_regions:
+        logger.info(
+            "%s: tagged %d Markush-genus region(s) (densest %d phrase hits "
+            "@offset %d) for downstream enumeration; text path already ran "
+            "(%d compounds, %d assay cids)",
+            patent_id, len(markush_regions),
+            markush_regions[0].n_phrase_hits, markush_regions[0].offset,
+            len(example_index), len(assay_tables),
+        )
 
     # ── STAGE 5 — post-processing (retry, bridge, backfill) ───────
     spent_so_far = cost_tracker.patent_spend(patent_id) - initial_spend
@@ -1201,6 +1850,57 @@ def process_patent(
         patent_id, text, example_index, assay_tables,
         retry_budget=retry_budget,
     )
+
+    # ── Substituent-table scan (harvest-integrated, $0, LM-free) ──
+    # Ride the SAME description text the assay/IUPAC harvest already
+    # scanned — no second OCR/page pass (the "scan for substituent
+    # tables as we scan IUPACs/assays, avoid redundancy" requirement).
+    # A rich table (many R-labels whose options resolve to SMILES) flags
+    # a true Markush genus whose species an enumeration step can expand
+    # from a DECIMER-read scaffold. Distinct from gp_structures_unverified
+    # (which flags GP machine-misread *specific* structures, not a genus).
+    _markush_dict = None
+    _n_md_labels = _n_md_resolved = 0
+    _markush_enumerable = False
+    try:
+        from .text_markush import extract_markush_dict_hybrid, write_markush_dict
+        # Symbolic-first ($0); LLM arm fires ONLY when opt-in
+        # (SUBSTITUENT_LLM=1) AND this patent looks Markush (genus regions
+        # or drawn structure figures present) AND symbolic undershot. The
+        # triple gate keeps pure assay patents at $0.
+        _markush_likely = bool(markush_regions) or (
+            structure_image_tag is not None
+            and structure_image_tag.n_structure_figures_c > 0
+        )
+        _markush_dict = extract_markush_dict_hybrid(
+            patent_id, text,
+            allow_llm=getattr(config, "SUBSTITUENT_LLM_ENABLED", False),
+            markush_likely=_markush_likely,
+        )
+        if write:
+            write_markush_dict(_markush_dict)
+        _n_md_resolved = _markush_dict.audit.get("n_options_smiles_resolved", 0)
+        _n_md_labels = len(_markush_dict.r_groups)
+        _n_md_positions_with_smiles = sum(
+            1 for e in _markush_dict.r_groups.values() if e.options_smiles
+        )
+        # "Enumerable" = enough distinct R-positions actually resolving to
+        # SMILES that combinatorial expansion is meaningful. Shape-based,
+        # patent-agnostic; NOT a per-patent threshold.
+        _markush_enumerable = (
+            _n_md_labels >= 3
+            and _n_md_positions_with_smiles >= 3
+            and _n_md_resolved >= 10
+        )
+        if _markush_enumerable:
+            logger.info(
+                "%s: substituent-table scan — ENUMERABLE genus: %d R-labels, "
+                "%d positions w/ SMILES, %d options resolved → enumeration would "
+                "expand species once a DECIMER-read scaffold is supplied",
+                patent_id, _n_md_labels, _n_md_positions_with_smiles, _n_md_resolved,
+            )
+    except Exception as e:
+        logger.warning("%s: substituent-table scan failed (%r)", patent_id, e)
 
     # ── STAGE 6 — persist + return ────────────────────────────────
     final_spend = cost_tracker.patent_spend(patent_id) - initial_spend
@@ -1224,6 +1924,40 @@ def process_patent(
         "n_with_inchikey": sum(1 for r in example_index.values() if r.get("inchikey")),
         "asy_compounds": len(assay_tables),
         "route_breakdown": dict(route_breakdown),
+        # Substituent-table scan (harvest-integrated, $0). `enumerable`
+        # flags a true Markush genus whose species the enumeration path
+        # (markush.step.enumerate_from_scaffold_table) can expand once a
+        # DECIMER-read scaffold is supplied. Distinct from the image-tag
+        # signals below (which flag GP-misread specific structures).
+        "markush_table": {
+            "n_labels": _n_md_labels,
+            "n_options_resolved_to_smiles": _n_md_resolved,
+            "enumerable": _markush_enumerable,
+        },
+        # Markush-genus region tags — additive metadata for a downstream
+        # enumeration step. Always present (text path always ran); a
+        # non-empty list just means "this patent ALSO defines a claimed
+        # genus at these offsets", not "we skipped specific extraction".
+        "markush_regions": [
+            {"offset": r.offset, "n_phrase_hits": r.n_phrase_hits, "snippet": r.snippet}
+            for r in markush_regions
+        ],
+        # Conservative structure-image tag (positive evidence only):
+        # drawn structures GP did NOT machine-read → image-recognition
+        # target. Never inferred from our own extraction shortfall.
+        "structure_image_figures": (
+            {
+                "n_structure_figures_c": structure_image_tag.n_structure_figures_c,
+                "n_drawing_pages_d": structure_image_tag.n_drawing_pages_d,
+                "n_gp_embedded_smiles": structure_image_tag.n_gp_embedded_smiles,
+                "unresolved_gap": structure_image_tag.unresolved_gap,
+                "needs_image_recognition": structure_image_tag.needs_image_recognition,
+                "gp_structures_unverified": structure_image_tag.gp_structures_unverified,
+                "n_independent_text_structures": _n_indep_text,
+                "structure_figure_urls": structure_image_tag.structure_figure_urls,
+            }
+            if structure_image_tag is not None else None
+        ),
     }
     result = PatentResult(
         patent_id=patent_id,

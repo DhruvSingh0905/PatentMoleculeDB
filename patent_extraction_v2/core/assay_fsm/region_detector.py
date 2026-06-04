@@ -50,12 +50,24 @@ _VALUE_CELL = (
     r")"
 )
 
+# Compound-id shape — accepts:
+#   bare:     `5`, `42`, `113`
+#   stereo:   `5A`, `5B`, `92AA`
+#   prefixed: `I0020`, `IIa12` (letter prefix glued to digits)
+#   dashed:   `I-0020`, `II-12a`, `Cmpd-5b` (letter-DASH-digit; common in
+#             multi-column compound tables — without this the row hits
+#             on those tables drop to zero)
+_CID_SHAPE = r"[A-Z]{0,3}-?\d{1,4}[A-Za-z]{0,3}"
+
 _ROW_DETECT_RE = re.compile(
     r"(?<![A-Za-z0-9.])"
-    r"([A-Z]?\d{1,4}[A-Za-z]{0,3})"        # compound id
+    r"(" + _CID_SHAPE + r")"                # compound id
     r"\s+"
-    r"(" + _VALUE_CELL + r"(?:\s+" + _VALUE_CELL + r"){1,4}?)"
-    r"(?=\s+[A-Z]?\d{1,4}[A-Za-z]{0,3}\s|\s+(?:nt|nd)\b|$|\n)",
+    # 1-5 value cells. Was {1,4}? (i.e., 2-5 minimum), which rejected
+    # multi-column tables with one (cid, value) pair per slot. {0,4}? now
+    # allows the single-value form too.
+    r"(" + _VALUE_CELL + r"(?:\s+" + _VALUE_CELL + r"){0,4}?)"
+    r"(?=\s+" + _CID_SHAPE + r"\s|\s+(?:nt|nd)\b|$|\n)",
     re.IGNORECASE,
 )
 
@@ -90,9 +102,17 @@ _VALUE_UNIT_RE = re.compile(
 # Letter-grade row pattern — used by patents that bin assays into
 # A/B/C/D/E grades instead of reporting numeric values
 # (e.g., "1. A 2. A 3. B 4. A ..." or "1 B 5 A 7 B ...").
+#
+# The compound id may be a BARE number ("1 B", "5 A") OR a PREFIXED id
+# ("Z1 D", "I-0020 B", "Cmpd5b C"). The prefixed form was previously
+# missed ENTIRELY because the id was hard-coded to `\d{1,4}` — so
+# US11254686's 647-row A2A/A2B selectivity table (compound ids Z1…Z647,
+# grades A–E) detected ZERO regions and never reached the LLM realigner.
+# Use the shared `_CID_SHAPE` so prefixed-id letter-grade tables are
+# detected the same as numeric ones. Grades stay uppercase [A-E] (no
+# IGNORECASE) so we don't cluster on lowercase prose like "section a".
 _LETTER_GRADE_ROW_RE = re.compile(
-    r"(?:^|[\s\n])(\d{1,4})\.?\s+([A-E])(?=\s|$|\n)",
-    re.MULTILINE,
+    r"(?<![A-Za-z0-9.])(" + _CID_SHAPE + r")\.?\s+([A-E])(?=\s|$|\n)",
 )
 
 

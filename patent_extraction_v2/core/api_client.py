@@ -104,6 +104,7 @@ def call_claude_text(
     patent_id: str = "",
     compound_id: str = "",
     max_tokens: int = 2048,
+    cost_category: str = "lm",
 ) -> str | None:
     """Send a text prompt to Claude and return the response text.
 
@@ -139,7 +140,8 @@ def call_claude_text(
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
 
-        cost_tracker.record(input_tokens, output_tokens, model, patent_id=patent_id)
+        cost_tracker.record(input_tokens, output_tokens, model, patent_id=patent_id,
+                            cost_category=cost_category)
         _log_api_call(model, input_tokens, output_tokens, elapsed_ms, True,
                       patent_id, compound_id)
 
@@ -243,3 +245,182 @@ def call_claude_vision(
         _log_failure(prompt, str(e), patent_id, compound_id)
         logger.error(f"Permanent Vision API failure: {e}")
         return None
+
+
+# ── Batched API calls (Anthropic Message Batches API) ─────────────
+
+
+def call_claude_text_batch(
+    requests: list[dict],
+    *,
+    poll_interval_s: float = 15.0,
+    poll_timeout_s: float = 1800.0,
+    patent_id: str = "",
+) -> list[str | None]:
+    """Submit many text prompts as one Message Batch and return
+    results in input order.
+
+    The batches API gives **50 % off** the per-token price and runs
+    requests concurrently server-side — for 30+ Agent 1/2/2b calls
+    on a typical HARVEST burst, this is both cheaper and faster
+    (wall-clock 1-5 min vs. sequential 15-30 min).
+
+    Each ``requests[i]`` is a dict with keys:
+      - ``prompt``       (required)  the user-side text
+      - ``model``        (optional)  default config.DEFAULT_MODEL
+      - ``system``       (optional)  system prompt
+      - ``max_tokens``   (optional)  default 2048
+      - ``cache_key``    (optional)  used for ``get_cached`` / ``store_cached``.
+                                     Defaults to ``prompt`` (same shape as
+                                     ``call_claude_text``).
+
+    Returns: ``list[str | None]`` parallel to ``requests``. Cached
+    entries are returned without consuming batch quota. ``None`` means
+    a permanent error (logged via ``_log_failure``).
+
+    Note: Anthropic's batches API guarantees completion within 24 h
+    but typically returns in seconds-to-minutes for ≤ 100 requests.
+    We poll every 15 s and time out at 30 min by default.
+    """
+    if not requests:
+        return []
+
+    # 1) Cache-check pass — separate hits from misses
+    resolved: list[str | None] = [None] * len(requests)
+    pending: list[tuple[int, dict]] = []  # (index_in_requests, normalized_req)
+    for i, req in enumerate(requests):
+        prompt = req.get("prompt") or ""
+        if not prompt.strip():
+            continue
+        model = req.get("model") or config.DEFAULT_MODEL
+        cache_key = req.get("cache_key") or prompt
+        cached = get_cached(model, cache_key)
+        if cached is not None:
+            resolved[i] = cached
+        else:
+            pending.append((i, req))
+
+    n_cached = sum(1 for r in resolved if r is not None)
+    if not pending:
+        logger.info(
+            "batch %s: 100%% cache hit (%d/%d requests)",
+            patent_id or "-", n_cached, len(requests),
+        )
+        return resolved
+
+    # 2) Build batch request payload
+    from anthropic.types.messages.batch_create_params import Request as BatchRequest
+    from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+    batch_items = []
+    for idx, (orig_i, req) in enumerate(pending):
+        params: dict = {
+            "model": req.get("model") or config.DEFAULT_MODEL,
+            "max_tokens": int(req.get("max_tokens") or 2048),
+            "messages": [{"role": "user", "content": req["prompt"]}],
+        }
+        if req.get("system"):
+            params["system"] = req["system"]
+        batch_items.append(BatchRequest(
+            custom_id=f"req-{idx:04d}",
+            params=MessageCreateParamsNonStreaming(**params),  # type: ignore[arg-type]
+        ))
+
+    client = _get_client()
+    start = time.monotonic()
+    try:
+        batch = client.messages.batches.create(requests=batch_items)
+    except Exception as e:
+        logger.error("batch %s: submit failed: %r", patent_id or "-", e)
+        # Fall back to sequential — preserves correctness, loses discount
+        for orig_i, req in pending:
+            resolved[orig_i] = call_claude_text(
+                prompt=req["prompt"],
+                model=req.get("model") or config.DEFAULT_MODEL,
+                system=req.get("system") or "",
+                max_tokens=int(req.get("max_tokens") or 2048),
+                patent_id=patent_id,
+            )
+        return resolved
+
+    logger.info(
+        "batch %s: submitted batch %s (%d cached, %d queued)",
+        patent_id or "-", batch.id, n_cached, len(pending),
+    )
+
+    # 3) Poll until terminal status
+    deadline = time.monotonic() + poll_timeout_s
+    while True:
+        try:
+            batch = client.messages.batches.retrieve(batch.id)
+        except Exception as e:
+            logger.warning("batch %s: poll failed (%r), retrying", batch.id, e)
+            time.sleep(poll_interval_s)
+            continue
+        status = batch.processing_status
+        if status == "ended":
+            break
+        if status in ("canceling", "errored"):
+            logger.error("batch %s: terminal status=%s", batch.id, status)
+            return resolved
+        if time.monotonic() > deadline:
+            logger.error(
+                "batch %s: poll timeout after %.0fs (status=%s); aborting",
+                batch.id, poll_timeout_s, status,
+            )
+            return resolved
+        time.sleep(poll_interval_s)
+
+    elapsed_s = time.monotonic() - start
+    logger.info(
+        "batch %s: completed in %.0fs (succeeded=%d, errored=%d, canceled=%d, expired=%d)",
+        batch.id,
+        elapsed_s,
+        batch.request_counts.succeeded,
+        batch.request_counts.errored,
+        batch.request_counts.canceled,
+        batch.request_counts.expired,
+    )
+
+    # 4) Pull results — stream JSONL, route by custom_id
+    pending_by_custom_id = {f"req-{idx:04d}": (orig_i, req) for idx, (orig_i, req) in enumerate(pending)}
+    try:
+        for result in client.messages.batches.results(batch.id):
+            cid = result.custom_id
+            if cid not in pending_by_custom_id:
+                continue
+            orig_i, req = pending_by_custom_id[cid]
+            r_type = result.result.type
+            if r_type == "succeeded":
+                msg = result.result.message  # type: ignore[union-attr]
+                input_tokens = msg.usage.input_tokens
+                output_tokens = msg.usage.output_tokens
+                # Batches API gets a 50 % discount — record at half cost
+                cost_tracker.record(
+                    input_tokens, output_tokens,
+                    req.get("model") or config.DEFAULT_MODEL,
+                    patent_id=patent_id,
+                    discount=0.5,
+                )
+                # First text block (skip thinking / tool-use blocks)
+                text = ""
+                for block in msg.content:
+                    if getattr(block, "type", None) == "text":
+                        text = getattr(block, "text", "").strip()
+                        break
+                resolved[orig_i] = text
+                cache_key = req.get("cache_key") or req["prompt"]
+                store_cached(
+                    req.get("model") or config.DEFAULT_MODEL,
+                    cache_key, text,
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                )
+            elif r_type == "errored":
+                err_obj = getattr(result.result, "error", None)  # type: ignore[union-attr]
+                err = getattr(err_obj, "message", None) or str(err_obj or result.result)
+                _log_failure(req["prompt"], err, patent_id, "")
+                logger.error("batch result %s: errored: %s", cid, err[:160])
+            elif r_type in ("canceled", "expired"):
+                logger.warning("batch result %s: %s", cid, r_type)
+    except Exception as e:
+        logger.error("batch %s: result-fetch failed: %r", batch.id, e)
+    return resolved

@@ -138,8 +138,14 @@ def _content_fingerprint(chunk: str, patent_id: str = "") -> str:
       - patent_id  (so different patents always get different keys)
       - sha256 of the actual chunk text (so different chunks of the
         same patent also get different keys)
+      - prompt_schema_version  (bump to invalidate when the LLM prompt
+        changes shape — e.g. _v2 added the named-group regex
+        requirement, so older cached pattern_meta entries were all
+        heuristic descriptions that `apply_patterns_to_text` can't fire)
     """
     h = hashlib.sha256()
+    h.update(b"prompt_v2")  # bumped when prompt template changes
+    h.update(b"\x00")
     h.update(patent_id.encode("utf-8"))
     h.update(b"\x00")
     h.update(chunk.encode("utf-8", errors="replace"))
@@ -199,6 +205,16 @@ def _find_cid_context_windows(
         rf"\bCpd\.?\s*(?:No\.?\s*)?{cid_re}(?![0-9])",  # "Cpd. No. 152"
         rf"(?<![0-9.]){cid_re}\s*[.:](?![0-9])",        # "152." or "152:"
         rf"\(\s*{cid_re}\s*\)(?![0-9])",        # "(152)"
+        # Table-row fallback: cid as bare digit followed by ≥2 numeric
+        # tokens (e.g., `118 463.59 463.9 1.42 QC-ACN-AA-XB` — physical-
+        # property tables) or ≥2 IC50-like floats (e.g., `325 1.5 38 3110`
+        # — assay tables). Without this, dense-table patents like
+        # US10544143 (1500+ compounds in compressed tables) lose 97 %+
+        # of their cids to "no context" because the targeted burst's
+        # context-finder is looking for `Example NNN` / `Compound NNN`
+        # mentions that the patent never emits.
+        rf"(?<![0-9.A-Za-z]){cid_re}(?![0-9.])"
+        rf"\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?",
     ]
     seen_offsets: list[int] = []
     windows: list[tuple[int, str]] = []
@@ -296,6 +312,26 @@ def iupac_burst_targeted(
                     new_pairs.setdefault(cid, nm)
             continue
 
+        # COST GATE: this loop fires one synchronous LLM call per chunk and
+        # was previously uncapped — the path that ran the per-patent spend to
+        # ~$3.50 (97 sync calls on a 2-patent run). Stop making NEW calls once
+        # the patent hits PER_PATENT_LM_CAP. Cache hits above are free and keep
+        # flowing. The gate is LOGGED loudly so that a drop in recovered IUPAC
+        # names is attributable to the budget cap, not a logic regression — if
+        # a future run recovers fewer names, grep for COST-GATED first.
+        if cost_tracker.patent_lm_exceeded(patent_id):
+            from ... import config as _cfg
+            n_remaining = len(deduped) - chunk_idx
+            logger.warning(
+                "iupac_burst_targeted: COST-GATED on %s — spend $%.3f >= cap "
+                "$%.2f; skipping %d/%d remaining chunks (those cids get no "
+                "LLM-recovered IUPAC this run). Raise PER_PATENT_LM_CAP to "
+                "continue.",
+                patent_id, cost_tracker.patent_spend(patent_id),
+                _cfg.PER_PATENT_LM_CAP, n_remaining, len(deduped),
+            )
+            break
+
         result = extract_iupac_pairs(chunk_text, patent_id=patent_id)
         cache[cache_key] = {
             "pairs": result.pairs,
@@ -349,9 +385,13 @@ def iupac_burst(
 ) -> dict[str, str]:
     """Extract additional (compound_id → iupac_name) pairs via LLM
     fallback. Default behavior fires only when Strategies 1-4 undershoot;
-    pass `force=True` to bypass the gap check and the per-patent budget
-    cap (used when the caller has external budget controls or wants to
-    overwrite wrong IUPACs, not just fill missing ones).
+    pass `force=True` to bypass the GAP check (fire even when there's no
+    coverage gap, e.g. to refresh entries from a previous extraction).
+
+    `force` does NOT bypass the per-patent budget cap — that cap is a hard
+    safety enforced on every path (see the COST-GATED gates below). A prior
+    version let force skip the cap, and the broad pass burned $5.6 on one
+    big-gap patent; the cap is now unconditional.
 
     Args:
         patent_id: Used for cost attribution + library provenance.
@@ -359,7 +399,7 @@ def iupac_burst(
         existing_pairs: What Strategies 1-4 already produced (compound_id → name).
         n_assay_compounds: From assay_tables.json — the "ground truth" count.
         cost_tracker: Per-patent LM cap enforced via `patent_lm_exceeded()`
-            unless `force=True`.
+            on EVERY path (including force=True).
         library: Optional override (defaults to repo-root paths).
         force: Skip gap-check and per-patent cap. Use when the caller is
             running a deliberate broader pass (e.g. to refresh entries
@@ -371,7 +411,8 @@ def iupac_burst(
         New pairs the LLM extracted. Empty dict if no signal AND not force.
     """
     if not force:
-        # 1. Gap check — only fire when we're meaningfully short
+        # 1. Gap check — only fire when we're meaningfully short. `force`
+        # bypasses ONLY this gap check (fire even without a gap signal).
         if not _iupac_gap_signal(len(existing_pairs), n_assay_compounds):
             logger.info(
                 "iupac_burst: no gap signal for %s (n_iupac=%d, n_assay=%d). "
@@ -380,13 +421,20 @@ def iupac_burst(
             )
             return {}
 
-        # 2. Per-patent budget gate
-        if cost_tracker.patent_lm_exceeded(patent_id):
-            logger.info(
-                "iupac_burst: per-patent LM cap already hit for %s. Skipping.",
-                patent_id,
-            )
-            return {}
+    # 2. Per-patent budget gate — ALWAYS enforced, even under force=True.
+    # `force` is a GAP-check bypass, NOT a budget bypass. The broad pass on a
+    # big-IUPAC-gap patent (e.g. US10214537) otherwise fired up to max_chunks
+    # synchronous LLM calls with no gate and burned $5.6. The per-patent cost
+    # cap is a hard safety; nothing may bypass it.
+    if cost_tracker.patent_lm_exceeded(patent_id):
+        from ... import config as _cfg
+        logger.warning(
+            "iupac_burst: COST-GATED on %s before broad pass — spend $%.3f >= "
+            "cap $%.2f (force=%s). Skipping. Raise PER_PATENT_LM_CAP to continue.",
+            patent_id, cost_tracker.patent_spend(patent_id),
+            _cfg.PER_PATENT_LM_CAP, force,
+        )
+        return {}
 
     library = library or IupacPatternLibrary.default()
     cache = _read_cache()
@@ -425,6 +473,21 @@ def iupac_burst(
                 if cid in new_pairs:
                     continue
                 new_pairs[cid] = nm
+            # Replay vocab learning on cache hit so any prompt-format
+            # upgrades (e.g. cached pattern_meta now has named-group
+            # regex but the library entry still holds the old heuristic
+            # description) get applied via `add_discovery`'s upgrade
+            # path. Without this, the only way to upgrade a stored
+            # pattern was to clear the cache and re-fire the LLM.
+            cached_meta = cached.get("pattern_meta") or {}
+            if cached_meta.get("pattern_name"):
+                pattern = IupacPattern(
+                    pattern_name=cached_meta["pattern_name"],
+                    description=cached_meta.get("description", ""),
+                    regex_or_heuristic=cached_meta.get("regex_or_heuristic", ""),
+                    example_patent=patent_id,
+                )
+                library.add_discovery(pattern, fingerprint=fp, patent_id=patent_id)
             logger.info(
                 "iupac_burst: cache hit for chunk %d (fp=%s, +%d pairs)",
                 chunk_idx, fp, len(cached.get("pairs", [])),
@@ -467,12 +530,18 @@ def iupac_burst(
             if cid not in new_pairs:
                 new_pairs[cid] = nm
 
-        # 7. Per-patent cap re-check (fail-closed mid-loop) — bypassed when force=True
-        if not force and cost_tracker.patent_lm_exceeded(patent_id):
-            logger.info(
-                "iupac_burst: per-patent LM cap hit mid-burst at chunk %d "
-                "for %s. Stopping.",
-                chunk_idx, patent_id,
+        # 7. Per-patent cap re-check (fail-closed mid-loop) — ALWAYS enforced,
+        # even under force=True. This is the gate that stops a big-gap patent
+        # from burning $5+ on up to max_chunks synchronous LLM calls. At
+        # ~$0.14/chunk against a $0.20 cap it fires ~1-2 chunks then breaks.
+        if cost_tracker.patent_lm_exceeded(patent_id):
+            from ... import config as _cfg
+            logger.warning(
+                "iupac_burst: COST-GATED mid-burst at chunk %d for %s — spend "
+                "$%.3f >= cap $%.2f; stopping (skipping remaining chunks). Grep "
+                "COST-GATED to attribute reduced IUPAC recovery to the budget.",
+                chunk_idx, patent_id, cost_tracker.patent_spend(patent_id),
+                _cfg.PER_PATENT_LM_CAP,
             )
             break
 

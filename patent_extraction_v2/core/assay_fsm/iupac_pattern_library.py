@@ -145,6 +145,75 @@ class IupacPatternLibrary:
             if p.status in ("pending", "auto_loaded")
         ]
 
+    def apply_patterns_to_text(
+        self,
+        text: str,
+        *,
+        fresh_patterns: list[IupacPattern] | None = None,
+        patent_id: str = "",
+    ) -> list[dict]:
+        """Run runtime-active regex patterns against `text` and return
+        `[{compound_id, iupac_name, source_pattern}, ...]`.
+
+        Mirrors `assay_pattern_library.apply_patterns_to_text` so the
+        IUPAC extraction pipeline gets the same "free re-application
+        across the full patent" amplification the assay extractor has.
+
+        Patterns must contain ``(?P<cid>...)`` AND ``(?P<iupac>...)``
+        named capture groups to be applied. Patterns with only narrative
+        descriptions (no parseable regex) are skipped — they're still
+        kept in the library for human-readable curation, but the
+        runtime applier needs concrete regex.
+
+        ``fresh_patterns`` lets the caller pass just-discovered
+        patterns from the LLM through immediately, without having to
+        wait for the 3-fingerprint auto-promotion gate. That's the
+        within-patent amplification path: LLM sees a chunk, emits a
+        regex, library applies it across the full text right now.
+        """
+        import re as _re
+        patterns = list(self.runtime_active())
+        if fresh_patterns:
+            patterns.extend(fresh_patterns)
+        if not patterns:
+            return []
+        out: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for entry in patterns:
+            rx = (entry.regex_or_heuristic or "").strip()
+            if not rx or "(?P<cid>" not in rx or "(?P<iupac>" not in rx:
+                continue
+            try:
+                compiled = _re.compile(rx, _re.MULTILINE | _re.DOTALL)
+            except _re.error:
+                continue
+            n_hits = 0
+            for m in compiled.finditer(text):
+                cid = (m.groupdict().get("cid") or "").strip()
+                iupac = (m.groupdict().get("iupac") or "").strip()
+                if not (cid and iupac):
+                    continue
+                # Trim oversize captures (greedy regexes occasionally
+                # gobble whole paragraphs — IUPAC names are ≤ ~400 chars).
+                if len(iupac) > 600:
+                    continue
+                key = (cid, iupac[:80])
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({
+                    "compound_id": cid,
+                    "iupac_name": iupac,
+                    "source_pattern": entry.pattern_name,
+                })
+                n_hits += 1
+            if n_hits and patent_id:
+                logger.info(
+                    "iupac_pattern_library: %s pattern %r — %d hits",
+                    patent_id, entry.pattern_name, n_hits,
+                )
+        return out
+
     def add_discovery(
         self,
         pattern: IupacPattern,
@@ -191,6 +260,27 @@ class IupacPatternLibrary:
                     fps.append(fingerprint)
                 existing["n_observations"] = existing.get("n_observations", 0) + 1
                 existing["last_updated"] = _today()
+                # REGEX-UPGRADE: if the incoming pattern has a USABLE regex
+                # (named (?P<cid>) + (?P<iupac>) groups) and the stored one
+                # does NOT, replace the stored regex_or_heuristic. Older
+                # prompts let the LLM emit heuristic descriptions like
+                # "after r'\\bTABLE\\s*1\\b', depth-aware split on commas"
+                # which `apply_patterns_to_text` can't fire. Newer prompts
+                # require concrete regex; without this upgrade those
+                # improvements get swallowed when the LLM emits the same
+                # `pattern_name` (e.g. HEADER_PREFIX) and the merge path
+                # discards the new regex.
+                incoming = pattern.regex_or_heuristic or ""
+                stored = existing.get("regex_or_heuristic") or ""
+                incoming_usable = "(?P<cid>" in incoming and "(?P<iupac>" in incoming
+                stored_usable = "(?P<cid>" in stored and "(?P<iupac>" in stored
+                if incoming_usable and not stored_usable:
+                    existing["regex_or_heuristic"] = incoming
+                    existing["description"] = pattern.description or existing.get("description", "")
+                    logger.info(
+                        "IUPAC pattern upgraded to runtime-applicable: %s",
+                        pattern.pattern_name,
+                    )
                 # ≥3 distinct fingerprints + ≥3 observations -> auto_loaded
                 if (
                     existing.get("status") == "pending"

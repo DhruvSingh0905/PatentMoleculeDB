@@ -43,6 +43,7 @@ from pathlib import Path
 
 from . import config
 from .api_client import call_claude_text
+from .assay_name_guard import is_valid_assay_name
 
 logger = logging.getLogger(__name__)
 
@@ -426,6 +427,7 @@ def realign_table_via_llm(
     page_text: str,
     max_text_chars: int = 6000,
     max_tokens: int = 8000,
+    patent_id: str = "",
 ) -> RealignedTable | None:
     """Fire one LM call to re-extract assay-table rows when the
     baseline parser flagged alignment uncertainty. Returns a
@@ -442,7 +444,8 @@ def realign_table_via_llm(
     truncated = page_text[:max_text_chars]
     prompt = _REALIGN_PROMPT.format(page_text=truncated)
     try:
-        raw = call_claude_text(prompt, max_tokens=max_tokens)
+        raw = call_claude_text(prompt, max_tokens=max_tokens,
+                               patent_id=patent_id, cost_category="realign")
     except Exception as e:
         logger.warning(f"realign firer LM call failed: {e!r}")
         return None
@@ -458,7 +461,18 @@ def realign_table_via_llm(
     if parsed is None:
         return None
 
+    # GUARD: drop any assay-name key the LLM invented as a placeholder
+    # (Activity1, col_0, col1_IC50, …) or fabricated from a non-assay
+    # column (M+H, Method, HPLC tR, Molecular Weight, …). See
+    # `assay_name_guard.is_valid_assay_name` for the full pattern list.
+    # Filtering HERE (at LLM output) prevents the bad names from being
+    # cached by AdaptiveExtractionCache.put under a structural fingerprint
+    # and re-firing on every later patent with a similar table shape —
+    # the root cause behind the cross-patent contamination we observed
+    # (RORγ in K-Ras / B-Raf patents) and the US11292791 100%-zero
+    # Activity1 column.
     rows: list[RealignedRow] = []
+    n_dropped_names = 0
     for r in parsed.get("rows", []) or []:
         cid = str(r.get("compound_id") or "").strip()
         if not cid:
@@ -466,14 +480,20 @@ def realign_table_via_llm(
         vals_raw = r.get("values") or {}
         vals: dict[str, float] = {}
         for name, v in vals_raw.items():
+            if not is_valid_assay_name(name):
+                n_dropped_names += 1
+                continue
             try:
                 vals[str(name)] = float(v)
             except (TypeError, ValueError):
                 continue
-        quals = {str(k): str(v) for k, v in (r.get("qualifiers") or {}).items() if v}
+        quals = {str(k): str(v) for k, v in (r.get("qualifiers") or {}).items()
+                 if v and is_valid_assay_name(k)}
         n_runs_raw = r.get("n_runs") or {}
         n_runs: dict[str, int] = {}
         for k, v in n_runs_raw.items():
+            if not is_valid_assay_name(k):
+                continue
             try:
                 n_runs[str(k)] = int(v)
             except (TypeError, ValueError):
@@ -483,11 +503,15 @@ def realign_table_via_llm(
                 compound_id=cid, values=vals, qualifiers=quals, n_runs=n_runs,
             ))
 
+    if n_dropped_names:
+        logger.info("realign firer: guard dropped %d placeholder/non-assay name(s)",
+                    n_dropped_names)
     if not rows:
         logger.warning("realign firer: LM returned no usable rows, dropping")
         return None
 
-    units = {str(k): str(v) for k, v in (parsed.get("units") or {}).items() if v}
+    units = {str(k): str(v) for k, v in (parsed.get("units") or {}).items()
+             if v and is_valid_assay_name(k)}
     return RealignedTable(rows=rows, units=units, notes=str(parsed.get("notes") or ""))
 
 
@@ -538,10 +562,23 @@ def derive_rule_via_llm(
             return None
 
     try:
-        assay_cols = [
-            AssayColumn(**{k: v for k, v in c.items() if k in {"header_text", "canonical_name", "unit", "col_position"}})
+        assay_cols_raw = [
+            AssayColumn(**{k: v for k, v in c.items()
+                           if k in {"header_text", "canonical_name", "unit", "col_position"}})
             for c in parsed.get("assay_cols", [])
         ]
+        # GUARD: same `is_valid_assay_name` filter — a rule whose columns
+        # are placeholders (`Activity1`, `col_0`, …) or non-assays
+        # (`[M+H]`, `Method`, `Molecular Weight`) must NEVER be cached;
+        # the AdaptiveExtractionCache's structural fingerprint would
+        # otherwise replay these on every patent with a similar shape.
+        assay_cols = [c for c in assay_cols_raw
+                      if is_valid_assay_name(c.canonical_name)
+                      or is_valid_assay_name(c.header_text)]
+        n_dropped = len(assay_cols_raw) - len(assay_cols)
+        if n_dropped:
+            logger.info("adaptive firer: guard dropped %d placeholder/non-assay column(s)",
+                        n_dropped)
         rule = ExtractionRule(
             compound_id_col=parsed.get("compound_id_col", ""),
             assay_cols=assay_cols,

@@ -145,13 +145,18 @@ def _value_near_cid(cid: str, value: float, table: str, window: int = 800) -> bo
 
 
 def _value_near_cid_in_flat_text(
-    cid: str, value: float, text: str, window: int = 200,
+    cid: str, value: float, text: str, window: int = 800,
 ) -> bool:
     """Check if `value` appears within `window` chars of a cid token in
     `text` (a flat string, no HTML structure). Used to validate against
     GP description text where tables get flattened to "25 0.061 (2)
     3.12 (1) 26 0.0043 (4) ..." sequences. Cid token boundary is enforced
     by non-digit lookahead/lookbehind so "25" doesn't match inside "1259".
+
+    Default window is 800 chars: when GP flattens a multi-column assay
+    table, the cid header row can be hundreds of chars from the matching
+    data cell. A 200-char window was over-dropping legitimate rows on
+    patents without MinerU `<table>` structure.
     """
     val_strs = _value_strings(value)
     if not val_strs:
@@ -176,66 +181,103 @@ def _value_near_cid_in_flat_text(
     return False
 
 
+# Patterns that mark a row's `source_quote` as clearly synthesis-prose
+# rather than assay data. Match any of these → drop the row outright.
+_JUNK_QUOTE_PATTERNS = [
+    # NMR shift / coupling annotations
+    re.compile(r"\bNMR\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s*MHz\b", re.IGNORECASE),
+    re.compile(r"\bJ\s*=\s*\d", re.IGNORECASE),
+    re.compile(r"δ\s*\d"),
+    re.compile(r"\bppm\b", re.IGNORECASE),
+    re.compile(r"\bDMSO[-]?d\s*6\b", re.IGNORECASE),
+    re.compile(r"\bCDCl\s*3\b", re.IGNORECASE),
+    re.compile(r"\bCD3OD\b|\bMeOD\b", re.IGNORECASE),
+    # Mass-spec annotations (m/z, [M+H]+, calc'd / found, exact mass)
+    re.compile(r"\bm/z\b", re.IGNORECASE),
+    re.compile(r"\[M\s*[+\-]\s*H\]"),
+    re.compile(r"\bM\+\s*Na\b", re.IGNORECASE),
+    re.compile(r"\bcalc(?:ulate)?d\b", re.IGNORECASE),
+    re.compile(r"\bESI\b", re.IGNORECASE),
+    re.compile(r"\bexact\s+mass\b", re.IGNORECASE),
+    # Synthesis-yield / mmol annotations
+    re.compile(r"\b\d+\s*mmol\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s*%\s*yield\b", re.IGNORECASE),
+    # Spectroscopic peak descriptors (s, d, t, m, dd, td, br s, ...)
+    re.compile(r"\(\s*\d+H\s*,"),
+    re.compile(r"\b(?:singlet|doublet|triplet|quartet|multiplet)\b", re.IGNORECASE),
+]
+
+
+def _looks_like_synthesis_prose(quote: str) -> bool:
+    """True if the source_quote carries unmistakable markers of NMR /
+    mass-spec / synthesis-yield prose. These rows are almost never real
+    assay data — the FSM grabbed a number that happened to live near a
+    cid token in a synthesis paragraph.
+    """
+    if not quote:
+        return False
+    for pat in _JUNK_QUOTE_PATTERNS:
+        if pat.search(quote):
+            return True
+    return False
+
+
 def filter_assays_to_table_blocks(
     assay_tables: dict[str, list[dict]],
     patent_id: str,
     data_dir: Path,
 ) -> tuple[dict[str, list[dict]], int]:
-    """Drop spurious assay rows whose (cid, value) doesn't co-occur in
-    EITHER the MinerU ``<table>`` blocks OR the Google Patents
-    description text. MinerU sometimes corrupts assay tables (empty
-    cid cells, multi-cid mashes); GP's flat text often has the same
-    data cleanly. Validating against either source preserves correct
-    rows while still catching NMR/MS-leak from synthesis prose.
+    """Default-keep validator. Strategy:
 
-    Args:
-        assay_tables: HARVEST output, dict[cid → list[assay_row_dict]].
-        patent_id:    For locating ``{data_dir}/{patent_id}/all_pages``
-                      and ``output_v2/gpatents_cache/{patent_id}.json``.
-        data_dir:     Patent data root.
+      1. Rows whose `validation_reason` starts with `pattern_library:`
+         came from a deterministic regex run on the full patent text by
+         the assay-pattern feedback loop. They're already grounded in a
+         structural row match; always keep.
 
-    Returns:
-        (filtered_dict, n_dropped). The dict is a NEW object;
-        the input is not mutated. n_dropped is the count of
-        triples removed.
+      2. Rows whose `source_quote` carries NMR / m/z / synthesis-yield
+         markers are clear synthesis-prose leak. Drop them.
+
+      3. Everything else: keep.
+
+    This is intentionally LOOSER than the prior version, which required
+    proving (cid, value) co-occurrence and silently dropped 60%+ of
+    pattern-library rows on Z-cid patents. Downstream consumers
+    (the workbook builder, BDB matcher) handle the residual noise via
+    per-assay-name and per-value sanity checks.
+
+    The optional MinerU `<table>` / GP description proximity check is
+    still computed for diagnostic logging but no longer gates dropping.
     """
-    tables = _load_table_blocks(patent_id, data_dir)
-    gp_text = _load_gp_description(patent_id)
-    if not tables and not gp_text:
-        logger.info(
-            "%s: output_validator skipped — neither MinerU <table> blocks "
-            "nor GP description available",
-            patent_id,
-        )
-        return assay_tables, 0
-
     filtered: dict[str, list[dict]] = {}
     n_dropped = 0
-    n_rescued_via_gp = 0
+    n_pattern_kept = 0
+    n_prose_dropped = 0
     for cid, arr in assay_tables.items():
         kept: list[dict] = []
         for a in arr:
-            v = a.get("value_numeric")
-            if v is None:
-                # Categorical or qualitative — can't value-match; keep.
+            reason = a.get("validation_reason", "") or ""
+            quote = a.get("source_quote", "") or ""
+            if reason.startswith("pattern_library:"):
                 kept.append(a)
+                n_pattern_kept += 1
                 continue
-            vf = float(v)
-            if tables and any(_value_near_cid(cid, vf, t) for t in tables):
-                kept.append(a)
+            if _looks_like_synthesis_prose(quote):
+                n_prose_dropped += 1
+                n_dropped += 1
                 continue
-            if gp_text and _value_near_cid_in_flat_text(cid, vf, gp_text):
-                kept.append(a)
-                n_rescued_via_gp += 1
-                continue
-            n_dropped += 1
+            kept.append(a)
         if kept:
             filtered[cid] = kept
 
-    if n_dropped or n_rescued_via_gp:
+    if n_dropped or n_pattern_kept:
         logger.info(
-            "%s: output_validator — dropped %d spurious assay rows, "
-            "rescued %d via GP description (MinerU table missed them)",
-            patent_id, n_dropped, n_rescued_via_gp,
+            "%s: output_validator (loose mode) — kept %d rows total, "
+            "dropped %d as synthesis-prose (NMR/MS markers), "
+            "protected %d pattern-library rows",
+            patent_id,
+            sum(len(v) for v in filtered.values()),
+            n_dropped,
+            n_pattern_kept,
         )
     return filtered, n_dropped

@@ -249,16 +249,19 @@ Output ONLY the SMILES string. Nothing else."""
 
 
 def _llm_clean(raw_name: str, error_msg: str, patent_id: str, compound_id: str) -> str | None:
-    """Stage 3a: Use Opus to normalize an IUPAC name OPSIN can't parse.
+    """Stage 3a: Use the default model (Sonnet) to normalize an IUPAC name
+    OPSIN can't parse.
 
-    Opus is used for accuracy on edge cases (non-standard nomenclature, macrocycles).
-    Cost is bounded by per-patent LM cap (config.PER_PATENT_LM_CAP).
+    Name normalization / SMILES recovery does NOT need Opus — Sonnet
+    handles non-standard nomenclature and macrocycles at 1/5th the cost
+    ($3/$15 vs $15/$75 per Mtok). Cost is further bounded by the
+    per-patent LM cap (config.PER_PATENT_LM_CAP).
     """
     prompt = CLEANING_PROMPT.format(error=error_msg, raw_name=raw_name)
 
     response = call_claude_text(
         prompt=prompt,
-        model=config.MODEL_OPUS,
+        model=config.DEFAULT_MODEL,
         patent_id=patent_id,
         compound_id=f"{compound_id}_clean",
         max_tokens=300,
@@ -270,16 +273,20 @@ def _llm_clean(raw_name: str, error_msg: str, patent_id: str, compound_id: str) 
 
 
 def _llm_direct_smiles(raw_name: str, patent_id: str, compound_id: str) -> str | None:
-    """Stage 3b: Last resort — ask Opus to generate SMILES directly.
+    """Stage 3b: Last resort — ask the default model (Sonnet) to generate
+    SMILES directly.
 
     Only used when OPSIN fundamentally can't parse the ring system
-    (e.g., pyrrolo[1,2-f] fusion descriptors).
+    (e.g., pyrrolo[1,2-f] fusion descriptors). Sonnet is sufficient and
+    5× cheaper than Opus; verified on US10273259 where the batched
+    Sonnet/Opus fallback recovered 9/15 OPSIN-unparseable macrocyclic
+    names.
     """
     prompt = SMILES_FALLBACK_PROMPT.format(raw_name=raw_name)
 
     response = call_claude_text(
         prompt=prompt,
-        model=config.MODEL_OPUS,
+        model=config.DEFAULT_MODEL,
         patent_id=patent_id,
         compound_id=f"{compound_id}_smiles_fallback",
         max_tokens=200,

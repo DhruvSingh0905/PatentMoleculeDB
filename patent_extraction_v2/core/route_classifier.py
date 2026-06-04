@@ -208,3 +208,167 @@ Your one-token answer:"""
                f"LLM classified as TEXT (or unclear: {answer[:30]!r})",
         used_llm=True,
     )
+
+
+# ── Markush region TAGGING (replaces the text/markush GATE) ─────────
+# Philosophy shift (2026-05): we no longer ROUTE a patent into a single
+# "text_dominant" or "markush_dominant" bucket and run one pipeline. The
+# binary gate caused real data loss — a Markush-classified patent
+# (US11566007) skipped HARVEST + Strategy 5 and returned 0 despite having
+# 155 numbered examples with assay data. Instead, EVERY patent runs the
+# full text-extraction path (specific exemplified compounds exist in
+# nearly every patent, Markush or not), and we merely TAG the regions
+# that carry Markush-genus signal so a downstream enumeration step knows
+# where to look. The tag is additive metadata, never a gate.
+
+import re as _re
+
+_MARKUSH_PHRASE_RES = [
+    _re.compile(r"compound\s+of\s+formula\s+\(?[IVX]+\)?", _re.IGNORECASE),
+    _re.compile(r"wherein\s+each\s+occurrence", _re.IGNORECASE),
+    _re.compile(r"independently\s+selected\s+from", _re.IGNORECASE),
+    _re.compile(r"\bwherein\b[^.]{0,40}\bR\s*\d", _re.IGNORECASE),
+    _re.compile(r"\bis\s+selected\s+from\s+the\s+group\s+consisting\s+of", _re.IGNORECASE),
+    _re.compile(r"represents?\s+(?:hydrogen|halogen|optionally\s+substituted)", _re.IGNORECASE),
+]
+
+
+@dataclass
+class MarkushRegion:
+    """A text region carrying Markush-genus signal — a hint for the
+    downstream enumeration step, NOT a gate on extraction."""
+    offset: int             # char offset of the region start in the patent text
+    n_phrase_hits: int      # Markush phrase density in this region
+    snippet: str            # first ~200 chars for human inspection
+
+
+_C_FIGURE_RE = _re.compile(r"-C\d{4,6}\.(?:png|tif|gif|jpe?g)", _re.IGNORECASE)
+_D_FIGURE_RE = _re.compile(r"-D\d{4,6}\.(?:png|tif|gif|jpe?g)", _re.IGNORECASE)
+
+
+@dataclass
+class StructureImageTag:
+    """Conservative, POSITIVE-evidence tag that a patent's compound
+    structures are drawn as figure images that GOOGLE PATENTS ITSELF
+    did not resolve to embedded SMILES — i.e. structures only an image-
+    recognition step could recover.
+
+    Why the GP-embedded-SMILES gap, not raw figure count: EVERY chemistry
+    patent draws its compounds (US9718790 has 2,930 C-figures yet 94 %
+    text coverage). Raw figure count is therefore useless as a "needs
+    image recognition" signal. The discriminating signal is the GAP
+    between structures DRAWN (C-figures) and structures GP already
+    machine-read (its `<meta itemprop="smiles">` embeds). A large gap
+    means Google's own OCR didn't cover the drawings — an EXTERNAL,
+    positive signal, independent of whether OUR text pipeline succeeded.
+
+    This is the guard against "our discovery failed, therefore assume
+    images": we never tag from a text-extraction shortfall. We tag from
+    (figures present) AND (GP's structured data didn't cover them).
+    """
+    n_structure_figures_c: int   # `C#####` — GP inline compound-structure drawings
+    n_drawing_pages_d: int       # `D#####` — full drawing pages (may hold structures)
+    n_gp_embedded_smiles: int    # structures GP already machine-read
+    unresolved_gap: int          # max(0, C-figures − GP-embedded) — image-recog target size
+    needs_image_recognition: bool  # GP MISSED the structures (sparse coverage) → image-recog to GET them
+    gp_structures_unverified: bool  # GP read the drawn structures but its chem-OCR is the SOLE,
+    #                                 unvalidated source (no independent text corroboration). It may
+    #                                 be WRONG — US10273259: GP machine-read 93% of figures yet they
+    #                                 are only 12% BDB-correct (sulfonyl→methyl, 9bR→9bS). → image-
+    #                                 recog to VALIDATE/CORRECT. Distinct from `needs_*` (GP missed).
+    structure_figure_urls: list[str]   # C-figure URLs (capped) for the downstream cropper
+
+
+def tag_structure_image_figures(
+    figure_image_urls: list[str],
+    *,
+    n_gp_embedded_smiles: int = 0,
+    n_independent_text_structures: int = 0,
+    gap_threshold: int = 50,
+) -> StructureImageTag:
+    """Tag a patent for image-based structure recognition.
+
+    DETECTION SIGNAL: GP's `C#####` figure URLs — GP explicitly labels every
+    compound-structure drawing, so this is the cleanest, most complete enumera-
+    tion of "compounds that are drawn, not text" (empirically beats MinerU PNG
+    embeds, which mix in schemes/headers and are absent on pure-GP patents). Use
+    MinerU PNG embeds only as a fallback when GP carries no figures.
+
+    Two distinct flags, because GP having read a structure ≠ having read it
+    CORRECTLY:
+      • `needs_image_recognition` — GP MISSED the drawings (sparse coverage):
+        gap ≥ threshold AND GP read < half. Run image-recog to GET structures.
+        (US11566007: embedded=0; US9718825: GP read 22%.)
+      • `gp_structures_unverified` — GP READ the drawings but its chem-OCR is the
+        SOLE source and nothing independent corroborates it. GP's count looking
+        "sufficient" is NOT proof of correctness (US10273259: GP read 93%, only
+        12% BDB-correct). Run image-recog to VALIDATE/CORRECT. Suppressed only
+        when an independent text route corroborates a strong majority of the
+        structures (then GP is cross-checked and trusted).
+
+    Args:
+      figure_image_urls   — GP figure URLs (C#### = inline structures,
+                            D#### = drawing pages).
+      n_gp_embedded_smiles — structures GP machine-read into `<meta smiles>`.
+      n_independent_text_structures — structures our own NON-GP text routes
+                            resolved (example-header / IUPAC harvest / tables).
+                            Used to corroborate GP; does not, by itself, tag.
+    """
+    urls = figure_image_urls or []
+    c_figs = [u for u in urls if _C_FIGURE_RE.search(u)]
+    d_figs = [u for u in urls if _D_FIGURE_RE.search(u)]
+    n_drawn = len(c_figs) + len(d_figs)
+    gap = max(0, n_drawn - n_gp_embedded_smiles)
+    needs = gap >= gap_threshold and n_gp_embedded_smiles < 0.5 * max(1, n_drawn)
+    # GP read the figures, but is it cross-checked? Independent text corroboration
+    # of a strong majority means GP was validated; otherwise GP is the lone,
+    # unverified source for drawn compounds — flag it for image-recog validation.
+    # Empirically, text-extractable patents independently corroborate 30-86% of
+    # GP's structures; figure-based patents (GP is the lone reader) sit at 0-9%.
+    # A 0.20 cut cleanly separates them.
+    corroborated = n_independent_text_structures >= 0.20 * max(1, n_gp_embedded_smiles)
+    gp_unverified = (
+        n_drawn >= gap_threshold
+        and n_gp_embedded_smiles > 0
+        and not needs
+        and not corroborated
+    )
+    return StructureImageTag(
+        n_structure_figures_c=len(c_figs),
+        n_drawing_pages_d=len(d_figs),
+        n_gp_embedded_smiles=n_gp_embedded_smiles,
+        unresolved_gap=gap,
+        needs_image_recognition=needs,
+        gp_structures_unverified=gp_unverified,
+        structure_figure_urls=(c_figs or d_figs)[:5000],
+    )
+
+
+def tag_markush_regions(
+    text: str,
+    *,
+    window: int = 4000,
+    min_hits: int = 4,
+) -> list[MarkushRegion]:
+    """Scan `text` in non-overlapping windows and tag those whose
+    Markush-phrase density meets `min_hits`. Returns the tagged regions
+    sorted by density (densest first).
+
+    This does NOT decide a route. The caller always runs the full text
+    extraction; these tags simply mark where the genus is defined so a
+    future Markush enumerator can expand R-groups from the right place.
+    """
+    if not text:
+        return []
+    tagged: list[MarkushRegion] = []
+    n = len(text)
+    pos = 0
+    while pos < n:
+        chunk = text[pos:pos + window]
+        hits = sum(len(rx.findall(chunk)) for rx in _MARKUSH_PHRASE_RES)
+        if hits >= min_hits:
+            snippet = " ".join(chunk[:200].split())
+            tagged.append(MarkushRegion(offset=pos, n_phrase_hits=hits, snippet=snippet))
+        pos += window
+    tagged.sort(key=lambda r: -r.n_phrase_hits)
+    return tagged

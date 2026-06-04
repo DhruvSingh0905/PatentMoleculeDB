@@ -59,6 +59,44 @@ ASSAY_FSM_ENABLED = os.environ.get("ASSAY_FSM", "1") == "1"
 # regression debugging or cost-controlled re-runs.
 HARVEST_BURST_ENABLED = os.environ.get("HARVEST_BURST", "1") == "1"
 
+# ── Message Batches API (50% off, async) ──────────────────────────
+# When True, HARVEST burst collects all Agent 1 / Agent 2 / Agent 2b
+# prompts for a patent up front, submits them as one Message Batch,
+# polls until completion, then processes results. Costs roughly half
+# the per-token rate (Anthropic batches discount) and runs requests
+# concurrently server-side. Disable with `LLM_BATCH=0` for the
+# sequential path (faster debug feedback, full price).
+LLM_BATCH_ENABLED = os.environ.get("LLM_BATCH", "1") == "1"
+
+# ── HARVEST skip-when-library-covers gate ─────────────────────────
+# When True, the pipeline skips the HARVEST burst tier if the pre-applied
+# pattern library already extracted enough rows AND prior runs' HARVEST
+# hit-rate is below the threshold. This prevents wasted LLM spend on
+# patents the library already covers — US11292791's last run had a 3 %
+# HARVEST hit-rate against 8,693 pre-library rows; the 75 batched LLM
+# calls contributed essentially nothing. With the gate active those
+# calls would be skipped (~$0.50 per patent saved).
+#
+# Defaults are conservative:
+#   - need ≥ 500 pre-library rows AND
+#   - patent has its own recently-seen pattern (avoid skipping novel
+#     patents we know nothing about)
+# Tune with env vars HARVEST_SKIP_MIN_PRELIB_ROWS / HARVEST_SKIP_ENABLED.
+HARVEST_SKIP_ENABLED = os.environ.get("HARVEST_SKIP", "1") == "1"
+HARVEST_SKIP_MIN_PRELIB_ROWS = int(os.environ.get("HARVEST_SKIP_MIN_PRELIB_ROWS", "500"))
+
+# ── Substituent-table LLM fallback ────────────────────────────────
+# The substituent-table scan is symbolic-first ($0). When the regex
+# undershoots on a Markush-likely patent (TABLE-format definitions the
+# prose regex can't read), an LLM agent fires on the top-scoring
+# substituent-shaped chunks ONLY. Tightly capped — the LLM never reads a
+# chunk without R-label shape, and never fires when symbolic already
+# yields an enumerable table. Tune with env SUBSTITUENT_LLM / *_MAX_CHUNKS.
+# Default OFF — production substituent scan stays $0 (symbolic-only); the
+# LLM arm is opt-in (SUBSTITUENT_LLM=1), so no surprise per-patent cost.
+SUBSTITUENT_LLM_ENABLED = os.environ.get("SUBSTITUENT_LLM", "0") == "1"
+SUBSTITUENT_LLM_MAX_CHUNKS = int(os.environ.get("SUBSTITUENT_LLM_MAX_CHUNKS", "2"))
+
 # Patent IDs
 PATENT_IDS = [
     "US10214537",
@@ -132,10 +170,23 @@ UNLOAD_MODELS_AFTER_USE = (
 
 # Per-patent LM spend cap — guards Stages 3a/3b + synthesis-block route
 PER_PATENT_LM_CAP = 0.20  # USD
+# Hard alarm threshold (NOT a stopper — record() logs ONE loud WARNING per
+# patent when crossed). The soft cap above is enforced by per-path guards
+# (patent_lm_exceeded checks); this alarm is the backstop that makes any
+# *unguarded* path visible instead of silently burning budget. Set well
+# above the soft cap so normal multi-strategy spend doesn't trip it.
+PER_PATENT_LM_HARD_CAP = 1.00  # USD
 
 # Per-patent image-pipeline cost cap (Sonnet/Opus Vision + Sonnet layout calls)
 # Separate from LM cap so a Tier-B patent can spend on diagrams without burning LM budget
 PER_PATENT_IMAGE_CAP = 0.50  # USD
+
+# Per-patent LLM-realigner cap — the always-fire assay-table extractor. Bigger
+# than the LM cap because one large multi-column table can legitimately need
+# 15-20 chunked LLM calls (US11254686's 645-row table ≈ $1). Separate bucket so
+# it doesn't starve IUPAC name recovery, but still bounded so a runaway can't
+# eat the global budget. The global COST_CEILING is the final backstop.
+PER_PATENT_REALIGN_CAP = 1.50  # USD
 
 # Per-page crop cap — avoid runaway DECIMER calls on dense schemes
 PER_PAGE_CROP_CAP_DEFAULT = 30

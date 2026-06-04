@@ -82,13 +82,38 @@ Format every tuple as:
   - assay_name: pick the matching target_name from Agent 1's list.
     If unsure, use a short canonical assay token (IC50/EC50/Ki/Kd/CC50
     + the target shortname).
-  - value: the numeric value as a float. For letter-grade entries
-    (A/B/C), CONVERT using the legend present in the chunk:
-      * "A < 100 nM" → emit value 50 (geometric midpoint), with
-        qualifier="<", confidence="medium" (Agent 5 will downgrade)
-      * "B 100-1000 nM" → emit value 316 (geomean), no qualifier
-      * "C ≥ 1000 nM" → emit value 1000, qualifier=">"
-    Always convert grades to numeric values; don't return letter strings.
+  - value: the numeric value as a float. For grade-binned entries,
+    CONVERT to a geometric-midpoint numeric value using the LEGEND
+    that appears in the same chunk. Three grade conventions are
+    common; treat them identically once you know the legend:
+
+    A/B/C letter grades, e.g.
+      "A < 100 nM"        → value=50,   qualifier="<"
+      "B 100-1000 nM"     → value=316,  qualifier=null  (geomean of 100 & 1000)
+      "C ≥ 1000 nM"       → value=1000, qualifier=">"
+
+    +/++/+++/++++ plus grades (Constellation-style; e.g.
+    US11292791 encodes CBP/BRD4 IC50 this way). Legend example:
+      "++++  ≤ 0.01 μM"       → value=0.005, qualifier="<"
+      "+++   0.01–0.1 μM"     → value=0.032, qualifier=null  (geomean of 0.01 & 0.1)
+      "++    0.1–1 μM"        → value=0.316, qualifier=null  (geomean of 0.1 & 1)
+      "+     1–1000 μM"       → value=31.6,  qualifier=null  (geomean of 1 & 1000)
+      "NT"                    → SKIP this tuple entirely (not tested)
+
+    */**/***/**** star grades follow the same rule — read the legend.
+
+    UNKNOWN grade systems: if this chunk uses a different convention
+    (color codes, "Active/Inactive", "Low/Med/High", Greek-letter bins,
+    etc.) but the chunk contains an explicit numeric legend, apply the
+    same geomean-midpoint rule. If there is NO legend visible in this
+    chunk for an unknown grade system, emit the tuple with the
+    categorical string in ``source_quote`` and value=null —
+    downstream code preserves the categorical so the workbook still
+    shows it; setting confidence="low" tells Agent 5 to gate it.
+
+    Always convert grades to numeric values WHEN you have a legend.
+    Never return "+"/"++"/"A" strings as numeric value; if you can't
+    interpret a token, emit value=null with the token in source_quote.
   - unit: "μM" / "nM" / "mM" / "pM" / "%" / "" — match the patent.
   - qualifier: ">", "<", "~", "≈", "≤", "≥", or null. Use null if
     the value is exact.
@@ -134,6 +159,65 @@ Return a JSON array only:
     "confidence": "high|medium|low"
   }}
 ]
+"""
+
+
+# ── Agent 2b — Row-pattern extraction (runs only after Agent 2 found tuples) ──
+
+
+AGENT2B_ROW_PATTERN = """\
+A previous pass extracted compound-activity tuples from this patent text
+chunk. We now want the STRUCTURAL PATTERN of the table(s) those tuples
+came from, so the rest of the patent's identically-formatted tables can
+be extracted with a regex (zero additional LLM cost).
+
+For each distinct row layout in the chunk, return a regex that matches
+a single data row. Use Python named groups: `(?P<cid>...)` for the
+compound id, `(?P<value0>...)`, `(?P<value1>...)` for each captured
+column. Match data rows ONLY — never match the header row.
+
+ALSO return `header_text`: the table's header row VERBATIM — the column
+titles the data rows sit beneath (e.g. "Ex. No. CBP IC50 (μM) BRD4 IC50
+(μM)"). This is the pattern's anchor: it lets the pipeline re-fire the
+regex ONLY on tables that carry this exact header, so the labels are never
+applied to a different patent's lookalike table. Include the assay-bearing
+column titles in left-to-right order; you may omit decorative columns.
+
+If the table uses GRADE TOKENS instead of numbers, capture the token
+as-is — the pipeline handles the conversion. Recognise these grade
+conventions and write the value group accordingly:
+  - A/B/C/D/E letter bins         → `(?P<value0>[A-E])`
+  - +/++/+++/++++ plus bins       → `(?P<value0>\\\\+{{1,5}})`
+  - */**/***/**** star bins       → `(?P<value0>\\\\*{{1,5}})`
+  - Active/Inactive               → `(?P<value0>Active|Inactive)`
+  - colour codes (red/green/...)  → `(?P<value0>Red|Yellow|Green|...)`
+  - NT/ND/N\\.A\\.                → optional skip-marker; include in alt
+For unfamiliar grade syntaxes, write a character-class regex that
+matches the observed tokens verbatim. The pipeline learns from your
+regex — if 3+ patents share a grade convention the library auto-
+promotes the pattern so it fires before the LLM does on future runs.
+
+Patent text chunk:
+<<<
+{chunk_text}
+>>>
+
+Sample tuples we extracted (for context — match a row that produced
+these tuples):
+{tuples_summary}
+
+Return strictly a JSON array (one entry per distinct row layout):
+[
+  {{
+    "regex": "(?P<cid>Z\\\\d+)\\\\s+(?P<value0>[A-E])\\\\s+(?P<value1>[A-E])\\\\s+(?P<value2>[\\\\d.]+)",
+    "column_assays": ["cAMP IC50 A2B", "cAMP IC50 A2A", "Ratio A2A/A2B"],
+    "header_text": "Cpd. cAMP IC50 A2B cAMP IC50 A2A Ratio A2A/A2B",
+    "example_match": "Z2 A D 31.36"
+  }}
+]
+
+If the chunk had no structured tabular data (e.g., it's just prose
+mentioning one compound + value), return [] — no patterns to register.
 """
 
 

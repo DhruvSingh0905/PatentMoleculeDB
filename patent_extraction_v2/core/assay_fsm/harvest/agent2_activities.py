@@ -20,9 +20,25 @@ from dataclasses import dataclass, field
 
 from ...api_client import call_claude_text
 from .agent1_targets import Target, summarize_targets
-from .prompts import AGENT2_ACTIVITY_EXTRACTION
+from .prompts import AGENT2_ACTIVITY_EXTRACTION, AGENT2B_ROW_PATTERN
 
 logger = logging.getLogger(__name__)
+
+
+# "Looks like a table row": compound-id-shape token (letters? + optional
+# dash + 1-4 digits + optional letter suffix), followed by whitespace,
+# followed by either a qualified number OR a letter-grade A-E. Used as
+# a structural signal to decide whether to fire Agent 2b — if a chunk
+# has many of these rows, an LLM regex pass is justified even when
+# Agent 2's per-tuple extraction returned nothing.
+_TABLE_ROW_SIGNAL_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"[A-Z]{0,3}-?\d{1,4}[A-Za-z]{0,3}"
+    r"\s+"
+    r"(?:[<>~≤≥≈]?\s*\d+(?:\.\d+)?|[A-E]|\+{1,5}|\*{1,5})"
+    r"(?=\s|$|\n)",
+    re.MULTILINE,
+)
 
 
 @dataclass
@@ -86,10 +102,40 @@ class ActivityTuple:
 
 
 @dataclass
+class RowPattern:
+    """Structural row-regex the LLM detected — used to deterministically
+    extract the rest of the same table from the full patent text
+    without paying for more LLM calls. The regex must be a Python re
+    pattern with named groups `cid`, `value0`, `value1`, … in order
+    matching `column_assays`.
+    """
+    regex: str
+    column_assays: list[str] = field(default_factory=list)
+    example_match: str = ""
+    header_text: str = ""        # table header verbatim — the firing anchor
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RowPattern | None":
+        rx = (d.get("regex") or "").strip()
+        if not rx:
+            return None
+        cols = d.get("column_assays") or []
+        if not isinstance(cols, list):
+            cols = []
+        return cls(
+            regex=rx,
+            column_assays=[str(c) for c in cols],
+            example_match=str(d.get("example_match") or "").strip(),
+            header_text=str(d.get("header_text") or "").strip(),
+        )
+
+
+@dataclass
 class Agent2Result:
     tuples: list[ActivityTuple] = field(default_factory=list)
     raw_response: str = ""
     n_unverified: int = 0       # tuples whose source_quote didn't match input
+    row_patterns: list[RowPattern] = field(default_factory=list)
 
 
 def extract_activities(
@@ -136,8 +182,6 @@ def extract_activities(
         t = ActivityTuple.from_dict(item)
         if t is None:
             continue
-        # Verify the source_quote is genuinely in the input. If not,
-        # keep the tuple but flag it for Agent 5 to downgrade.
         if t.source_quote and t.source_quote not in chunk:
             n_unverified += 1
             t.confidence = "low"
@@ -148,23 +192,131 @@ def extract_activities(
             ).strip("; ")
         tuples.append(t)
 
-    if tuples:
+    # ─ Second LLM pass: row-pattern extraction ─
+    # Fire on either signal:
+    #   (a) Agent 2 returned tuples — we have ground-truth examples to
+    #       help the regex generalize.
+    #   (b) Agent 2 returned NOTHING but the chunk has strong table-row
+    #       signal (≥10 cid-shape rows in the text). Agent 2 may have
+    #       failed because the table uses unfamiliar layouts (letter
+    #       grades, missing units, idiosyncratic cid formats) — exactly
+    #       the case where we most need Agent 2b to discover a regex.
+    # Gating Agent 2b on Agent 2's success blocks recovery on patents
+    # whose tables Agent 2 doesn't immediately understand. The pattern
+    # feedback loop is the cheaper, more transferable extraction; it
+    # should not be downstream of the harder, per-row task.
+    patterns: list[RowPattern] = []
+    n_row_signal = len(_TABLE_ROW_SIGNAL_RE.findall(chunk))
+    if tuples or n_row_signal >= 10:
+        patterns = _extract_row_patterns(
+            chunk, tuples, max_tokens=2000,
+            row_signal_count=n_row_signal,
+        )
+
+    if tuples or patterns:
         logger.info(
-            "agent2: extracted %d tuples (%d unverified) from chunk",
-            len(tuples), n_unverified,
+            "agent2: extracted %d tuples (%d unverified), %d row_patterns from chunk",
+            len(tuples), n_unverified, len(patterns),
         )
     return Agent2Result(
         tuples=tuples,
         raw_response=raw,
         n_unverified=n_unverified,
+        row_patterns=patterns,
     )
+
+
+def _extract_row_patterns(
+    chunk: str,
+    tuples: list[ActivityTuple],
+    *,
+    max_tokens: int = 2000,
+    row_signal_count: int = 0,
+) -> list[RowPattern]:
+    """Run AGENT2B prompt for row-pattern extraction. Returns at most a
+    handful of patterns (one per distinct table layout in the chunk).
+    Each pattern is validated: regex must compile + example_match must
+    match the regex. Bad patterns are dropped silently.
+
+    `row_signal_count` is the FSM's heuristic count of cid-shape rows in
+    the chunk (computed by the caller). Used in the prompt as a hint:
+    "expect at least this many rows to match your regex". When `tuples`
+    is empty (Agent 2 failed) but `row_signal_count` is high, this is
+    the signal-rich case where we most need a regex.
+    """
+    # Build the tuples_summary (first 5 tuples) for the prompt
+    summary_lines = []
+    for t in tuples[:5]:
+        v = f"{t.value}"
+        if t.qualifier:
+            v = f"{t.qualifier}{v}"
+        summary_lines.append(
+            f"  - {t.compound_id} | {t.assay_name} | {v} {t.unit}".rstrip()
+        )
+    if summary_lines:
+        tuples_summary = "\n".join(summary_lines)
+    elif row_signal_count:
+        tuples_summary = (
+            f"  (Agent 2 found no tuples here, but the chunk has ~{row_signal_count} "
+            f"rows that look like `compound-id + value`. Look for those rows.)"
+        )
+    else:
+        tuples_summary = "  (none)"
+
+    prompt = AGENT2B_ROW_PATTERN.format(
+        chunk_text=chunk[:6000],
+        tuples_summary=tuples_summary,
+    )
+    try:
+        raw = call_claude_text(prompt, max_tokens=max_tokens)
+    except Exception as e:
+        logger.warning("agent2b: row-pattern LLM call failed: %r", e)
+        return []
+    if not raw:
+        return []
+
+    parsed = _parse_array_json(raw)
+    if not parsed:
+        return []
+    out: list[RowPattern] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        rp = RowPattern.from_dict(item)
+        if rp is None:
+            continue
+        try:
+            compiled = re.compile(rp.regex)
+        except re.error as e:
+            logger.warning("agent2b: discarded invalid regex %r: %s", rp.regex[:80], e)
+            continue
+        if rp.example_match and not compiled.search(rp.example_match):
+            logger.warning(
+                "agent2b: discarded pattern — regex %r doesn't match its example_match %r",
+                rp.regex[:80], rp.example_match[:80],
+            )
+            continue
+        out.append(rp)
+    return out
 
 
 def _parse_array_json(raw: str) -> list | None:
     """Tolerant JSON-array parser with truncation recovery for
-    arrays of objects."""
+    arrays of objects. Handles three shapes:
+      - bare JSON `[…]`
+      - whole response wrapped in ``` … ``` fence
+      - prose preamble followed by a ```json … ``` block
+    """
     s = raw.strip()
-    if s.startswith("```"):
+    # Pull out fenced JSON block from anywhere (handles `Looking at
+    # the data, … ```json [...] ``` …` shaped responses).
+    fence_match = re.search(
+        r"```(?:json)?\s*(\[.*?\]|\{.*?\})\s*```",
+        s, re.DOTALL,
+    )
+    if fence_match:
+        s = fence_match.group(1)
+    elif s.startswith("```"):
         s = re.sub(r"^```(?:json)?\s*", "", s)
         s = re.sub(r"\s*```\s*$", "", s)
     try:
