@@ -223,6 +223,64 @@ def _looks_like_synthesis_prose(quote: str) -> bool:
     return False
 
 
+# ── Property-table (non-assay) detection ──────────────────────────────
+# A patent interleaves real ASSAY tables (IC50/Ki/EC50/% inhibition) with
+# PROPERTY tables — HPLC retention time, [M+H] mass, MW, logP. The extractor
+# blanket-applies the patent's primary assay name to values from ALL tables,
+# so a retention time (e.g. US9718790 TABLE 5: "I-0006 2.48 min") gets stored
+# as "P2X3 IC50 = 2.48". These markers appear in PROPERTY-table headers and
+# never in real assay-table headers (which carry concentration units μM/nM):
+_PROPERTY_HEADER_RE = re.compile(
+    r"\(\s*min\s*\)"                     # retention time unit
+    r"|\[\s*M\s*[+\-]\s*[HN][a]?\s*\]"   # [M+H] / [M-H] / [M+Na] mass
+    r"|\bm/?z\b"                          # mass/charge
+    r"|retention\s+time"
+    r"|molecular\s+weight|\bMW\b"
+    r"|\blog\s?[PD]\b"                    # logP / logD
+    r"|melting\s+point|\bm\.?p\.?\b",
+    re.IGNORECASE,
+)
+
+
+def _property_table_spans(text: str) -> list[tuple[int, int]]:
+    """Return [start,end) spans of PROPERTY tables (retention/mass/MW),
+    detected by a property marker in each `TABLE N` header. Real assay
+    tables (IC50/Ki headers with μM/nM) are not matched."""
+    if not text:
+        return []
+    spans: list[tuple[int, int]] = []
+    tables = list(re.finditer(r"TABLE\s+\d+", text, re.IGNORECASE))
+    for i, m in enumerate(tables):
+        end = tables[i + 1].start() if i + 1 < len(tables) else min(len(text), m.start() + 4000)
+        header = text[m.start():m.start() + 170]
+        if _PROPERTY_HEADER_RE.search(header):
+            spans.append((m.start(), end))
+    return spans
+
+
+def _value_is_property_only(
+    cid: str, cid_positions: list[int], value: float | None,
+    text: str, spans: list[tuple[int, int]],
+) -> bool:
+    """True iff this (cid, value) co-occurs INSIDE a property-table span and
+    NOWHERE in a normal (assay) context — i.e. the only place the patent
+    pairs this cid with this number is a retention/mass/MW table, so the
+    value is not a real assay reading. Conservative: if the pair also
+    appears outside a property span, keep it."""
+    if value is None or not spans or not cid_positions:
+        return False
+    vstrs = _value_strings(value)
+    in_prop = in_assay = False
+    for pos in cid_positions:
+        seg = text[pos + len(cid):pos + len(cid) + 16]
+        if any(v in seg for v in vstrs):
+            if any(s <= pos < e for s, e in spans):
+                in_prop = True
+            else:
+                in_assay = True
+    return in_prop and not in_assay
+
+
 def filter_assays_to_table_blocks(
     assay_tables: dict[str, list[dict]],
     patent_id: str,
@@ -253,9 +311,40 @@ def filter_assays_to_table_blocks(
     n_dropped = 0
     n_pattern_kept = 0
     n_prose_dropped = 0
+    n_property_dropped = 0
+
+    # Flat patent text + property-table spans, for rejecting values whose
+    # ONLY home is a retention/mass/MW table (mislabeled as the assay).
+    flat = _load_gp_description(patent_id)
+    if not flat:
+        pages_dir = data_dir / patent_id / "all_pages"
+        if pages_dir.exists():
+            parts = []
+            for p in sorted(pages_dir.glob("page_*.md")):
+                try:
+                    parts.append(_MINERU_MARKUP_RE.sub("", p.read_text(encoding="utf-8")))
+                except Exception:
+                    pass
+            flat = "\n".join(parts)
+    prop_spans = _property_table_spans(flat) if flat else []
+
     for cid, arr in assay_tables.items():
+        cid_positions = (
+            [m.start() for m in re.finditer(re.escape(cid), flat)]
+            if prop_spans else []
+        )
         kept: list[dict] = []
         for a in arr:
+            # Property-table reject FIRST — strongest signal: the value's only
+            # occurrence next to this cid is a retention/mass/MW table, so it
+            # is not a real assay reading (US9718790: HPLC retention times
+            # mislabeled "P2X3 IC50"). Applies even to pattern_library rows.
+            if _value_is_property_only(
+                cid, cid_positions, a.get("value_numeric"), flat, prop_spans
+            ):
+                n_property_dropped += 1
+                n_dropped += 1
+                continue
             reason = a.get("validation_reason", "") or ""
             quote = a.get("source_quote", "") or ""
             if reason.startswith("pattern_library:"):
@@ -273,11 +362,11 @@ def filter_assays_to_table_blocks(
     if n_dropped or n_pattern_kept:
         logger.info(
             "%s: output_validator (loose mode) — kept %d rows total, "
-            "dropped %d as synthesis-prose (NMR/MS markers), "
+            "dropped %d (%d synthesis-prose, %d property-table/retention), "
             "protected %d pattern-library rows",
             patent_id,
             sum(len(v) for v in filtered.values()),
-            n_dropped,
+            n_dropped, n_prose_dropped, n_property_dropped,
             n_pattern_kept,
         )
     return filtered, n_dropped
