@@ -1549,6 +1549,37 @@ def _run_text_dominant(
         patent_id, text, example_index, assay_tables,
     )
 
+    # 4. Letter-grade potency bins (deterministic, no LLM). Some patents
+    #    (US11566007, US11292791) report potency as +/++/+++ bins with a
+    #    *Key legend instead of numeric values. We capture these as HONEST
+    #    ranges (value_numeric=None; value_low/high carry the literal patent
+    #    thresholds). Merged LAST — AFTER _targeted_fill_missing_cids — so the
+    #    hundreds of binned example-IDs that lack a structure do NOT each
+    #    trigger an LLM IUPAC-recovery call (cost). Bins carry potency, not
+    #    structures; structure recovery for them is the separate image arm.
+    from .letter_bin_assays import (
+        dehallucinate_geomean_grades,
+        extract_letter_bin_assays,
+    )
+    bin_assays = extract_letter_bin_assays(patent_id)
+    if bin_assays:
+        n_new = sum(1 for c in bin_assays if c not in assay_tables)
+        n_rec = 0
+        for cid, recs in bin_assays.items():
+            assay_tables.setdefault(cid, []).extend(recs)
+            n_rec += len(recs)
+        logger.info(
+            "%s: merged %d letter-bin records over %d cids (%d new cids)",
+            patent_id, n_rec, len(bin_assays), n_new,
+        )
+
+    # 4b. De-fabricate geomean letter-grade midpoints → honest ranges. Some
+    #     patents (US11292791) state a prose legend ("a value greater than 1 µM
+    #     and less than 1000 µM is marked '+'") and the FSM collapsed each grade
+    #     to sqrt(low·high) as a precise number. Replace those fabricated points
+    #     with the honest range the legend states. No-op when no such legend.
+    dehallucinate_geomean_grades(patent_id, assay_tables)
+
     # NOTE: bridge does NOT run here. It runs ONCE after retry in
     # process_patent's main flow, where it has the most-complete view
     # (retry adds patent cids that this function's bridge would miss).
