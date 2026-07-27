@@ -58,6 +58,11 @@ class Gap:
     # grade symbols. Position-based capture failed three times; searching by
     # shape is what makes an unseen legend grammar learnable.
     legend_candidates: list[str] = field(default_factory=list)
+    # A bigger view of the SAME table, built at detection time and free. Served
+    # only if the model asks for it (`request_more_context`). The first sample
+    # is deliberately small because it is billed on every gap; this one is paid
+    # for only when the model says the small one was not enough.
+    expanded_sample: str = ""
 
     @property
     def severity(self) -> int:
@@ -98,7 +103,8 @@ def layout_fingerprint(table: Table, headers: list[str]) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-def _sample_of(table: Table, headers: list[str], max_rows: int = 4) -> str:
+def _sample_of(table: Table, headers: list[str], max_rows: int = 4,
+               *, expand: bool = False) -> str:
     """A compact, readable rendering of the table's shape.
 
     Kept small on purpose: this is what a paid model reads. Header, a few data
@@ -109,7 +115,7 @@ def _sample_of(table: Table, headers: list[str], max_rows: int = 4) -> str:
     lines = []
     legend = table_legend(table)
     if legend:
-        lines.append(f"LEGEND: {legend[:220]}")
+        lines.append(f"LEGEND: {legend[:900 if expand else 220]}")
     if table.caption:
         # Keep the clause that says what was measured, not the buffer recipe —
         # captions run for paragraphs and this is billed input.
@@ -127,10 +133,10 @@ def _sample_of(table: Table, headers: list[str], max_rows: int = 4) -> str:
     # `A`/`B`/`D` has no way to turn them into measurements.
     prev = (getattr(table, "preceding", "") or "").strip()
     if prev:
-        lines.append(f"TEXT BEFORE TABLE: ...{prev[-320:]}")
+        lines.append(f"TEXT BEFORE TABLE: ...{prev[-(1200 if expand else 320):]}")
     nxt = (getattr(table, "following", "") or "").strip()
     if nxt:
-        lines.append(f"TEXT AFTER TABLE: {nxt[:320]}...")
+        lines.append(f"TEXT AFTER TABLE: {nxt[:1200 if expand else 320]}...")
     lines.append(f"COLUMNS: {table.n_cols} (indices 0..{table.n_cols - 1})")
     if any(headers):
         lines.append("HEADER: " + " | ".join(
@@ -149,8 +155,8 @@ def _sample_of(table: Table, headers: list[str], max_rows: int = 4) -> str:
     # search is not. Only when the merge is suspect — fewer labelled columns
     # than the table is wide — because this is billed input.
     hdr_rows, _ = _header_rows_of(table)
-    if hdr_rows and sum(1 for h in headers if h.strip()) < table.n_cols:
-        for j, hr in enumerate(hdr_rows[:4]):
+    if hdr_rows and (expand or sum(1 for h in headers if h.strip()) < table.n_cols):
+        for j, hr in enumerate(hdr_rows[:10 if expand else 4]):
             cells = [c.text.strip() for c in hr]
             if any(cells):
                 lines.append(f"HEADER ROW {j} (raw, {len(cells)} cells, column "
@@ -237,6 +243,7 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
                 reason=(f"{d['usable']} usable measurements from {d['shaped_cells']} "
                         f"measurement-shaped cells ({d['yield']:.0%}) — {fix}"),
                 sample=_sample_of(t, hdrs), headers=hdrs,
+                expanded_sample=_sample_of(t, hdrs, 24, expand=True),
                 column_kinds=[c.kind for c in build_columns(t)],
                 legend_candidates=legends,
             ))
@@ -334,6 +341,7 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
                     reason=(f"{unread_cells} of {total_cells} populated assay cells "
                             f"cannot be parsed as a value (e.g. {example!r})"),
                     sample=_sample_of(t, headers), headers=headers,
+                    expanded_sample=_sample_of(t, headers, 24, expand=True),
                     column_kinds=kinds, unparsed_examples=unparsed,
                 ))
                 seen_blocks.add(t.table_id)
@@ -397,6 +405,7 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
             fingerprint=layout_fingerprint(t, headers),
             reason=reason,
             sample=_sample_of(t, headers),
+            expanded_sample=_sample_of(t, headers, 24, expand=True),
             headers=headers,
             column_kinds=kinds,
         ))

@@ -52,7 +52,7 @@ SYNTH_MODEL = config.MODEL_HAIKU
 # the layout fingerprint, which is content-independent by design — so without
 # a version here, improving the prompt silently replays answers produced by
 # the old one. Exactly the stale-cache trap the repo's CLAUDE.md warns about.
-PROMPT_VERSION = "v10-raw-header-rows"
+PROMPT_VERSION = "v11-request-more-context"
 
 # Frozen prefix — identical on every call so it can be prompt-cached (cache
 # reads bill at ~0.1x). Everything patent-specific goes in the user turn.
@@ -91,6 +91,37 @@ If the table is characterisation data rather than assay data, return \
 `not_assay`. If you cannot describe a safe rule, return `escalate` and say \
 what capability is missing. Guessing is worse than escalating: a wrong rule \
 silently corrupts a chemistry database, a missing one is merely absent."""
+
+# At most this many model turns per gap: an ask, a look, an answer. Bounded so
+# a model that keeps requesting context cannot spend without end.
+MAX_TURNS = 3
+
+MORE_TOOL = {
+    "name": "request_more_context",
+    "description": (
+        "Call this INSTEAD of proposing a rule when the fragment you were shown "
+        "is not enough to decide safely — a header you cannot align to columns, "
+        "a legend that appears cut off, too few rows to see the pattern. You "
+        "will be shown a larger view of the same table and can then answer. "
+        "Prefer this over `escalate` whenever the obstacle is that you cannot "
+        "SEE enough: escalate means the capability is missing, not the data."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "what": {
+                "type": "string",
+                "enum": ["more_rows", "full_legend", "raw_headers",
+                         "surrounding_text", "everything"],
+                "description": "Which part is insufficient.",
+            },
+            "why": {
+                "type": "string",
+                "description": "One sentence: what you could not determine.",
+            },
+        },
+        "required": ["what", "why"],
+    },
+}
 
 TOOL = {
     "name": "propose_extraction_rule",
@@ -331,36 +362,89 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "") -> Rule 
 
     import anthropic
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    try:
-        resp = client.messages.create(
-            model=model,
-            max_tokens=700,
-            temperature=0,
-            system=[{"type": "text", "text": SYSTEM,
-                     "cache_control": {"type": "ephemeral"}}],
-            tools=[TOOL],
-            tool_choice={"type": "tool", "name": TOOL["name"]},
-            messages=[{"role": "user", "content": prompt}],
+
+    # Let it look again before it answers.
+    #
+    # This was a single forced tool call: `tool_choice` pinned to the rule tool
+    # over one small fixed sample. A model that judged the sample insufficient
+    # had exactly one way to say so — `escalate` — so "I need more" and "this
+    # cannot be done" were the same output, and we read every one of them as
+    # the latter. On US10172859 it escalated eight times while its own note
+    # showed it had understood the table completely.
+    #
+    # So offer `request_more_context` alongside the rule tool. The model decides
+    # whether it has enough, and only then judges. The expanded view is built at
+    # detection time and costs nothing to prepare; we pay for it only when asked.
+    tools = [TOOL, MORE_TOOL]
+    messages: list = [{"role": "user", "content": prompt}]
+    out = None
+    for turn in range(MAX_TURNS):
+        try:
+            resp = client.messages.create(
+                model=model,
+                max_tokens=900,
+                temperature=0,
+                system=[{"type": "text", "text": SYSTEM,
+                         "cache_control": {"type": "ephemeral"}}],
+                tools=tools,
+                tool_choice={"type": "any"},
+                messages=messages,
+            )
+        except Exception as e:
+            logger.warning("repair: synthesis call failed for %s: %r", gap.fingerprint, e)
+            return None
+
+        usage = resp.usage
+        cost_tracker.record(usage.input_tokens, usage.output_tokens, model,
+                            patent_id=patent_id or gap.patent_id, cost_category="lm")
+        logger.info(
+            "repair: %s turn=%d in=%d out=%d cached_read=%d",
+            gap.fingerprint, turn, usage.input_tokens, usage.output_tokens,
+            getattr(usage, "cache_read_input_tokens", 0) or 0,
         )
-    except Exception as e:
-        logger.warning("repair: synthesis call failed for %s: %r", gap.fingerprint, e)
-        return None
 
-    usage = resp.usage
-    cost_tracker.record(usage.input_tokens, usage.output_tokens, model,
-                        patent_id=patent_id or gap.patent_id, cost_category="lm")
-    logger.info(
-        "repair: %s in=%d out=%d cached_read=%d",
-        gap.fingerprint, usage.input_tokens, usage.output_tokens,
-        getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
+        call = next((b for b in resp.content if getattr(b, "type", "") == "tool_use"), None)
+        if call is None:
+            return None
+        if call.name != MORE_TOOL["name"]:
+            out = call.input
+            break
 
-    out = next((b.input for b in resp.content if getattr(b, "type", "") == "tool_use"), None)
+        # It asked. Serve the wider view once; on the last turn it must answer
+        # from what it has, and the rule tool is then the only thing offered.
+        want = (call.input or {}).get("what") or "everything"
+        logger.info("repair: %s asked for more context (%s): %s",
+                    gap.fingerprint, want, (call.input or {}).get("why", "")[:120])
+        messages.append({"role": "assistant", "content": resp.content})
+        messages.append({"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": call.id,
+            "content": _more_context(gap, want),
+        }]})
+        if turn == MAX_TURNS - 2:
+            tools = [TOOL]
+
     if not isinstance(out, dict):
         return None
     store_cached(model, cache_key, json.dumps(out),
                  input_tokens=usage.input_tokens, output_tokens=usage.output_tokens)
     return _to_rule(gap.fingerprint, out, model, gap.sample)
+
+
+def _more_context(gap: Gap, what: str) -> str:
+    """Serve the wider view of the gap the model just asked for."""
+    parts: list[str] = []
+    if what in ("full_legend", "everything") and gap.legend_candidates:
+        parts.append("LEGEND TEXT FOUND ELSEWHERE IN THIS PATENT (untruncated):\n  "
+                     + "\n  ".join(c for c in gap.legend_candidates))
+    if what in ("more_rows", "raw_headers", "surrounding_text", "everything"):
+        parts.append("EXPANDED VIEW OF THE SAME TABLE:\n" + (gap.expanded_sample or gap.sample))
+    if gap.unparsed_examples:
+        parts.append("CELLS WE COULD NOT READ:\n  "
+                     + "\n  ".join(str(u) for u in gap.unparsed_examples[:12]))
+    parts.append("You now have the wider view. Answer with `propose_extraction_rule`. "
+                 "Use `escalate` ONLY if a capability is genuinely missing, not "
+                 "because the layout is awkward.")
+    return "\n\n".join(parts)
 
 
 def estimate_tokens(gap: Gap) -> int:
