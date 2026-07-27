@@ -78,6 +78,27 @@ def _bins_for(payload: dict, assay_name: str | None) -> dict:
     return next((s.get("bins") or {} for s in scales if not s.get("match")), {})
 
 
+def _why_nothing_applied(rule: Rule, table: Table) -> str:
+    """Say what a validated rule failed to find, in the queue's own terms."""
+    from ..sources.uspto_assays import extract_from_tables
+
+    if rule.kind != BIN_KEY:
+        return (f"{rule.kind} validated on this layout but produced no records "
+                f"from {table.table_id}")
+    recs = extract_from_tables([table])
+    scales = rule.payload.get("scales") or []
+    names = {(r.assay_name or "") for r in recs}
+    if scales and all("unnamed" in n.lower() or not n for n in names):
+        return (f"bin_key defines {len(scales)} column-scoped scales "
+                f"({', '.join((s.get('match') or '?')[:24] for s in scales)}) but "
+                f"every record on {table.table_id} is unnamed — the column names "
+                f"exist in the header and did not survive multi-row merge, so no "
+                f"scale can be bound to a column. Needs header alignment, not a "
+                f"better key.")
+    return (f"bin_key matched none of the {len(recs)} records on "
+            f"{table.table_id}; assay names present: {sorted(names)[:4]}")
+
+
 def apply_rule(rule: Rule, table: Table, patent_id: str) -> list:
     """Turn a validated rule into assay records."""
     from ..sources.uspto_assays import (
@@ -265,6 +286,24 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
             report.rows_recovered += len(got)
             recovered.extend(got)
             lib.record_use(gap.fingerprint, len(got))
+        else:
+            # A rule that passed validation and then produced nothing used to
+            # vanish here: not adopted, not rejected, not escalated, no trace.
+            # US10172859 returned a CORRECT three-scale bin_key and the report
+            # read "0 adopted, 0 rejected", which is why the failure looked like
+            # model refusal for four rounds. It was not — the scales key on
+            # assay name, and every record on that table is named "unnamed assay
+            # (letter bin)" because the multi-row header never aligned.
+            #
+            # Applying to nothing is a real outcome and it names the missing
+            # capability precisely, so it escalates like any other.
+            report.escalated += 1
+            report.escalations.append({
+                "fingerprint": gap.fingerprint, "patent": patent_id,
+                "table": gap.table_id, "rows_at_stake": gap.severity,
+                "capability": "rule validated but matched no rows on apply",
+                "note": _why_nothing_applied(rule, table),
+            })
 
     if not dry_run:
         lib.save()
