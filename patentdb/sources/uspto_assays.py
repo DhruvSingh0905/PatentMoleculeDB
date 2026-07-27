@@ -339,7 +339,43 @@ def _row_width(row) -> int:
     return sum(max(1, c.colspan) for c in row if c.text.strip() or c.colspan > 1)
 
 
-def _header_coherence(headers: list[str]) -> int:
+_SHAPE_NUM = re.compile(r"^\s*[<>~≈≥≤]?\s*\d*\.?\d+\s*$")
+_SHAPE_BIN = re.compile(r"^\s*(\++|[A-E])\*?\s*$")
+
+
+def _column_shapes(table: Table, data) -> list[str]:
+    """What each column's VALUES look like — the positional evidence a
+    header row without `namest` does not carry.
+
+    A measurement column holds numbers or grade symbols; an id column holds
+    short identifiers; a name column holds long text. Which is which is
+    knowable from the body even when the header's own position is not.
+    """
+    shapes: list[str] = []
+    for i in range(table.n_cols):
+        vals = [r[i].text.strip() for r in data[:40] if len(r) > i and r[i].text.strip()]
+        # Column 0 is tested for an identifier FIRST. Everywhere else `num`
+        # wins ties, because a measurement column of small integers must not
+        # read as ids — but the leftmost column is where patents conventionally
+        # put the example number, and without this a bare-integer id column
+        # reads as `num`, which then scores an assay label sitting on top of it
+        # as a good fit and drags the whole header one column left.
+        if not vals:
+            shapes.append("empty")
+        elif i == 0 and sum(bool(_CID_PAT.match(v)) for v in vals) > len(vals) * 0.6:
+            shapes.append("cid")
+        elif sum(bool(_SHAPE_NUM.match(v)) for v in vals) > len(vals) * 0.6:
+            shapes.append("num")
+        elif sum(bool(_SHAPE_BIN.match(v)) for v in vals) > len(vals) * 0.6:
+            shapes.append("bin")
+        elif sum(bool(_CID_PAT.match(v)) for v in vals) > len(vals) * 0.6:
+            shapes.append("cid")
+        else:
+            shapes.append("text")
+    return shapes
+
+
+def _header_coherence(headers: list[str], shapes: list[str] | None = None) -> int:
     """How much a candidate header assignment 'makes sense'.
 
     Used to choose between possible alignments of a short header row. A patent
@@ -352,7 +388,7 @@ def _header_coherence(headers: list[str]) -> int:
     """
     score = 0
     n_cid = 0
-    for h in headers:
+    for i, h in enumerate(headers):
         col = classify_column(h, [])
         if col.kind == ASSAY:
             score += 3 if col.unit else 2
@@ -362,6 +398,30 @@ def _header_coherence(headers: list[str]) -> int:
             score += 1          # a confidently-excluded column is also a win
         elif col.kind == UNKNOWN and h.strip():
             score -= 1          # text we failed to make sense of
+
+        # Does the label sit over values of the right kind?
+        #
+        # Without this the score is blind to the body, so an alignment that
+        # parks "IC50 / Ki" over the id and structure columns scores the same
+        # as one that parks them over the grades. On US10172859 the blind score
+        # left-packed three assay names into columns 0-2 of a table whose
+        # measurements are in 3-5, and every record came out unnamed — which in
+        # turn made a correct three-scale bin_key unbindable.
+        #
+        # The body is the positional evidence the header row lost.
+        if not shapes or i >= len(shapes) or not h.strip():
+            continue
+        shape = shapes[i]
+        if col.kind == ASSAY:
+            score += 4 if shape in ("num", "bin") else -4
+        elif col.kind == CID:
+            # `num` counts as compatible: a column of plain integers is shaped
+            # like a measurement and like an example number both, and demanding
+            # `cid` here penalised the CORRECT alignment on every table whose
+            # ids are bare integers.
+            score += 3 if shape in ("cid", "num") else -3
+        elif col.kind == STRUCTURE:
+            score += 2 if shape == "text" else -1
     score += 3 if n_cid == 1 else (-2 if n_cid > 1 else 0)
     return score
 
@@ -375,6 +435,9 @@ def _choose_offsets(table: Table, rows) -> list[int]:
     joint search is unnecessary because misalignment is almost always confined
     to one or two short rows.
     """
+    _, data = _header_rows_of(table)
+    shapes = _column_shapes(table, data)
+
     offsets = []
     for row in rows:
         if any(c.col_start >= 0 for c in row):
@@ -391,7 +454,7 @@ def _choose_offsets(table: Table, rows) -> list[int]:
         for cand in range(slack + 1):
             trial = [0 if o is None else o for o in offsets]
             trial[i] = cand
-            s = _header_coherence(_merge_with_offsets(table, rows, trial))
+            s = _header_coherence(_merge_with_offsets(table, rows, trial), shapes)
             if best_score is None or s > best_score:
                 best_off, best_score = cand, s
         offsets[i] = best_off
