@@ -135,6 +135,30 @@ def _sample_of(table: Table, headers: list[str], max_rows: int = 4) -> str:
     if any(headers):
         lines.append("HEADER: " + " | ".join(
             f"[{i}] {h[:36]}" if h else f"[{i}] (blank)" for i, h in enumerate(headers)))
+    # ...and the header rows UNMERGED, when merging them was lossy.
+    #
+    # A multi-row header whose cells carry no CALS `namest` has no column
+    # position in the source, so `_choose_offsets` infers one — and on
+    # US10172859 it left-packs, landing "IC50 DNA-PK / IC50 pDNA-PK /
+    # Ki [Kv1.11 hERG]" in columns 0-2 of a table whose grades are in 3-5. The
+    # model then cannot bind a bin scale to a column and correctly escalates.
+    #
+    # The information is not missing from the patent; our merge destroys it.
+    # So send the rows as they are and let the model align them against the
+    # data rows below, which is a reading task it is good at and our offset
+    # search is not. Only when the merge is suspect — fewer labelled columns
+    # than the table is wide — because this is billed input.
+    hdr_rows, _ = _header_rows_of(table)
+    if hdr_rows and sum(1 for h in headers if h.strip()) < table.n_cols:
+        for j, hr in enumerate(hdr_rows[:4]):
+            cells = [c.text.strip() for c in hr]
+            if any(cells):
+                lines.append(f"HEADER ROW {j} (raw, {len(cells)} cells, column "
+                             "position NOT reliable): "
+                             + " | ".join(c[:36] for c in cells))
+        lines.append("The merged HEADER above may be misaligned: these rows "
+                     "carry no column position in the source. Use the data "
+                     "rows to decide which label belongs to which index.")
     shown = 0
     for row in data:
         cells = [c.text.strip() for c in row]
