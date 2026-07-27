@@ -130,3 +130,60 @@ def test_racemic_prefix_is_stripped_by_the_cleaner():
     out = rule_based_clean("racemic cis-2-{1-(4-Bromobenzyl)}cyclohexane")
     assert not out.lower().startswith("racemic")
     assert out.startswith("cis-") or out.startswith("2-")
+
+
+# ── block assembly ───────────────────────────────────────────────
+# A `<tables>` block is fragmented into many tgroups and no single one of them
+# is the table. These pin the three ways the old max-by-rows pick went wrong.
+
+def _tg(cols, header, body):
+    return U.Table(
+        table_id="T1", n_cols=cols,
+        header_rows=[[U.Cell(c) for c in r] for r in header],
+        body_rows=[[U.Cell(c) for c in r] for r in body],
+    )
+
+
+def test_assembly_takes_the_header_from_a_sibling_fragment():
+    """US9656988: the header tgroup holds no data, the data tgroup no header."""
+    frags = [
+        _tg(3, [], [["Example #", "BTK IC50", ""]]),
+        _tg(3, [], [["1", "D"], ["2", "A"], ["3", "B"]]),
+    ]
+    b = U.assemble_block(frags, "T1")
+    assert b.header_text.startswith("Example #")
+    assert len(b.body_rows) == 3
+
+
+def test_assembly_ignores_interleaved_annotation_fragments():
+    """US10172859: the NMR/MS rows outnumber the assay rows, so row count is
+    the wrong discriminator — the compound id is the right one."""
+    frags = [
+        _tg(6, [], [["202", "", "name", "C", "B", "B"]]),
+        _tg(3, [], [["MS: 453.2 (M + H+); Rt 73.58 min", "see racemate", ""]]),
+        _tg(6, [], [["203", "", "name", "D", "D", "A"]]),
+        _tg(3, [], [["MS: 452.2 (M + H+); Rt 24.50 min", "see racemate", ""]]),
+    ]
+    b = U.assemble_block(frags, "T1")
+    assert b.n_cols == 6
+    assert [r[0].text for r in b.body_rows] == ["202", "203"]
+
+
+def test_assembly_keeps_short_rows_that_are_real_compounds():
+    """US8952177: a 4-col row is a compound with a trailing value omitted, not
+    a different table. Selecting one width silently drops it."""
+    frags = [
+        _tg(5, [], [["1", "0.0038", "(8)", "0.4", "(3)"]]),
+        _tg(4, [], [["12", "~2", "(2)", "nt"]]),
+    ]
+    b = U.assemble_block(frags, "T1")
+    assert [r[0].text for r in b.body_rows] == ["1", "12"]
+
+
+def test_promotion_stops_at_the_first_compound_id():
+    """A graded row ["1", "D"] is name-like by shape; promoting it as a header
+    continuation eats real data off the top of the table."""
+    frags = [_tg(3, [["Compd", "Btk"]], [["ID", "(IC50)"], ["1", "D"], ["2", "A"]])]
+    b = U.assemble_block(frags, "T1")
+    assert "(IC50)" in b.header_text
+    assert [r[0].text for r in b.body_rows] == ["1", "2"]

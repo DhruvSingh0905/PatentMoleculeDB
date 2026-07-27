@@ -18,13 +18,14 @@ the entire cost advantage over HARVEST.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
-from ..sources.uspto_xml import Table, parse_tables
+from ..sources.uspto_xml import Table, assemble_blocks, parse_tables
 from .gap import Gap, find_gaps
 from .rules import (
-    COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX, VALUE_PATTERN, Rejected, Rule,
-    RuleLibrary, validate,
+    BIN_KEY, COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX, VALUE_PATTERN,
+    Rejected, Rule, RuleLibrary, validate,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,33 @@ class RepairReport:
                 f"{self.escalated} escalated, +{self.rows_recovered} rows")
 
 
+def _bins_for(payload: dict, assay_name: str | None) -> dict:
+    """The bin scale that governs one column.
+
+    A grade letter is not globally meaningful. US10172859 defines two A–D
+    scales in one legend and they run in OPPOSITE directions — `A` is
+    `IC50 < 0.5 μM` for potency and `Ki > 25 μM` for hERG, a 50-fold error if
+    the wrong one is applied. So a key may carry `scales`, each naming the
+    assays it governs; `bins` alone stays valid for the single-scale case.
+    """
+    scales = payload.get("scales")
+    if not scales:
+        return payload.get("bins") or {}
+    name = (assay_name or "").lower()
+    for s in scales:
+        pat = (s.get("match") or "").strip()
+        if not pat:
+            continue
+        try:
+            if re.search(pat, name, re.I):
+                return s.get("bins") or {}
+        except re.error:
+            continue
+    # No scale claims this column. Returning the first would be a coin flip
+    # between opposite directions, so return nothing and leave the grade raw.
+    return next((s.get("bins") or {} for s in scales if not s.get("match")), {})
+
+
 def apply_rule(rule: Rule, table: Table, patent_id: str) -> list:
     """Turn a validated rule into assay records."""
     from ..sources.uspto_assays import (
@@ -57,8 +85,27 @@ def apply_rule(rule: Rule, table: Table, patent_id: str) -> list:
     )
     from .rules import _safe_regex, _search
 
+
     if rule.kind in (NOT_ASSAY, ESCALATE):
         return []
+
+
+    if rule.kind == BIN_KEY:
+        # Re-read the block's grades as ranges. The records already exist and
+        # carry the right cid and assay name — they simply have no number. This
+        # upgrades them in place rather than re-extracting.
+        from ..sources.uspto_assays import extract_from_tables
+        out = []
+        for rec in extract_from_tables([table]):
+            b = _bins_for(rule.payload, rec.assay_name).get(
+                (rec.letter_grade or "").upper())
+            if not b or rec.value_numeric is not None:
+                continue
+            rec.range_lo, rec.range_hi = b.get("lo"), b.get("hi")
+            rec.unit = rec.unit or b.get("unit")
+            rec.source = "repair_rule_bin_key"
+            out.append(rec)
+        return out
 
     _, data = _header_rows_of(table)
     out: list = []
@@ -133,12 +180,22 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
     from ..sources.uspto_assays import extract_from_patent
 
     lib = library or RuleLibrary()
-    tables = parse_tables(xml)
+    raw = parse_tables(xml)
+    # The ASSEMBLED grid, never a fragment — see assemble_block. Both the
+    # detector and the applier read through this one view. When they disagreed,
+    # the samples shown to the model were drawn from whichever fragment came
+    # first, which on US10172859 is an interleaved NMR annotation: the model
+    # then answered `not_assay` — correctly, about the wrong table — and eight
+    # genuine assay blocks were permanently dismissed by a negative rule.
+    tables = assemble_blocks(raw)
     by_id = {t.table_id: t for t in tables}
     baseline = extract_from_patent(xml)
     per_table = Counter(r.table_id for r in baseline)
 
-    gaps = find_gaps(patent_id, tables, dict(per_table))
+    # Pass the RECORDS and the source XML, not a tally: the yield metric must
+    # ask whether each record is a usable measurement, and the legend hunt
+    # needs the document. Passing counts here silently disabled both.
+    gaps = find_gaps(patent_id, tables, baseline, _source_xml=xml)
     report = RepairReport(patent_id=patent_id, gaps_found=len(gaps))
     recovered: list = []
     calls = 0
@@ -164,7 +221,7 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
                 continue
 
             table = by_id.get(gap.table_id)
-            if rule.kind in (COLUMN_MAP, ROW_REGEX, VALUE_PATTERN) and table is not None:
+            if rule.kind in (COLUMN_MAP, ROW_REGEX, VALUE_PATTERN, BIN_KEY) and table is not None:
                 try:
                     rule.validated_on = validate(
                         rule, table, baseline_rows=per_table.get(gap.table_id, 0))

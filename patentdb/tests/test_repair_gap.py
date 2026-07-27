@@ -166,3 +166,66 @@ def test_a_lone_unnamed_group_is_promoted_rather_than_failing_the_call():
     ev = validate(r, t)
     assert ev["rescued"] >= 3
     assert "?P<num>" in r.payload["pattern"]
+
+
+# ── the invariant that would have caught three of the four bugs ──
+
+def test_detector_and_extractor_classify_tables_identically():
+    """Divergence here has caused three separate bugs.
+
+    A header-only tgroup skipped before its header was registered; a detector
+    that never inherited headers at all; the same omission reintroduced later
+    in usable_yield. Each time the detector judged a table the extractor never
+    saw, and each was found by hand. Asserting the property catches the whole
+    class without anyone having to anticipate the next instance.
+    """
+    from patentdb.repair.gap import classify_like_extractor
+    from patentdb.sources.uspto_assays import (
+        _header_rows_of, build_columns, merge_header,
+    )
+    header_only = _t(3, [["Ex No.", "TLR7 IC50 (nM)", "TLR8 IC50 (nM)"]], [],
+                     table_id="BLOCK-A")
+    data = _t(3, [], [[str(i), f"{i}.5", f"{i}.9"] for i in range(1, 21)],
+              table_id="BLOCK-A")
+    decoy = _t(3, [["Cpd", "MW", "RT (min)"]], [["1", "400.1", "1.2"]],
+               table_id="BLOCK-DECOY")
+    tables = [decoy, header_only, data]
+
+    # Replay the extractor's own walk.
+    by_width, by_block, expected = {}, {}, {}
+    for idx, t in enumerate(tables):
+        hr, d = _header_rows_of(t)
+        own = merge_header(t, hr)
+        if any(own):
+            by_width[t.n_cols] = own
+            by_block[t.table_id] = own
+        rows = [r for r in d if any(c.text.strip() for c in r)]
+        expected[idx] = [
+            c.kind for c in build_columns(
+                t, inherited=by_width.get(t.n_cols) or by_block.get(t.table_id),
+                data_rows=rows)]
+
+    got = {i: [c.kind for c in cols]
+           for i, cols in classify_like_extractor(tables).items()}
+    assert got == expected
+
+
+def test_a_record_is_usable_only_when_it_is_actually_a_measurement():
+    """1,351 grade-only records once counted as a fully-extracted table."""
+    from patentdb.sources.uspto_assays import AssayRecord
+    grade_only = AssayRecord(cid="47", assay_name="BTK IC50",
+                             letter_grade="A", unit="uM")
+    assert not grade_only.is_usable
+    assert "value" in grade_only.missing_fields()
+
+    no_unit = AssayRecord(cid="11", assay_name="IC50", value_numeric=429.0)
+    assert not no_unit.is_usable
+    assert "unit" in no_unit.missing_fields()
+
+    binned = AssayRecord(cid="1", assay_name="CBP IC50", letter_grade="+",
+                         range_lo=1.0, range_hi=1000.0, unit="uM")
+    assert binned.is_usable, "a bounded range IS a measurement"
+
+    real = AssayRecord(cid="1", assay_name="hERG IC50",
+                       value_numeric=0.0038, unit="uM")
+    assert real.is_usable

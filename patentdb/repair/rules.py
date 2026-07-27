@@ -42,6 +42,7 @@ from ..core import config
 COLUMN_MAP = "column_map"
 ROW_REGEX = "row_regex"
 VALUE_PATTERN = "value_pattern"
+BIN_KEY = "bin_key"
 NOT_ASSAY = "not_assay"
 ESCALATE = "escalate"
 
@@ -192,6 +193,72 @@ ADVERSARIAL_ROWS = [
 ]
 
 
+def _validate_bin_key(rule: Rule, table) -> dict:
+    """Gate a symbol -> numeric range mapping read out of the patent's own text.
+
+    This is what lets the loop learn a legend GRAMMAR it has never seen. Rather
+    than adding a parser per format — `A <= 10 nM; 10 nM < B <= 100 nM`,
+    `++++: IC50 >= 1 uM`, `is marked "+++"` — the model reads whichever form the
+    patent used and returns the mapping. The gate checks the mapping, not the
+    prose, so any future format is covered for free.
+
+    Rejected unless the bins are internally coherent and actually cover the
+    grades in the table: a key that explains none of the symbols present is
+    either hallucinated or belongs to a different table.
+    """
+    from ..sources.uspto_assays import _header_rows_of
+
+    # A key may define one scale (`bins`) or several column-scoped ones
+    # (`scales`). Validate the union: every bin of every scale must be coherent,
+    # and between them they must explain the grades this table actually uses.
+    scales = rule.payload.get("scales") or []
+    if scales:
+        for s in scales:
+            if not (s.get("bins") or {}):
+                raise Rejected("a scale carries no bins")
+            pat = (s.get("match") or "").strip()
+            if pat:
+                try:
+                    re.compile(pat)
+                except re.error as e:
+                    raise Rejected(f"scale match {pat!r} is not a regex: {e}")
+        if sum(1 for s in scales if not (s.get("match") or "").strip()) > 1:
+            raise Rejected("more than one unscoped scale — which governs which "
+                           "column is then undefined")
+        bins = {k: v for s in scales for k, v in (s.get("bins") or {}).items()}
+    else:
+        bins = rule.payload.get("bins") or {}
+    if not bins:
+        raise Rejected("bin_key carries no bins")
+    present = set()
+    _, data = _header_rows_of(table)
+    for r in data:
+        for c in r:
+            v = c.text.strip()
+            if v and (len(v) == 1 and v.isalpha() or set(v) == {"+"}):
+                present.add(v.upper())
+    if not present:
+        raise Rejected("no grade symbols found in this table to apply a key to")
+
+    covered = {k.upper() for k in bins} & present
+    if not covered:
+        raise Rejected(
+            f"key defines {sorted(bins)} but the table uses {sorted(present)} — "
+            f"it belongs to a different table")
+
+    for sym, b in bins.items():
+        lo, hi = b.get("lo"), b.get("hi")
+        if lo is None and hi is None:
+            raise Rejected(f"bin {sym!r} has neither bound")
+        if lo is not None and hi is not None and lo >= hi:
+            raise Rejected(f"bin {sym!r} has lo >= hi ({lo} >= {hi})")
+        if not b.get("unit"):
+            raise Rejected(f"bin {sym!r} has no unit; a range without one is unusable")
+
+    return {"symbols_in_table": sorted(present), "symbols_defined": sorted(bins),
+            "coverage": round(len(covered) / len(present), 3), "kind": BIN_KEY}
+
+
 def _validate_value_pattern(rule: Rule, table) -> dict:
     """Gate a proposed CELL parser. Three conditions, all mandatory.
 
@@ -294,6 +361,9 @@ def validate(rule: Rule, table, *, min_yield: float = 0.5,
 
     if rule.kind == VALUE_PATTERN:
         return _validate_value_pattern(rule, table)
+
+    if rule.kind == BIN_KEY:
+        return _validate_bin_key(rule, table)
 
     _, data = _header_rows_of(table)
     all_rows = [r for r in data if any(c.text.strip() for c in r)]

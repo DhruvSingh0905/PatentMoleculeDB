@@ -39,7 +39,8 @@ from ..core import config
 from ..core.api_cache import get_cached, store_cached
 from ..core.cost_tracker import cost_tracker
 from .gap import Gap
-from .rules import COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX, VALUE_PATTERN, Rule
+from .rules import (BIN_KEY, COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX,
+                    VALUE_PATTERN, Rule)
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ SYNTH_MODEL = config.MODEL_HAIKU
 # the layout fingerprint, which is content-independent by design — so without
 # a version here, improving the prompt silently replays answers produced by
 # the old one. Exactly the stale-cache trap the repo's CLAUDE.md warns about.
-PROMPT_VERSION = "v5-named-groups"
+PROMPT_VERSION = "v8-scales-in-system"
 
 # Frozen prefix — identical on every call so it can be prompt-cached (cache
 # reads bill at ~0.1x). Everything patent-specific goes in the user turn.
@@ -78,6 +79,14 @@ numbers we are failing to read, the problem is our cell parser, not the layout \
 superset of what already works: it will be rejected if it changes the value of \
 any cell we currently read correctly, or if it matches non-measurements.
 
+If the cells hold grade symbols (A-E, +/++/+++) and the patent's text defines \
+what they mean, return `bin_key`. If that text defines MORE THAN ONE scale over \
+the same symbols — commonly a potency scale and a hERG/selectivity scale, which \
+usually run in OPPOSITE directions — that is not a reason to escalate: return \
+`scales`, one entry per scale, each with a `match` regex naming the assay \
+columns it governs. Escalating a multi-scale legend throws away data we can \
+extract; merging the scales, or picking one, is a silent 50-fold error.
+
 If the table is characterisation data rather than assay data, return \
 `not_assay`. If you cannot describe a safe rule, return `escalate` and say \
 what capability is missing. Guessing is worse than escalating: a wrong rule \
@@ -91,7 +100,7 @@ TOOL = {
         "properties": {
             "kind": {
                 "type": "string",
-                "enum": [COLUMN_MAP, ROW_REGEX, VALUE_PATTERN, NOT_ASSAY, ESCALATE],
+                "enum": [COLUMN_MAP, ROW_REGEX, VALUE_PATTERN, BIN_KEY, NOT_ASSAY, ESCALATE],
                 "description": "Which sort of rule applies to this layout.",
             },
             "cid_column": {
@@ -134,6 +143,56 @@ TOOL = {
             "value_columns": {
                 "type": "array", "items": {"type": "integer"},
                 "description": "value_pattern only: which column indices it applies to.",
+            },
+            "bins": {
+                "type": "array",
+                "description": ("bin_key only: each grade symbol and the numeric "
+                                "range it denotes, read from the patent's own text."),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "e.g. A, B, ++"},
+                        "lo": {"type": "number", "description": "lower bound, omit if unbounded"},
+                        "hi": {"type": "number", "description": "upper bound, omit if unbounded"},
+                        "unit": {"type": "string", "description": "nM, uM, mM or pM"},
+                    },
+                    "required": ["symbol", "unit"],
+                },
+            },
+            "scales": {
+                "type": "array",
+                "description": (
+                    "bin_key only, INSTEAD of `bins`, when the legend defines "
+                    "more than one scale over the same symbols — e.g. one A-D "
+                    "scale for potency and another for hERG, often running in "
+                    "opposite directions. One entry per scale."),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "match": {
+                            "type": "string",
+                            "description": (
+                                "Regex matched case-insensitively against the "
+                                "assay/column name this scale governs, e.g. "
+                                "'herg|kv11' or 'dna-?pk'. Omit on at most one "
+                                "entry to make it the default."),
+                        },
+                        "bins": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "symbol": {"type": "string"},
+                                    "lo": {"type": "number"},
+                                    "hi": {"type": "number"},
+                                    "unit": {"type": "string"},
+                                },
+                                "required": ["symbol", "unit"],
+                            },
+                        },
+                    },
+                    "required": ["bins"],
+                },
             },
             "because": {
                 "type": "string",
@@ -198,6 +257,19 @@ def _to_rule(fingerprint: str, out: dict, model: str, sample: str = "") -> Rule:
         }
     elif kind == ROW_REGEX:
         payload = {"pattern": out.get("pattern", "")}
+    elif kind == BIN_KEY:
+        def _bins(items):
+            return {b["symbol"].upper(): {"lo": b.get("lo"), "hi": b.get("hi"),
+                                          "unit": b.get("unit")}
+                    for b in (items or []) if b.get("symbol")}
+
+        if out.get("scales"):
+            payload = {"scales": [
+                {"match": s.get("match") or "", "bins": _bins(s.get("bins"))}
+                for s in out["scales"] if s.get("bins")
+            ]}
+        else:
+            payload = {"bins": _bins(out.get("bins"))}
     elif kind == VALUE_PATTERN:
         payload = {"pattern": out.get("value_pattern", ""),
                    "columns": out.get("value_columns") or None}
@@ -225,8 +297,20 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "") -> Rule 
             + "\n  ".join(repr(c) for c in gap.unparsed_examples)
             + "\nIf these are plainly measurements, the fault is our cell parser "
               "and the fix is `value_pattern`, not `column_map`.\n")
+    legends = ""
+    if gap.legend_candidates:
+        legends = ("\nTEXT FOUND ELSEWHERE IN THIS PATENT THAT MAY DEFINE THESE "
+                   "GRADES:\n  " + "\n  ".join(c[:300] for c in gap.legend_candidates)
+                   + "\nIf it defines them, return `bin_key` mapping each symbol "
+                     "to its numeric range.\nIf the text defines MORE THAN ONE "
+                     "scale over the same symbols — a potency scale and a "
+                     "selectivity/hERG scale, say — do NOT merge them and do NOT "
+                     "pick one. They frequently run in opposite directions, so "
+                     "applying the wrong one is a large silent error. Return "
+                     "`scales` instead, one entry per scale, each with a `match` "
+                     "regex naming the assay columns it governs.\n")
     prompt = (
-        f"PROBLEM: {gap.reason}\n"
+        f"PROBLEM: {gap.reason}\n{legends}"
         f"{failing}\n"
         f"Table fragment (patent {gap.patent_id}, {gap.n_cols} columns, "
         f"{gap.n_data_rows} data rows).\n"

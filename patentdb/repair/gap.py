@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 
 from ..sources.uspto_assays import (
@@ -53,6 +54,10 @@ class Gap:
     # we can show a model: without them it sees a healthy-looking table and
     # proposes a column_map, because nothing on screen says which cells failed.
     unparsed_examples: list[str] = field(default_factory=list)
+    # Text found ANYWHERE in the document that appears to define this table's
+    # grade symbols. Position-based capture failed three times; searching by
+    # shape is what makes an unseen legend grammar learnable.
+    legend_candidates: list[str] = field(default_factory=list)
 
     @property
     def severity(self) -> int:
@@ -117,6 +122,15 @@ def _sample_of(table: Table, headers: list[str], max_rows: int = 4) -> str:
     # to them by index. Without this it cannot say "column 0 is the id" with
     # any confidence, and its first response to an unheadered table was to
     # escalate for exactly that reason.
+    # Text just before the table. A bin key that defines the grades is usually
+    # here rather than in the caption, and without it a model shown a column of
+    # `A`/`B`/`D` has no way to turn them into measurements.
+    prev = (getattr(table, "preceding", "") or "").strip()
+    if prev:
+        lines.append(f"TEXT BEFORE TABLE: ...{prev[-320:]}")
+    nxt = (getattr(table, "following", "") or "").strip()
+    if nxt:
+        lines.append(f"TEXT AFTER TABLE: {nxt[:320]}...")
     lines.append(f"COLUMNS: {table.n_cols} (indices 0..{table.n_cols - 1})")
     if any(headers):
         lines.append("HEADER: " + " | ".join(
@@ -134,8 +148,9 @@ def _sample_of(table: Table, headers: list[str], max_rows: int = 4) -> str:
     return "\n".join(lines)
 
 
-def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str, int],
-              *, min_rows: int = 5, max_read_fraction: float = 0.5) -> list[Gap]:
+def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
+              *, min_rows: int = 5, max_read_fraction: float = 0.5,
+              min_yield: float = 0.5, _source_xml: str = "") -> list[Gap]:
     """Tables that visibly hold data we did not extract.
 
     `extracted_by_table` maps table_id → records produced. A table with many
@@ -165,8 +180,43 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
     inherit_by_width: dict[int, list[str]] = {}
     inherit_by_block: dict[str, list[str]] = {}
 
+    # PRIMARY SIGNAL: measurement-shaped cells in versus USABLE records out.
+    # Runs first and on its own terms — the per-guard checks below are the older
+    # proxy heuristics, kept only for blocks this cannot judge.
     gaps: list[Gap] = []
     seen_blocks: set[str] = set()
+    judged_blocks: set[str] = set()
+    if not isinstance(extracted_by_table, dict):
+        records = list(extracted_by_table)
+        extracted_by_table = Counter(r.table_id for r in records)
+        by_id = {t.table_id: t for t in tables}
+        for tid, d in usable_yield(tables, records).items():
+            if d["shaped_cells"] < 10:
+                continue
+            judged_blocks.add(tid)          # measured: the proxies must stay quiet
+            if d["yield"] >= min_yield:
+                continue
+            grades = {r.letter_grade for r in records
+                      if r.table_id == tid and r.letter_grade}
+            legends = hunt_legends(_source_xml or "", grades) if grades else []
+            t = by_id.get(tid)
+            if t is None:
+                continue
+            hr, _ = _header_rows_of(t)
+            hdrs = merge_header(t, hr)
+            what = d["dominant_missing"]
+            fix = _MISSING_TO_REPAIR.get(what, "no records were produced for this block")
+            gaps.append(Gap(
+                patent_id=patent_id, table_id=tid, n_cols=t.n_cols,
+                n_data_rows=rows_per_block.get(tid, 0), n_extracted=d["usable"],
+                fingerprint=layout_fingerprint(t, hdrs),
+                reason=(f"{d['usable']} usable measurements from {d['shaped_cells']} "
+                        f"measurement-shaped cells ({d['yield']:.0%}) — {fix}"),
+                sample=_sample_of(t, hdrs), headers=hdrs,
+                column_kinds=[c.kind for c in build_columns(t)],
+                legend_candidates=legends,
+            ))
+            seen_blocks.add(tid)
     for t in tables:
         hdr_rows, data = _header_rows_of(t)
         rows = [r for r in data if any(c.text.strip() for c in r)]
@@ -187,8 +237,10 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
 
         if len(rows) < min_rows:
             continue
-        # One gap per block, raised from its largest tgroup.
-        if t.table_id in seen_blocks:
+        # One gap per block. Blocks the yield metric already judged are done —
+        # the proxy guards below exist only for blocks it cannot measure (no
+        # assay column identified, so no denominator).
+        if t.table_id in seen_blocks or t.table_id in judged_blocks:
             continue
         block_rows = rows_per_block.get(t.table_id, len(rows))
         headers = own
@@ -292,6 +344,16 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
             seen_blocks.add(t.table_id)
             continue
 
+        # A block with a compound id but NO assay column is a characterisation
+        # table (MW, m/z, retention time) unless its own prose says otherwise.
+        # Flagging those made the detector shout about every healthy patent —
+        # US9718825 is 100% extracted and was raising 7 gaps. Reuse the caption
+        # gate the extractor already trusts rather than inventing a new test.
+        if ASSAY not in kinds:
+            from ..sources.uspto_assays import caption_assay_hint
+            if not caption_assay_hint(f"{t.caption} {table_legend(t)}")[0]:
+                continue
+
         if CID not in kinds and ASSAY not in kinds:
             reason = "no compound-id column and no assay column identified"
         elif CID not in kinds:
@@ -318,12 +380,156 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
     return gaps
 
 
+def classify_like_extractor(tables: list[Table]) -> dict[int, list]:
+    """Classify every tgroup exactly as `extract_from_tables` does.
+
+    Detector/extractor divergence has now caused three separate bugs: a
+    header-only tgroup skipped before its header was registered, a detector
+    that never inherited headers at all, and the same omission reintroduced in
+    usable_yield. Each time the detector judged a table the extractor never
+    saw. There is one implementation of the walk now, and both sides call it.
+    """
+    by_width: dict[int, list[str]] = {}
+    by_block: dict[str, list[str]] = {}
+    out: dict[int, list] = {}
+    for idx, t in enumerate(tables):
+        hr, data = _header_rows_of(t)
+        own = merge_header(t, hr)
+        if any(own):                       # register BEFORE any skip
+            by_width[t.n_cols] = own
+            by_block[t.table_id] = own
+        rows = [r for r in data if any(c.text.strip() for c in r)]
+        out[idx] = build_columns(
+            t, inherited=by_width.get(t.n_cols) or by_block.get(t.table_id),
+            data_rows=rows)
+    return out
+
+
+def usable_yield(tables: list[Table], records) -> dict[str, dict]:
+    """Per `<tables>` block: measurement-shaped cells in, usable records out.
+
+    ONE metric replaces the proxies. Every detector bug this session came from
+    measuring something correlated with success rather than success itself —
+    records produced, rows read, coverage ratio — and each proxy was blind to a
+    failure the others caught:
+
+        rows-vs-cells      a bug eating SOME cells per row left rows healthy
+        block-vs-tgroup    counts keyed by block, rows counted per tgroup
+        records-vs-values  1,351 grade-only records looked fully extracted
+
+    Counting measurement-shaped CELLS against USABLE records is immune to all
+    three, and to failure modes not yet seen: anything that stops a cell
+    becoming an actionable measurement shows up as a shortfall, whatever caused
+    it. The dominant missing field then names the repair.
+    """
+    from collections import Counter
+    shaped: dict[str, int] = {}
+    classified = classify_like_extractor(tables)
+    for idx, t in enumerate(tables):
+        _, data = _header_rows_of(t)
+        rows = [r for r in data if any(c.text.strip() for c in r)]
+        cols = classified[idx]
+        cid_i = next((c.index for c in cols if c.kind == CID), None)
+        assay_i = [c.index for c in cols if c.kind == ASSAY]
+        # Only cells in ASSAY columns count. Counting every numeric cell beside a
+        # cid made characterisation blocks (MW, m/z, retention time) look like
+        # 840 unextracted measurements on US9718825, whose assay data is in fact
+        # 100% extracted. The denominator has to be the same population the
+        # numerator is drawn from, or the ratio is meaningless.
+        if cid_i is None or not assay_i:
+            continue
+        n = 0
+        for r in rows:
+            if len(r) <= cid_i or not _CID_PAT.match(r[cid_i].text.strip()):
+                continue
+            for i in assay_i:
+                if len(r) <= i:
+                    continue
+                v = r[i].text.strip()
+                if v and v not in _NULLISH and (_NUMERIC.match(v) or _BIN.match(v)):
+                    n += 1
+        shaped[t.table_id] = shaped.get(t.table_id, 0) + n
+
+    out: dict[str, dict] = {}
+    by_block: dict[str, list] = {}
+    for rec in records:
+        by_block.setdefault(rec.table_id, []).append(rec)
+    for tid, n_shaped in shaped.items():
+        recs = by_block.get(tid, [])
+        usable = sum(1 for r in recs if r.is_usable)
+        missing = Counter(f for r in recs for f in r.missing_fields())
+        out[tid] = {
+            "shaped_cells": n_shaped,
+            "records": len(recs),
+            "usable": usable,
+            "yield": usable / n_shaped if n_shaped else 0.0,
+            "dominant_missing": missing.most_common(1)[0][0] if missing else None,
+        }
+    return out
+
+
+# What each missing field means for repair — the diagnosis maps straight to a
+# rule kind, so the detector says what to ask for rather than just "this failed".
+_MISSING_TO_REPAIR = {
+    "value": ("the cells hold grades or a format our parser cannot read; needs a "
+              "bin key or a value_pattern"),
+    "unit": ("values parse but no unit was found in header, legend or "
+             "description; needs unit resolution"),
+    "assay_name": "columns produce values but none could be named; needs a column_map",
+    "cid": "no column could be read as a compound identifier; needs a column_map",
+}
+
+
 def gaps_for_patent(patent_id: str, xml: str) -> list[Gap]:
     """Convenience wrapper: parse, extract, and report what was left behind."""
-    from collections import Counter
-
     from ..sources.uspto_assays import extract_from_patent
     from ..sources.uspto_xml import parse_tables
     tables = parse_tables(xml)
-    per_table = Counter(r.table_id for r in extract_from_patent(xml))
-    return find_gaps(patent_id, tables, dict(per_table))
+    # Pass the RECORDS, not a count — the detector must be able to ask whether
+    # each one is a usable measurement, which a tally cannot answer.
+    return find_gaps(patent_id, tables, extract_from_patent(xml), _source_xml=xml)
+
+
+# Symbols a patent grades compounds with, and every comparison glyph seen in the
+# wild. U+2266/U+2267 (LESS-THAN OVER EQUAL TO) are CJK-compatibility variants
+# that appear as often as the U+2264/U+2265 forms in this corpus, and matching
+# only the latter silently loses half of them.
+_CMP = r"[<>≤≥≦≧]|&lt;|&gt;"
+_LEGEND_SHAPE = re.compile(
+    rf"(?:\b[A-Z]\b|\+{{1,5}})\s*(?:{_CMP})\s*\d+(?:\.\d+)?\s*"
+    rf"(?:nM|[μuµ]M|mM|pM|nanomolar|micromolar)", re.I)
+
+
+def hunt_legends(xml: str, symbols: set[str], *, max_hits: int = 4) -> list[str]:
+    """Search the WHOLE document for text that defines these grade symbols.
+
+    Position-based capture cannot work. The key for US9656988 is a trailing
+    footnote ROW INSIDE its own table — not a caption, not a paragraph before
+    the block, not one after it. Three separate windowing attempts missed it,
+    each for a different structural reason.
+
+    So stop guessing where it lives and search for what it looks like: a symbol
+    next to a comparator next to a number with a concentration unit. That is
+    format-agnostic — it finds `A ≦ 10 nM; 10 nM < B ≦ 100 nM`, `++++: IC50 ≥ 1
+    uM` and `is marked "+++"` alike — and it makes the loop able to LEARN a
+    legend grammar we have never implemented, instead of needing a new parser
+    per format.
+
+    Only spans mentioning a symbol the table actually uses are returned, so an
+    unrelated key elsewhere in the patent is not attached to the wrong table.
+    """
+    import html as _html
+    flat = re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", xml)))
+    out: list[str] = []
+    for m in _LEGEND_SHAPE.finditer(flat):
+        span = flat[max(0, m.start() - 90):m.start() + 260].strip()
+        if symbols and not any(
+                re.search(rf"(?:\b{re.escape(s)}\b|{re.escape(s)}\s*(?:{_CMP}))", span)
+                for s in symbols):
+            continue
+        if any(span[:60] in o for o in out):
+            continue
+        out.append(span)
+        if len(out) >= max_hits:
+            break
+    return out

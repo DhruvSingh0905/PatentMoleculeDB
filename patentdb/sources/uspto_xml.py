@@ -98,6 +98,11 @@ class Table:
     # Text immediately preceding the table. Assay names usually live here or in
     # the header, so the caller needs it to label columns.
     caption: str = ""
+    # Bounded raw text immediately before the block, any element type. Legends
+    # live here as often as they live in a caption.
+    preceding: str = ""
+    # Bounded raw text immediately after the block. Keys are often footnotes.
+    following: str = ""
 
     @property
     def header_text(self) -> str:
@@ -291,6 +296,18 @@ def parse_tables(xml: str) -> list[Table]:
         window = xml[max(0, tbl.start() - 3000):tbl.start()]
         prev = re.findall(r"<(?:p|heading)\b[^>]*>(.*?)</(?:p|heading)>", window, re.S)
         caption = _text(prev[-1]) if prev else ""
+        # Raw preceding text, tags stripped, regardless of element type. Bin-key
+        # legends are frequently NOT in a <p>: US9656988 states
+        # "IC 50 : A <= 10 nM; 10 nM < B <= 100 nM; ..." in the trailing content
+        # of the PREVIOUS <tables> element, so a <p>-only look-back cannot see
+        # it and the grades are unreadable without it.
+        preceding = _text(window)[-700:]
+        # ...and AFTER it. A bin key is as often a footnote as a caption:
+        # US9656988 prints "IC 50 : A <= 10 nM; 10 nM < B <= 100 nM; ..."
+        # immediately following TABLE-US-00001, serving both that table and the
+        # next. Looking only backwards finds it for one table and misses it for
+        # the other.
+        following = _text(xml[tbl.end():tbl.end() + 1200])[:700]
         for tg in re.finditer(r"<tgroup\b([^>]*)>(.*?)</tgroup>", block, re.S):
             attrs, body = tg.group(1), tg.group(2)
             m = re.search(r'cols="(\d+)"', attrs)
@@ -308,9 +325,203 @@ def parse_tables(xml: str) -> list[Table]:
             out.append(Table(
                 table_id=table_id, n_cols=n_cols,
                 header_rows=header_rows, body_rows=body_rows,
-                caption=caption,
+                caption=caption, preceding=preceding, following=following,
             ))
     return out
+
+
+# A cell that is really running prose — an NMR shift list, an MS trace, a
+# chromatography method — rather than a column name. USPTO interleaves these as
+# their own narrow tgroups between data rows, and they land in `thead` often
+# enough that a naive "first header we see" picks one up.
+_PROSE_CELL = re.compile(
+    r"\(m,|\(d,|\(dd,|\(s,|\(t,|\bJ\s*=|\bppm\b|\bMS\s*:|\bM\s*\+\s*H|"
+    r"\bRt\b|\bHPLC\b|\bChiral(?:cel|pak)\b|δ", re.I)
+
+
+# A compound-identifier cell: "1", "12a", "A-7", "Ex. 203". Deliberately tight —
+# it is used to tell a data row from an interleaved annotation row, so admitting
+# prose would defeat the purpose.
+_ID_CELL = re.compile(r"(?:(?:Ex(?:ample)?\.?|Cpd|Compound)\s*)?[A-Za-z]{0,3}[-–]?\d{1,5}[-–]?[a-z]?", re.I)
+
+
+def _opens_with_id(cells: list["Cell"]) -> bool:
+    texts = [c.text.strip() for c in cells if c.text.strip()]
+    return bool(texts) and bool(_ID_CELL.fullmatch(texts[0]))
+
+
+def _row_key(cells: list["Cell"]) -> tuple[str, ...]:
+    """Identity of a row by its visible text, for de-duplicating repeats."""
+    return tuple(c.text.strip() for c in cells)
+
+
+def _is_namelike(cells: list["Cell"]) -> bool:
+    """Does this row look like column names rather than data or prose?"""
+    texts = [c.text.strip() for c in cells if c.text.strip()]
+    if len(texts) < 2:
+        return False
+    if any(_PROSE_CELL.search(t) or len(t) > 60 for t in texts):
+        return False
+    # All-numeric rows are data, not headers.
+    return not all(re.fullmatch(r"[\d.,;:<>=~\s-]+", t) for t in texts)
+
+
+def assemble_block(tables: list["Table"], table_id: str) -> "Table | None":
+    """Every tgroup of one `<tables>` block, stitched into the grid it encodes.
+
+    USPTO does not put a logical table in one tgroup. It fragments it, and the
+    fragmentation is not a fixed shape:
+
+      * a 2-row title stub, then a 1-row header stub, then the data
+        (US9656988 TABLE-US-00001 — the header says `BTK IC50`, the data tgroup
+        has no header at all)
+      * 141 alternating tgroups, a 6-col data row followed by a 3-col NMR
+        annotation, per compound (US10172859 TABLE-US-00006)
+
+    Picking one tgroup loses the rest. `max(..., len(body_rows))` — the previous
+    behaviour — kept 72 of 570 rows on US10172859 and discarded the tgroup
+    holding the column names on US9656988, which is why 830 correctly-binned
+    records came back as `unnamed assay`.
+
+    So: take the block's *modal width* (weighted by rows, not by tgroup count —
+    a block can hold more annotation tgroups than data ones), concatenate the
+    body of every tgroup at that width, and take the header from the first
+    width-matching sibling that has one. Fragments at other widths are
+    interleaved annotation and are dropped.
+
+    This is the single view of a block. The detector and the repair path must
+    both read through it — having two ways to count a block's rows is what
+    produced five successive detector/applier mismatches.
+    """
+    same = [t for t in tables if t.table_id == table_id]
+    if not same:
+        return None
+
+    # Which width carries the DATA is not the width with the most rows. On
+    # US10172859 the interleaved NMR/MS annotations (3 cols, 314 rows) outnumber
+    # the assay rows (6 cols, 123 rows) — weighting by row count picks the prose.
+    # The discriminator that actually separates them is the compound id: an
+    # assay row opens with one, an annotation row opens with "MS: 453.2 (M + H".
+    # Nor is it a question of width alone. US8952177 TABLE-US-00003 interleaves
+    # 4-col and 5-col tgroups and BOTH are data — the short rows are compounds
+    # with a trailing value omitted. Selecting one width discards 190 of 359.
+    # So classify each fragment by whether its rows open with a compound id, and
+    # keep every fragment that does, at whatever width.
+    kin, filled = [], 0
+    for t in same:
+        n = sum(1 for r in t.body_rows if any(c.text.strip() for c in r))
+        if not n:
+            continue
+        filled += n
+        if sum(1 for r in t.body_rows if _opens_with_id(r)) * 2 >= n:
+            kin.append(t)
+    if not filled:                               # header-only block
+        return max(same, key=lambda t: len(t.body_rows))
+    if kin:
+        width = max(t.n_cols for t in kin)
+    else:
+        # No identifiers anywhere — fall back to the widest well-populated
+        # fragment, which is the old behaviour and right for legend tables.
+        rows_by_width: dict[int, int] = {}
+        for t in same:
+            rows_by_width[t.n_cols] = rows_by_width.get(t.n_cols, 0) + sum(
+                1 for r in t.body_rows if any(c.text.strip() for c in r))
+        width = max(rows_by_width, key=lambda w: (rows_by_width[w], w))
+        kin = [t for t in same if t.n_cols == width]
+
+    # A header split over several rows ("IC50 / DNA-PK") arrives as several
+    # tgroups' theads, and a header repeated at each page break arrives again in
+    # the body. Collect the distinct name-like rows across the block: that both
+    # assembles the multi-row header and gives us the set to suppress below.
+    #
+    # Harvest from every sibling at the chosen width, not just the data ones. A
+    # header fragment carries no compound ids, so it is never in `kin`; on
+    # US9656988 the second header row `['#','IC50']` lives there, and without it
+    # the column reads as "BTK" rather than "BTK IC50" and classifies as
+    # non-assay — the whole table then yields nothing.
+    header_rows: list[list[Cell]] = []
+    seen_hdr: set[tuple[str, ...]] = set()
+    data_ids = {id(t) for t in kin}
+    # At ANY width, not just the chosen one: US8952177 TABLE-US-00003 publishes
+    # its header as narrow fragments — one 2-cell row carrying both assay names,
+    # continuation rows carrying the units — inside a 5-column block. Row width
+    # is not column position, and `_choose_offsets` already aligns partial
+    # header rows against the data; feeding it fewer rows is what loses columns.
+    for t in same:
+        rows = list(t.header_rows)
+        if id(t) not in data_ids:
+            rows += t.body_rows          # a header fragment's "body" is header
+        for r in rows:
+            if not _is_namelike(r):
+                continue
+            k = _row_key(r)
+            if k not in seen_hdr:
+                seen_hdr.add(k)
+                header_rows.append(r)
+    if not header_rows:
+        # No thead anywhere at this width. The header may have been demoted into
+        # the body of an early fragment (US9656988: the `['Example #','BTK IC50']`
+        # tgroup carries it as its only body row).
+        for t in same:
+            for r in t.header_rows + t.body_rows:
+                # Same id guard as the promotion below: a graded data row is
+                # name-like by shape, and claiming it as the header both loses
+                # the row and mislabels every column after it.
+                if _opens_with_id(r):
+                    break
+                if _is_namelike(r) and len({c.text.strip() for c in r if c.text.strip()}) > 1:
+                    header_rows = [r]
+                    seen_hdr.add(_row_key(r))
+                    break
+            if header_rows:
+                break
+
+    body: list[list[Cell]] = []
+    for t in kin:
+        for r in t.body_rows:
+            if not any(c.text.strip() for c in r):
+                continue
+            if _row_key(r) in seen_hdr:          # header repeated at a page break
+                continue
+            body.append(r)
+
+    # A multi-row header ("Compd / ID", "Btk / (IC50)") only ever has its first
+    # row in `thead`; the continuation rows are demoted into the body. Promote
+    # any name-like rows still leading the assembled body — they are header, and
+    # left in place they parse as a compound called "ID" with a value of "(IC50)".
+    # Stop at the first compound id. Without that guard a graded row like
+    # ["1", "D"] reads as name-like — two short non-numeric cells — and the
+    # promotion eats real data off the top of the table.
+    while (len(header_rows) < 5 and body and _is_namelike(body[0])
+           and not _opens_with_id(body[0])):
+        header_rows.append(body.pop(0))
+
+    first = kin[0]
+    return Table(
+        table_id=table_id, n_cols=width,
+        header_rows=header_rows, body_rows=body,
+        caption=first.caption, preceding=first.preceding,
+        following=same[-1].following,
+    )
+
+
+def assemble_blocks(tables: list["Table"]) -> list["Table"]:
+    """`assemble_block` over every block, in document order."""
+    seen: list[str] = []
+    for t in tables:
+        if t.table_id not in seen:
+            seen.append(t.table_id)
+    out = []
+    for tid in seen:
+        a = assemble_block(tables, tid)
+        if a is not None:
+            out.append(a)
+    return out
+
+
+# Retained name: several call sites ask for "the tgroup with the data" and now
+# get the assembled block, which is what they always meant.
+block_data_tgroup = assemble_block
 
 
 def description_text(xml: str) -> str:

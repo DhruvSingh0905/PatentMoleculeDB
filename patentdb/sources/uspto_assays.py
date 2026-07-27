@@ -294,6 +294,41 @@ class AssayRecord:
     def as_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v not in (None, "")}
 
+    def missing_fields(self) -> list[str]:
+        """What stops this from being a usable measurement.
+
+        The completeness contract. Every detector bug this session came from
+        measuring a PROXY for success — records produced, rows read, coverage
+        ratio — and each proxy was blind to some failure the others caught.
+        A grade-only record with no key satisfies "a record was produced" while
+        containing no measurement at all.
+
+        So the single question is asked of the output itself: is this a usable
+        measurement, and if not, which field is missing? The missing field IS
+        the diagnosis, and it maps directly onto a repair:
+
+            value      -> value_pattern, or a bin key that was never found
+            unit       -> unit resolution from header/legend/description
+            assay_name -> column_map
+            cid        -> column_map
+        """
+        missing = []
+        if not self.cid:
+            missing.append("cid")
+        if not self.assay_name or "unnamed" in self.assay_name.lower():
+            missing.append("assay_name")
+        if (self.value_numeric is None
+                and self.range_lo is None and self.range_hi is None):
+            missing.append("value")
+        if not self.unit:
+            missing.append("unit")
+        return missing
+
+    @property
+    def is_usable(self) -> bool:
+        """A measurement a chemist could act on: identified, named, quantified."""
+        return not self.missing_fields()
+
 
 # ── header handling ───────────────────────────────────────────────
 
@@ -778,6 +813,40 @@ def extract_inverted(tables: list[Table], bin_key: dict, *,
     return out
 
 
+def _best_per_block(raw: list[Table]) -> list[Table]:
+    """Per `<tables>` block, whichever view yields more usable records.
+
+    The two views are the block's raw tgroups (each parsed on its own, headers
+    inherited from the previous one) and the single grid `assemble_block` builds
+    from them. Neither dominates: assembly is required wherever a block is
+    fragmented per compound, and loses wherever a block's columns are spanned
+    without `namest`. Scored on usable records — the completeness contract —
+    rather than on row or record count, because a restructuring that doubles the
+    record count while stripping the unit off every one of them is not a win.
+    """
+    from .uspto_xml import assemble_block
+
+    order: list[str] = []
+    for t in raw:
+        if t.table_id not in order:
+            order.append(t.table_id)
+
+    out: list[Table] = []
+    for tid in order:
+        frag = [t for t in raw if t.table_id == tid]
+        merged = assemble_block(raw, tid)
+        if merged is None:
+            out.extend(frag)
+            continue
+        n_frag = sum(1 for r in extract_from_tables(frag) if r.is_usable)
+        n_merged = sum(1 for r in extract_from_tables([merged]) if r.is_usable)
+        if n_merged >= n_frag:
+            out.append(merged)
+        else:
+            out.extend(frag)
+    return out
+
+
 def extract_from_patent(xml: str) -> list[AssayRecord]:
     """Full extraction for one patent.
 
@@ -792,19 +861,40 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
     from . import bin_legend
     from .uspto_xml import description_text, parse_tables
 
-    tables = parse_tables(xml)
+    raw = parse_tables(xml)
+    # One assembled grid per <tables> block. A block is fragmented into many
+    # tgroups and no single one of them is the table; see `assemble_block`.
+    #
+    # Assembly is applied per block and only where it WINS. Some blocks encode
+    # column spans that survive the per-tgroup path and are unrecoverable once
+    # merged: US8952177 TABLE-US-00003 writes "FLAP Binding wild / Human Whole
+    # Blood" as two colspan-1 cells that actually span two sub-columns each,
+    # and CALS `namest` is absent, so the pairing exists nowhere in the source.
+    # Assembling that block costs 169 units; assembling US10172859 gains 498
+    # rows. Choosing per block keeps both — and the same anti-deletion rule the
+    # repair loop applies to model-proposed rules applies here: a restructuring
+    # must add usable records, never remove them.
+    tables = _best_per_block(raw)
     records = extract_from_tables(tables)
+
+    assembled = {t.table_id: t for t in tables}
 
     # Resolve a bin key for each <tables> block from its own legend, caption or
     # trailing footnote. The key often sits AFTER the data it explains.
+    #
+    # Legend text is harvested from the RAW tgroups, not the assembled grid:
+    # assembly keeps only the block's data width, and a legend is routinely
+    # published as a narrow fragment alongside it. Records, by contrast, come
+    # from the assembled grid.
     by_block: dict[str, list[Table]] = {}
-    for t in tables:
+    for t in raw:
         by_block.setdefault(t.table_id, []).append(t)
 
-    for block_id, block in by_block.items():
+    for block_id, raw_block in by_block.items():
+        block = [assembled[block_id]] if block_id in assembled else raw_block
         text = " ".join(
-            [block[0].caption] + [table_legend(t) for t in block]
-            + [c.text for t in block for r in t.body_rows for c in r
+            [raw_block[0].caption] + [table_legend(t) for t in raw_block]
+            + [c.text for t in raw_block for r in t.body_rows for c in r
                if bin_legend.looks_like_key(c.text)]
         )
         if not bin_legend.looks_like_key(text):
@@ -812,7 +902,7 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
         key = bin_legend.parse_bin_key(text)
         if not key:
             continue
-        name, unit = caption_assay_hint(block[0].caption)
+        name, unit = caption_assay_hint(raw_block[0].caption)
         name = name or _assay_name_from(text) or "assay (binned)"
         records.extend(extract_inverted(
             block, key, assay_name=name,
