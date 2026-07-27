@@ -33,7 +33,7 @@ def test_value_level_gap_fires_when_ids_parse_but_values_do_not():
     t = _t(2, [["Ex", "IC50 (nM)"]], rows)
     gaps = find_gaps("USTEST", [t], {"T1": 8})     # 8 of 20 rows produced records
     assert gaps, "a table discarding 12 populated assay cells must raise a gap"
-    assert "cannot parse" in gaps[0].reason
+    assert "cannot be parsed" in gaps[0].reason
 
 
 def test_null_markers_are_not_mistaken_for_unparseable_values():

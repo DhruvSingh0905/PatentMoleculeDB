@@ -139,14 +139,49 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
     classifier decided, so the eventual question to the model is specific
     ("no column was identified as the compound id") rather than "this failed".
     """
+    # Record counts arrive keyed by `<tables>` id, but a block is routinely
+    # split into several tgroups (a header tgroup plus continuations). Comparing
+    # a block's whole record count against ONE tgroup's row count made every
+    # multi-tgroup table look over-read: US10071079's main assay table scored
+    # 2005/982 = 2.04 and was skipped as fully parsed, so the largest assay
+    # table in the patent was invisible to the detector. Row counts are summed
+    # per block so the two sides of the comparison agree.
+    rows_per_block: dict[str, int] = {}
+    for t in tables:
+        _, d = _header_rows_of(t)
+        rows_per_block[t.table_id] = rows_per_block.get(t.table_id, 0) + sum(
+            1 for r in d if any(c.text.strip() for c in r))
+
+    # The detector MUST classify a table the same way the extractor does, or it
+    # judges a different table than the one that actually ran. Continuation
+    # tgroups carry no header of their own and inherit one; without replicating
+    # that here, every continuation looked header-less, no column classified as
+    # an assay, and the value-level check was skipped entirely — which is why
+    # US10071079's main assay table stayed invisible even after the alarm existed.
+    inherit_by_width: dict[int, list[str]] = {}
+    inherit_by_block: dict[str, list[str]] = {}
+
     gaps: list[Gap] = []
+    seen_blocks: set[str] = set()
     for t in tables:
         hdr_rows, data = _header_rows_of(t)
         rows = [r for r in data if any(c.text.strip() for c in r)]
         if len(rows) < min_rows:
             continue
+        # One gap per block, raised from its largest tgroup.
+        if t.table_id in seen_blocks:
+            continue
+        block_rows = rows_per_block.get(t.table_id, len(rows))
         headers = merge_header(t, hdr_rows)
-        cols = build_columns(t, data_rows=rows)
+        if any(headers):
+            inherit_by_width[t.n_cols] = headers
+            inherit_by_block[t.table_id] = headers
+        if not any(headers):
+            headers = (inherit_by_width.get(t.n_cols)
+                       or inherit_by_block.get(t.table_id) or headers)
+        cols = build_columns(
+            t, inherited=inherit_by_width.get(t.n_cols) or inherit_by_block.get(t.table_id),
+            data_rows=rows)
         kinds = [c.kind for c in cols]
         got = extracted_by_table.get(t.table_id, 0)
 
@@ -173,24 +208,40 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
         assay_idx = [c.index for c in cols if c.kind == ASSAY]
         if cid_idx is not None and assay_idx:
             from ..sources.uspto_assays import parse_value
-            unread = 0
-            for r in rows[:60]:
+            # Counted per CELL, not per row. Requiring every populated cell in a
+            # row to fail made the alarm almost unreachable: in
+            # `['345','5.1','37.6','1412']` the small values parse and only
+            # `1412` is dropped, so the row still yields records and looks
+            # healthy. Both silent parser bugs behaved exactly that way — they
+            # ate a subset of cells across many rows — and a row-level count
+            # missed them entirely when this was tested by reverting the fixes.
+            unread_cells = 0
+            total_cells = 0
+            example: str | None = None
+            for r in rows[:80]:
                 if len(r) <= cid_idx or not _CID_PAT.match(r[cid_idx].text.strip()):
                     continue
-                cells = [r[i].text.strip() for i in assay_idx if len(r) > i]
-                populated = [c for c in cells if c and c not in _NULLISH]
-                if populated and not any(parse_value(c) for c in populated):
-                    unread += 1
-            if unread >= max(3, len(rows[:60]) * 0.2):
+                for i in assay_idx:
+                    if len(r) <= i:
+                        continue
+                    cell = r[i].text.strip()
+                    if not cell or cell in _NULLISH:
+                        continue
+                    total_cells += 1
+                    if not parse_value(cell):
+                        unread_cells += 1
+                        example = example or cell
+            if total_cells and unread_cells >= max(3, total_cells * 0.05):
                 gaps.append(Gap(
                     patent_id=patent_id, table_id=t.table_id, n_cols=t.n_cols,
-                    n_data_rows=len(rows), n_extracted=got,
+                    n_data_rows=block_rows, n_extracted=got,
                     fingerprint=layout_fingerprint(t, headers),
-                    reason=(f"{unread} rows have a valid compound id and a populated "
-                            f"assay cell whose value we cannot parse"),
+                    reason=(f"{unread_cells} of {total_cells} populated assay cells "
+                            f"cannot be parsed as a value (e.g. {example!r})"),
                     sample=_sample_of(t, headers), headers=headers,
                     column_kinds=kinds,
                 ))
+                seen_blocks.add(t.table_id)
                 continue
 
         # Compare against rows that COULD yield a value, not the raw row count.
@@ -203,10 +254,14 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
                 cells = [r[i].text.strip() for i in assay_idx if len(r) > i]
                 if any(c and c not in _NULLISH for c in cells):
                     extractable += 1
+            # scale the sampled tgroup's extractable ratio to the whole block
+            if rows:
+                extractable = int(extractable / len(rows) * block_rows)
         else:
-            extractable = len(rows)
+            extractable = block_rows
         if got >= extractable:
-            continue                       # everything extractable was read
+            seen_blocks.add(t.table_id)
+            continue   # everything extractable was read
         # Only ask about tables we are largely FAILING on. A table where the
         # parser already reads most rows is a bad question: measured on
         # US20240335431A1, every proposal for such a table came back yielding
@@ -214,7 +269,8 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
         # anti-deletion guard. Paying for a proposal that cannot win is waste,
         # and the leftover rows in a mostly-read table are usually blank or
         # malformed rather than a layout we failed to understand.
-        if got and got / len(rows) > max_read_fraction:
+        if got and got / max(block_rows, 1) > max_read_fraction:
+            seen_blocks.add(t.table_id)
             continue
 
         if CID not in kinds and ASSAY not in kinds:
@@ -224,13 +280,14 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
         elif ASSAY not in kinds:
             reason = "compound-id column found but no column identified as an assay"
         else:
-            reason = f"columns classified but only {got} of {len(rows)} rows produced records"
+            reason = f"columns classified but only {got} of {block_rows} rows produced records"
 
+        seen_blocks.add(t.table_id)
         gaps.append(Gap(
             patent_id=patent_id,
             table_id=t.table_id,
             n_cols=t.n_cols,
-            n_data_rows=len(rows),
+            n_data_rows=block_rows,
             n_extracted=got,
             fingerprint=layout_fingerprint(t, headers),
             reason=reason,
