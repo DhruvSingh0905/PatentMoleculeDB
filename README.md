@@ -24,19 +24,24 @@ See [ARCH.md](ARCH.md) for the full diagram and per-stage detail.
 ## Repo layout
 
 ```
-patent_extraction_v2/
-  core/         # text loaders, models, OPSIN/LLM IUPAC cascade,
-                # cost tracking, assay-FSM (HARVEST), validators
-  routes/       # process_patent orchestrator, Google Patents
-                # extractor, table parsers, bridge logic
-  markush/      # Markush enumeration engine (WIP — not in the
-                # live orchestrator)
-  data/         # vocabulary JSON, prompt templates
-ARCH.md         # detailed architecture
-CLAUDE.md       # repo conventions for Claude Code
+patentdb/           the package
+  core/             text loaders, models, IUPAC cascade, cost tracking,
+                    assay FSM (HARVEST), validators
+  routes/           process_patent orchestrator, Google Patents extractor,
+                    table parsers, bridge logic
+  markush/          Markush region tagging (enumeration engine is held out)
+  scripts/eval/     benchmarks and audits
+  tests/
+  data/             vocabulary JSON
+data/patents/{pid}/ per-patent sources: {pid}.pdf + all_pages/page_*.md
+output_v2/          results and caches
+docs/               reports and local notes
+_attic/             retired code — see _attic/MANIFEST.md
+ARCH.md             detailed architecture
+CLAUDE.md           repo conventions for Claude Code
 ```
 
-The previous `patent_extraction/` codebase (v1) is kept locally for side-by-side benchmarking but is no longer tracked.
+The previous `patent_extraction/` codebase (v1) has been retired to `_attic/v1_codebase/`. Its results directory (`output/`) is kept for side-by-side comparison.
 
 ## Setup
 
@@ -47,12 +52,20 @@ pip install -r requirements.txt
 export ANTHROPIC_API_KEY="..."
 ```
 
+Patent sources go in `data/patents/{patent_id}/` — the PDF plus an `all_pages/` directory of MinerU-produced `page_*.md`. Neither the corpus nor the BindingDB dump ships with the repo.
+
 ## Run
 
 ```bash
 # extract a single patent
-python3 -c "from patent_extraction_v2.routes.process_patent import process_patent; \
+python3 -c "from patentdb.routes.process_patent import process_patent; \
             process_patent('US8952177')"
+
+# tests
+python3 -m pytest patentdb/tests/
+
+# dead-code / config audit (0 orphans expected)
+python3 -m patentdb.scripts.eval.import_audit --config
 ```
 
 Outputs land under `output_v2/text_extraction/US8952177/`.

@@ -1,0 +1,293 @@
+"""Tests for deterministic assay extraction from USPTO CALS tables.
+
+The failure this module exists to prevent is not "missed an assay" — it is
+"recorded a molecular weight as an IC50". Most of these tests are therefore
+about what must NOT be extracted.
+"""
+import pytest
+
+from patentdb.sources import uspto_assays as A
+from patentdb.sources.uspto_xml import Cell, Table
+
+
+def _t(n_cols, header_rows, body_rows, table_id="T1"):
+    def mk(rows):
+        return [[c if isinstance(c, Cell) else Cell(str(c)) for c in r] for r in rows]
+    return Table(table_id=table_id, n_cols=n_cols,
+                 header_rows=mk(header_rows), body_rows=mk(body_rows))
+
+
+# ── what must not be extracted ────────────────────────────────────
+
+def test_nmr_column_is_never_read():
+    """US11292791's third column is `1H NMR ... δ (ppm)` — pure numeric noise."""
+    t = _t(3, [["Example Number", "Structure", "1H NMR, LCMS"]],
+           [["414", "", "1H NMR (CD3OD, 400 MHz) 7.35"]])
+    assert A.extract_from_tables([t]) == []
+
+
+def test_mass_and_retention_columns_are_never_read():
+    """US10544143's LCMS table: MW, found mass, RT — none are assays."""
+    t = _t(5, [["Cpd", "MW calc", "MS found", "RT (min)", "Method"]],
+           [["12", "403.53", "404.3", "1.2", "QC-ACN-AA-XB"]])
+    assert A.extract_from_tables([t]) == []
+
+
+def test_a_column_we_cannot_classify_is_skipped_not_guessed():
+    t = _t(2, [["Cpd", "Lot reference"]], [["7", "12.5"]])
+    assert A.extract_from_tables([t]) == []
+
+
+# ── what must be extracted ────────────────────────────────────────
+
+def test_basic_assay_row():
+    t = _t(2, [["Cpd No.", "P2X3 IC50 (μM)"]], [["I-2300", "0.003"]])
+    recs = A.extract_from_tables([t])
+    assert len(recs) == 1
+    r = recs[0]
+    assert r.cid == "I-2300"
+    assert r.value_numeric == 0.003
+    assert r.unit == "uM"
+    assert "P2X3" in r.assay_name
+
+
+def test_qualifiers_and_run_counts_survive():
+    t = _t(3, [["Cmp No.", "Ki (μM)", "(n)"]], [["3", "~0.83", "(8)"], ["4", ">30", "(2)"]])
+    recs = A.extract_from_tables([t])
+    by_cid = {r.cid: r for r in recs}
+    assert by_cid["3"].qualifier == "~" and by_cid["3"].value_numeric == 0.83
+    assert by_cid["3"].n_runs == 8
+    assert by_cid["4"].qualifier == ">" and by_cid["4"].n_runs == 2
+
+
+def test_letter_grade_bins_are_kept_as_grades_not_numbers():
+    """US11254686 reports potency as A-E bins; inventing a number would be a lie."""
+    t = _t(2, [["Compound", "A2B cAMP IC50"]], [["Z1", "D"]])
+    r = A.extract_from_tables([t])[0]
+    assert r.letter_grade == "D"
+    assert r.value_numeric is None
+
+
+def test_null_markers_produce_no_record():
+    t = _t(2, [["Cpd", "IC50 (nM)"]], [["1", "ND"], ["2", "—"], ["3", "n.d."], ["4", "5.0"]])
+    recs = A.extract_from_tables([t])
+    assert [r.cid for r in recs] == ["4"]
+
+
+@pytest.mark.parametrize("cid", ["12", "I-2300", "Z1", "A1", "5a"])
+def test_compound_id_shapes_seen_in_real_grants(cid):
+    t = _t(2, [["Compound", "IC50 (nM)"]], [[cid, "1.0"]])
+    assert len(A.extract_from_tables([t])) == 1
+
+
+# ── header reconstruction ─────────────────────────────────────────
+
+def test_stacked_header_rows_merge_into_one_name():
+    """`Compound`/`No.` + `P2X3`/`IC50 (μM)` — reading one row loses the assay."""
+    t = _t(2, [["Compound", "P2X3"], ["No.", "IC50 (μM)"]], [["I-1", "0.5"]])
+    assert A.merge_header(t) == ["Compound No.", "P2X3 IC50 (μM)"]
+
+
+def test_table_title_is_not_folded_into_the_assay_name():
+    t = _t(2, [["TABLE 569"], ["Compound No.", "P2X3 IC50 (μM)"]], [["I-1", "0.5"]])
+    assert "TABLE" not in A.extract_from_tables([t])[0].assay_name
+
+
+def test_header_living_in_tbody_is_promoted():
+    """US8952177 puts its whole header in tbody; thead is empty."""
+    t = _t(2, [], [["Cmp No.", "FLAP Ki (μM)"], ["1", "0.0038"]])
+    recs = A.extract_from_tables([t])
+    assert len(recs) == 1
+    assert "FLAP" in recs[0].assay_name
+    assert recs[0].value_numeric == 0.0038
+
+
+def test_headerless_continuation_inherits_the_previous_header():
+    head = _t(2, [["Cmp No.", "hERG IC50 (nM)"]], [["1", "10"]])
+    cont = _t(2, [], [["2", "20"]])
+    recs = A.extract_from_tables([head, cont])
+    assert len(recs) == 2
+    assert all("hERG" in r.assay_name for r in recs)
+
+
+def test_inherited_header_skips_unlabelled_run_count_columns():
+    """US8952177: header declares 3 columns, data has 5 (each value + `(n)`).
+
+    Assigning positionally would put the second assay's name on a run-count
+    column and mislabel every value in it.
+    """
+    head = _t(3, [["Cmp No.", "FLAP Ki (μM)", "LTB4 IC50 (μM)"]], [])
+    data = _t(5, [], [["1", "0.0038", "(8)", "0.4", "(3)"]])
+    recs = A.extract_from_tables([head, data])
+    names = {r.assay_name for r in recs}
+    assert any("FLAP" in n for n in names)
+    assert any("LTB4" in n for n in names)
+    vals = {r.value_numeric for r in recs}
+    assert vals == {0.0038, 0.4}
+    assert {r.n_runs for r in recs} == {8, 3}
+
+
+def test_short_header_row_alignment_is_chosen_by_coherence():
+    """`FLAP Binding wild`/`Human Whole Blood` belong to columns 1-2, not 0-1.
+
+    Left-aligning shifts every assay name one column, which mislabels values
+    rather than dropping them — the worse failure.
+    """
+    t = _t(3,
+           [["FLAP Binding wild", "Human Whole Blood"],
+            ["Cmp No.", "type HTRF Ki (μM)", "LTB4 IC50 (μM)"]],
+           [["1", "0.0038", "0.4"]])
+    headers = A.merge_header(t)
+    assert "Cmp No." in headers[0]
+    assert "FLAP" in headers[1] and "HTRF" in headers[1]
+    assert "LTB4" in headers[2]
+
+
+def test_spacer_rows_do_not_break_extraction():
+    t = _t(2, [["Cpd", "IC50 (nM)"]], [["1", "5"], ["", ""], ["2", "6"]])
+    assert len(A.extract_from_tables([t])) == 2
+
+
+def test_grouping_to_assay_tables_shape():
+    t = _t(2, [["Cpd", "IC50 (nM)"]], [["1", "5"], ["1", "6"], ["2", "7"]])
+    grouped = A.to_assay_tables(A.extract_from_tables([t]))
+    assert set(grouped) == {"1", "2"}
+    assert len(grouped["1"]) == 2
+    assert grouped["1"][0]["unit"] == "nM"
+
+
+# ── regressions found by benchmarking against BindingDB ───────────
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Example 1", "1"), ("Example 314", "314"), ("Cpd. No. 5", "5"),
+    ("Ex. 7", "7"), ("No. 12", "12"), ("007", "7"),
+    ("1", "1"), ("I-2300", "I-2300"), ("Z1", "Z1"), ("A1", "A1"), ("5a", "5a"),
+])
+def test_labelled_compound_ids_are_recognised_and_normalised(raw, expected):
+    """`Example 1` in the id column cost a whole 1,108-row table on US10245267.
+
+    Both value columns classified correctly as assays, but the id column read
+    as `unknown`, so the table produced nothing at all.
+    """
+    assert A._CID_PAT.match(raw)
+    assert A.normalize_cid(raw) == expected
+
+
+@pytest.mark.parametrize("bad", ["0.0038", "IC50 (nM)", "Structure", "QC-ACN-AA-XB", "(8)"])
+def test_cid_pattern_still_rejects_non_ids(bad):
+    assert not A._CID_PAT.match(bad)
+
+
+def test_labelled_ids_extract_end_to_end():
+    t = _t(3, [], [["Ex. No.", "C-Raf IC50", "B-Raf IC50"],
+                   ["Example 1", "0.00030", "0.00010"]])
+    recs = A.extract_from_tables([t])
+    assert {r.cid for r in recs} == {"1"}
+    assert {r.value_numeric for r in recs} == {0.0003, 0.0001}
+
+
+@pytest.mark.parametrize("word,unit", [
+    ("micromolar", "uM"), ("nanomolar", "nM"),
+    ("millimolar", "mM"), ("picomolar", "pM"),
+])
+def test_spelled_out_units_are_understood(word, unit):
+    """US10245267 states the unit only as `IC50's are micromolar.`"""
+    assert A._unit_from(f"IC50's are {word}.") == unit
+
+
+def test_wrapped_legend_inside_the_table_yields_its_unit():
+    """The legend is line-wrapped across rows; per-row it is invisible."""
+    t = _t(2, [],
+           [["Selected compound structures and Raf inhibition data: numbering corresponds"],
+            ["to the Examples above, most structures are found in the Examples. IC50's are"],
+            ["micromolar."],
+            ["Ex. No.", "C-Raf IC50"],
+            ["Example 1", "0.000145"]])
+    assert A._unit_from(A.table_legend(t)) == "uM"
+    recs = A.extract_from_tables([t])
+    assert len(recs) == 1
+    assert recs[0].unit == "uM" and recs[0].value_numeric == 0.000145
+
+
+def test_a_legend_unit_never_overrides_a_column_unit():
+    t = _t(2, [["Cpd", "IC50 (nM)"]], [["1", "5.0"]])
+    assert A.extract_from_tables([t])[0].unit == "nM"
+
+
+# ── potency bins → ranges (the "unaddressable" patents) ──────────
+
+def test_bin_key_prose_form():
+    from patentdb.sources.bin_legend import parse_bin_key
+    key = parse_bin_key(
+        'an IC 50 value of greater than or equal to 0.001 μM and less than or '
+        'equal to 0.01 μM is marked "++++"; a value greater than 0.01 μM and '
+        'less than or equal to 0.1 μM is marked "+++";')
+    assert (key["++++"].lo, key["++++"].hi, key["++++"].unit) == (0.001, 0.01, "uM")
+    assert (key["+++"].lo, key["+++"].hi) == (0.01, 0.1)
+
+
+def test_bin_key_compact_form():
+    from patentdb.sources.bin_legend import parse_bin_key
+    key = parse_bin_key("*Key: ++++: IC50 ≥ 1 uM +++: 1 uM > IC50 ≥ 0.1 uM")
+    assert (key["++++"].lo, key["++++"].hi) == (1.0, None)
+    assert (key["+++"].lo, key["+++"].hi) == (0.1, 1.0)
+
+
+def test_bin_keys_are_never_shared_between_patents():
+    """US11292791 and US11566007 give `++++` incompatible ranges.
+
+    A global symbol→range table would silently corrupt one of them, so keys are
+    always resolved per `<tables>` block.
+    """
+    from patentdb.sources.bin_legend import parse_bin_key
+    a = parse_bin_key('a value greater than or equal to 0.001 μM and less than '
+                      'or equal to 0.01 μM is marked "++++";')["++++"]
+    b = parse_bin_key("*Key: ++++: IC50 ≥ 1 uM")["++++"]
+    assert a != b
+    assert a.hi == 0.01 and b.lo == 1.0
+
+
+def test_no_key_means_no_range_rather_than_a_guess():
+    from patentdb.sources.bin_legend import parse_bin_key
+    assert parse_bin_key("Table 7 shows the results.") == {}
+
+
+def test_range_midpoint_is_geometric():
+    """Potency spans orders of magnitude; the middle of 0.01-0.1 is 0.032."""
+    from patentdb.sources.bin_legend import BinRange
+    assert abs(BinRange("+", 0.01, 0.1, "uM").midpoint - 0.0316) < 1e-3
+
+
+def test_inverted_bin_table_yields_one_record_per_compound():
+    """US11566007: one row per bin, hundreds of ids inside a single cell."""
+    from patentdb.sources.bin_legend import parse_bin_key
+    key = parse_bin_key("*Key: ++: IC50 ≥ 1 uM +: IC50 < 1 uM")
+    t = _t(2, [], [["++", "A1, A2, A3, A4"], ["+", "A10, A11, A12"]])
+    recs = A.extract_inverted([t], key, assay_name="H358 IC50", unit="uM")
+    assert {r.cid for r in recs} == {"A1", "A2", "A3", "A4", "A10", "A11", "A12"}
+    assert all(r.value_numeric is None for r in recs)
+    assert {r.range_lo for r in recs if r.letter_grade == "++"} == {1.0}
+
+
+def test_inverted_table_carries_the_bin_across_wrapped_rows():
+    """The symbol appears once; the id list wraps across following rows."""
+    from patentdb.sources.bin_legend import parse_bin_key
+    key = parse_bin_key("*Key: ++: IC50 ≥ 1 uM")
+    t = _t(2, [], [["++", "A1, A2, A3"], ["", "A4, A5, A6"], ["", "A7, A8, A9"]])
+    recs = A.extract_inverted([t], key, assay_name="x", unit="uM")
+    assert len(recs) == 9
+    assert all(r.letter_grade == "++" for r in recs)
+
+
+def test_not_tested_bins_are_dropped():
+    from patentdb.sources.bin_legend import parse_bin_key
+    t = _t(2, [], [["NT", "A1, A2, A3"]])
+    assert A.extract_inverted([t], parse_bin_key("*Key: ++: IC50 ≥ 1 uM"),
+                              assay_name="x", unit="uM") == []
+
+
+def test_a_prose_cell_is_not_mistaken_for_a_compound_list():
+    from patentdb.sources.bin_legend import parse_bin_key
+    t = _t(2, [], [["+", "prepared as described above, see Example 1, and purified"]])
+    assert A.extract_inverted([t], parse_bin_key("*Key: +: IC50 < 1 uM"),
+                              assay_name="x", unit="uM") == []

@@ -1,0 +1,364 @@
+<title>PatentMoleculeDB — Pipeline Audit, 27 Jul 2026</title>
+<style>
+  :root{
+    color-scheme: light;
+    --surface-0:#f4f4f1; --surface-1:#fcfcfb; --border:#dedcd4;
+    --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#7c7a73;
+    --series-text:#2a78d6;   /* patent-text-derived */
+    --series-gp:#eb6834;     /* google-derived */
+    --grid:#e6e4dc;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:where(:not([data-theme="light"])){
+      color-scheme: dark;
+      --surface-0:#111110; --surface-1:#1a1a19; --border:#34332f;
+      --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#8d8c83;
+      --series-text:#3987e5; --series-gp:#d95926; --grid:#2b2a27;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --surface-0:#111110; --surface-1:#1a1a19; --border:#34332f;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#8d8c83;
+    --series-text:#3987e5; --series-gp:#d95926; --grid:#2b2a27;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:0; background:var(--surface-0); color:var(--text-primary);
+    font:16px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:920px;margin:0 auto;padding:56px 24px 96px}
+  header{border-bottom:1px solid var(--border);padding-bottom:28px;margin-bottom:44px}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-muted);margin:0 0 10px}
+  h1{font-size:clamp(28px,4.4vw,42px);line-height:1.15;letter-spacing:-.02em;margin:0 0 14px;font-weight:640}
+  .standfirst{font-size:18px;color:var(--text-secondary);margin:0;max-width:64ch}
+  h2{font-size:13px;letter-spacing:.13em;text-transform:uppercase;color:var(--text-muted);
+     margin:56px 0 20px;padding-bottom:9px;border-bottom:1px solid var(--border);font-weight:600}
+  h3{font-size:18px;margin:34px 0 10px;letter-spacing:-.01em;font-weight:620}
+  p{margin:0 0 15px;max-width:70ch}
+  .lede{font-size:17px}
+  strong{font-weight:640}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em;
+       background:var(--surface-1);border:1px solid var(--border);border-radius:4px;padding:1px 5px}
+
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:32px 0 8px}
+  .tile{background:var(--surface-1);border:1px solid var(--border);border-radius:11px;padding:20px}
+  .tile .n{font-size:38px;line-height:1;font-weight:660;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+  .tile .n.warn{color:var(--series-gp)}
+  .tile .lbl{font-size:13px;color:var(--text-secondary);margin-top:9px;line-height:1.45}
+
+  figure{margin:26px 0 0;background:var(--surface-1);border:1px solid var(--border);
+         border-radius:11px;padding:24px 22px 18px}
+  figcaption{font-size:13px;color:var(--text-secondary);margin-top:18px;padding-top:14px;
+             border-top:1px solid var(--border);line-height:1.5}
+  .figtitle{font-size:15px;font-weight:620;margin:0 0 3px}
+  .figsub{font-size:13px;color:var(--text-muted);margin:0 0 20px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:0 0 20px;font-size:13px;color:var(--text-secondary)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .sw{width:11px;height:11px;border-radius:3px;flex:none}
+
+  .rows{display:flex;flex-direction:column;gap:9px}
+  .row{display:grid;grid-template-columns:minmax(150px,232px) 1fr;gap:14px;align-items:center}
+  .rlbl{font-size:12.5px;color:var(--text-secondary);text-align:right;line-height:1.3;
+        font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-word}
+  .track{position:relative;height:22px;background:var(--grid);border-radius:4px;overflow:visible}
+  .bar{height:100%;border-radius:0 4px 4px 0;position:relative;min-width:2px}
+  .val{position:absolute;left:calc(100% + 8px);top:50%;transform:translateY(-50%);
+       font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--text-primary);white-space:nowrap}
+  .n-note{color:var(--text-muted);font-size:11.5px}
+
+  .stack{display:flex;height:38px;border-radius:6px;overflow:hidden;gap:2px;background:var(--surface-1)}
+  .seg{display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:600;color:#fff}
+  .stackkey{display:flex;flex-direction:column;gap:7px;margin-top:15px;font-size:13.5px;color:var(--text-secondary)}
+  .stackkey span{display:flex;gap:9px;align-items:flex-start}
+
+  .tblwrap{overflow-x:auto;margin:20px 0;border:1px solid var(--border);border-radius:9px;background:var(--surface-1)}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:460px}
+  th,td{padding:9px 14px;text-align:left;border-bottom:1px solid var(--border)}
+  th{font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);font-weight:600}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:none}
+  tr.bad td{color:var(--series-gp);font-weight:600}
+
+  .callout{border-left:3px solid var(--series-gp);background:var(--surface-1);
+           border-radius:0 9px 9px 0;padding:17px 20px;margin:24px 0}
+  .callout .k{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;
+              color:var(--series-gp);font-weight:660;margin-bottom:7px}
+  .callout p:last-child{margin-bottom:0}
+  .good{border-left-color:var(--series-text)}
+  .good .k{color:var(--series-text)}
+
+  ol.road{padding-left:0;list-style:none;counter-reset:s;margin:18px 0 0}
+  ol.road li{counter-increment:s;position:relative;padding:0 0 16px 42px;margin-bottom:16px;
+             border-bottom:1px solid var(--border)}
+  ol.road li:last-child{border-bottom:none}
+  ol.road li::before{content:counter(s);position:absolute;left:0;top:-1px;width:27px;height:27px;
+    border-radius:50%;background:var(--surface-1);border:1px solid var(--border);
+    display:flex;align-items:center;justify-content:center;font-size:12.5px;
+    font-variant-numeric:tabular-nums;color:var(--text-secondary);font-weight:600}
+  .tier{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);
+        margin:34px 0 4px;font-weight:600}
+  footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--border);
+         font-size:13px;color:var(--text-muted)}
+  @media(max-width:560px){
+    .row{grid-template-columns:1fr}
+    .rlbl{text-align:left}
+    .val{position:static;transform:none;display:block;margin-top:3px}
+  }
+</style>
+
+<div class="wrap">
+<header>
+  <p class="eyebrow">PatentMoleculeDB · Pipeline Audit</p>
+  <h1>Two systems wearing one coverage number</h1>
+  <p class="standfirst">Measured across the 22 patents currently in <code>output_v2</code>.
+  The pipeline reports 97.6% structure coverage. Verified against BindingDB, the route
+  supplying two thirds of that coverage is correct 0.2% of the time.</p>
+</header>
+
+<h2>What's in the database</h2>
+
+<div class="tiles">
+  <div class="tile"><div class="n warn">65.4%</div>
+    <div class="lbl">of structures came from Google Patents' machine OCR, not from reading the patent</div></div>
+  <div class="tile"><div class="n warn">49.3%</div>
+    <div class="lbl">have a Google structure <em>and</em> a PubChem name — neither field from the patent</div></div>
+  <div class="tile"><div class="n warn">30.1%</div>
+    <div class="lbl">of assay compound IDs have no structure record at all</div></div>
+  <div class="tile"><div class="n">17,786</div>
+    <div class="lbl">compound records total, across 22 patents</div></div>
+</div>
+
+<p class="lede" style="margin-top:28px">The stated purpose is "every named compound's IUPAC, from the
+patent." For half the corpus the system is functioning as a Google Patents mirror with a PubChem
+name lookup attached. The 97.6% coverage figure measures how often <em>Google</em> had an answer —
+not how often we were right.</p>
+
+<h2>Accuracy by extraction route</h2>
+
+<figure>
+  <p class="figtitle">Exact InChIKey match against BindingDB</p>
+  <p class="figsub">2,337 compounds matchable by patent + example number. Identical matching
+  logic for every route, on the same patents.</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--series-text)"></i> reads the patent's own text</span>
+    <span><i class="sw" style="background:var(--series-gp)"></i> Google-derived / unattributed</span>
+  </div>
+
+  <div class="rows">
+    <div class="row"><div class="rlbl">explicit_example_header</div>
+      <div class="track"><div class="bar" style="width:71.4%;background:var(--series-text)"></div>
+      <span class="val">71.4% <span class="n-note">n=14</span></span></div></div>
+    <div class="row"><div class="rlbl">gp_description_example_header_llm_cleaned</div>
+      <div class="track"><div class="bar" style="width:54.2%;background:var(--series-text)"></div>
+      <span class="val">54.2% <span class="n-note">n=24</span></span></div></div>
+    <div class="row"><div class="rlbl">gp_description_example_header</div>
+      <div class="track"><div class="bar" style="width:53.3%;background:var(--series-text)"></div>
+      <span class="val">53.3% <span class="n-note">n=15</span></span></div></div>
+    <div class="row"><div class="rlbl">google_patents_table_opsin</div>
+      <div class="track"><div class="bar" style="width:45.1%;background:var(--series-text)"></div>
+      <span class="val">45.1% <span class="n-note">n=277</span></span></div></div>
+    <div class="row"><div class="rlbl">opsin_direct</div>
+      <div class="track"><div class="bar" style="width:36.9%;background:var(--series-text)"></div>
+      <span class="val">36.9% <span class="n-note">n=149</span></span></div></div>
+    <div class="row"><div class="rlbl">llm_cleaned</div>
+      <div class="track"><div class="bar" style="width:35.0%;background:var(--series-text)"></div>
+      <span class="val">35.0% <span class="n-note">n=20</span></span></div></div>
+    <div class="row"><div class="rlbl">iupac_harvest_targeted</div>
+      <div class="track"><div class="bar" style="width:24.1%;background:var(--series-text)"></div>
+      <span class="val">24.1% <span class="n-note">n=29</span></span></div></div>
+    <div class="row"><div class="rlbl">impossible_fragment_retry</div>
+      <div class="track"><div class="bar" style="width:10.7%;background:var(--series-text)"></div>
+      <span class="val">10.7% <span class="n-note">n=28</span></span></div></div>
+    <div class="row"><div class="rlbl">(unset)</div>
+      <div class="track"><div class="bar" style="width:2.3%;background:var(--series-gp)"></div>
+      <span class="val">2.3% <span class="n-note">n=607</span></span></div></div>
+    <div class="row"><div class="rlbl">strategy5_iupac_harvest_broad</div>
+      <div class="track"><div class="bar" style="width:1.7%;background:var(--series-text)"></div>
+      <span class="val">1.7% <span class="n-note">n=116</span></span></div></div>
+    <div class="row"><div class="rlbl">gp_embedded_meta</div>
+      <div class="track"><div class="bar" style="width:0.2%;background:var(--series-gp)"></div>
+      <span class="val">0.2% <span class="n-note">n=1,041 — 65% of the corpus</span></span></div></div>
+    <div class="row"><div class="rlbl">llm_direct_smiles</div>
+      <div class="track"><div class="bar" style="width:0;background:var(--series-gp)"></div>
+      <span class="val">0.0% <span class="n-note">n=7</span></span></div></div>
+  </div>
+
+  <figcaption>The cheapest, most deterministic path in the system — read the example header,
+  hand the name to OPSIN — is the most accurate one. The spread from 0.2% to 71.4% under identical
+  matching logic is itself the control: if the methodology were broken, every route would score
+  equally badly.</figcaption>
+</figure>
+
+<h2>Diagnosing the 65%</h2>
+
+<p>A low score could mean wrong chemistry, or right chemistry attached to the wrong compound ID.
+Those are different bugs with different fixes, so we separated them across the 1,041 checkable
+<code>gp_embedded_meta</code> records.</p>
+
+<figure>
+  <p class="figtitle">Where Google-derived records actually land</p>
+  <p class="figsub">n = 1,041</p>
+  <div class="stack">
+    <div class="seg" style="width:0.2%;background:var(--series-text)"></div>
+    <div class="seg" style="width:19.9%;background:var(--series-gp)">19.9%</div>
+    <div class="seg" style="width:79.9%;background:var(--text-muted)">79.9%</div>
+  </div>
+  <div class="stackkey">
+    <span><i class="sw" style="background:var(--series-text);margin-top:5px"></i>
+      <b>0.2%</b> &nbsp;right compound at the right ID</span>
+    <span><i class="sw" style="background:var(--series-gp);margin-top:5px"></i>
+      <b>19.9%</b> &nbsp;right chemistry, <b>wrong compound ID</b> — the cid bridge misaligning</span>
+    <span><i class="sw" style="background:var(--text-muted);margin-top:5px"></i>
+      <b>79.9%</b> &nbsp;no match to any BindingDB entry for the patent</span>
+  </div>
+  <figcaption><strong>Read the 79.9% carefully.</strong> BindingDB does not curate every example of
+  every patent, so that bucket mixes our errors with BindingDB's incompleteness and is an upper
+  bound, not a measured error rate. The 19.9% and the relative comparison between routes are the
+  robust findings.</figcaption>
+</figure>
+
+<div class="callout">
+  <div class="k">Root cause, identified</div>
+  <p>The bridge's positional fallback accepts a match when MS <code>[M+H]⁺</code> agrees
+  <strong>within ±5 Da</strong>. At drug-like weights (300–600 Da) that is roughly
+  <strong>10,000–17,000 ppm</strong> — wide enough for many different analogs and isomers to pass.
+  That is exactly the mechanism that produces right-chemistry-wrong-label.</p>
+  <p>Correct practice is regime-aware: <strong>5–20 ppm</strong> when the patent reports HRMS with
+  decimals, <strong>±0.3–0.5 Da</strong> for unit-resolution LC-MS. Switch on whether decimals are
+  present. This is the smallest diff on the roadmap aimed at the largest identifiable error class.</p>
+</div>
+
+<h2>This is not just our problem</h2>
+
+<p>IBM's PatCID study (<em>Nature Communications</em>, Aug 2024) benchmarked molecule retrieval
+across five systems on a random patent sample. Google Patents is independently known-weak — and
+every automated patent-chemistry system is mediocre.</p>
+
+<div class="tblwrap"><table>
+  <thead><tr><th>System</th><th class="num">Retrieval rate</th></tr></thead>
+  <tbody>
+    <tr><td>PatCID (IBM)</td><td class="num">56.0%</td></tr>
+    <tr><td>Reaxys</td><td class="num">53.5%</td></tr>
+    <tr><td>SciFinder</td><td class="num">49.5%</td></tr>
+    <tr class="bad"><td>Google Patents</td><td class="num">41.5%</td></tr>
+    <tr><td>SureChEMBL</td><td class="num">23.5%</td></tr>
+  </tbody>
+</table></div>
+
+<p>SureChEMBL's own team invalidated 172,504 previously-registered compounds during its May 2025
+overhaul. An independent audit found it recovers ~59–61% of what a human curator finds, falling to
+~12% once false positives are counted.</p>
+
+<div class="callout good">
+  <div class="k">So we keep extracting ourselves</div>
+  <p>There is no external source to simply consume instead — and critically, <strong>none of them
+  carry assay values at all</strong>, which is half the deliverable. Our own text-reading routes at
+  45–71% are competitive with the best systems in that table. The problem isn't that we extract
+  badly; it's that we blend good extraction with bad extraction and report the mixture as one number.</p>
+</div>
+
+<h2>Failure modes in the code</h2>
+
+<h3>The pipeline hangs for 30 minutes by default — confirmed live</h3>
+<p>Running one patent during this audit, the process sat at <strong>0.0% CPU for 11 minutes</strong>
+(15s CPU consumed) before being killed. With <code>LLM_BATCH=1</code> (the default) it submits a
+Message Batch, then polls every 15s against a <strong>1800-second timeout</strong>, reporting
+progress only through buffered <code>logger</code> calls. Any cache-miss run looks like a hard freeze.</p>
+
+<h3>Every LLM call is sampled at temperature 1.0, then cached forever</h3>
+<p><code>temperature</code> is never set anywhere, so the API default of 1.0 applies. Combined with
+the response cache, <strong>one random draw becomes the pipeline's permanent answer</strong>. Reruns
+are not reproducible; the first sample wins by accident.</p>
+
+<h3>The image cache key collides — confirmed empirically</h3>
+<p>The cache hashes only the first 1KB of the base64 image. Testing all 412 crops on disk, two
+genuinely different images already share a key — the second silently inherits the first's SMILES.
+Low volume, but silent structural corruption is the worst kind.</p>
+
+<h3>Failures are indistinguishable from empty patents</h3>
+<p>101 <code>except Exception</code> handlers, 31 silent, and 217 sites returning empty on failure.
+US20240010684A1 produced <strong>zero compounds alongside 166 assay values</strong> and exited
+cleanly. US11312727 produced 6 compounds against 614 assay values. Nothing registers these as
+problems.</p>
+
+<h3>Structural</h3>
+<p><code>process_patent.py</code> is 2,009 lines, and <code>_bridge_gp_to_harvest_cids</code> — the
+riskiest logic in the system and the confirmed source of the 19.9% — is a single 346-line function.
+Outputs are written non-atomically. There is no checkpointing: a failure at minute 25 discards
+everything.</p>
+
+<h2>The biggest available win</h2>
+
+<div class="callout good">
+  <div class="k">Stop OCR-ing documents that are already structured</div>
+  <p><strong>USPTO publishes its own full-text XML with real table markup.</strong> The Patent Grant
+  ICE DTD imports the OASIS/CALS table model (<code>tgroup</code>/<code>row</code>/<code>entry</code>) —
+  the same standard as DocBook. For any 2001+ patent the assay tables are available as genuine
+  row/column XML, free and public domain.</p>
+  <p>This dissolves the reason MinerU exists here. Every corruption class we compensate for —
+  <code>&lt;|ref|&gt;</code> tags, bbox pollution, mid-IUPAC line wraps, <code>2-y1}</code> for
+  <code>2-yl}</code>, merged rows — simply does not arise. Docling ships a
+  <code>uspto_backend</code> that parses it (MIT; <strong>pin ≥2.74.0</strong>, earlier versions
+  carry an XXE vulnerability in exactly that parser).</p>
+  <p><em>Verified from here:</em> <code>bulkdata.uspto.gov</code> is dead (DNS failure),
+  <code>api.uspto.gov</code> is live and returns 401 without a key. A free account is required, and
+  <strong>table fidelity is unconfirmed until someone tests it</strong> — that test gates the whole
+  recommendation.</p>
+</div>
+
+<h2>Recommended order of work</h2>
+
+<p class="tier">Tier 0 — stop the bleeding (hours)</p>
+<ol class="road">
+  <li>Set <code>temperature=0</code> on every LLM call.</li>
+  <li>Hash the full image in the cache key, not the first 1KB.</li>
+  <li>Put a lock around <code>cost_tracker.record()</code> — it does unlocked read-modify-write on
+      spend while a 10-worker pool makes paid calls, so the caps under-enforce.</li>
+  <li>Make the batch poll emit unbuffered progress; default <code>LLM_BATCH=0</code> for
+      interactive runs.</li>
+  <li>Write outputs atomically (temp file + <code>os.replace</code>).</li>
+</ol>
+
+<p class="tier">Tier 1 — make failure visible (days)</p>
+<ol class="road" start="6">
+  <li>A patent yielding 0 compounds but non-zero assay values must raise, not return cleanly.</li>
+  <li>Replace the 31 silent <code>except</code> blocks with logged, counted failures surfaced in
+      <code>route_audit.json</code>.</li>
+  <li>Stop reporting one blended coverage number — 9,008 records carry no
+      <code>iupac_source</code> at all.</li>
+</ol>
+
+<p class="tier">Tier 2 — the accuracy fix (weeks)</p>
+<ol class="road" start="9">
+  <li>Get a USPTO key and test table fidelity on 3 known-hard patents. <strong>This single
+      experiment decides the ingestion strategy</strong> — and it is about a day of work.</li>
+  <li>Tighten the MS tolerance from ±5 Da to regime-aware ppm / ±0.5 Da.</li>
+  <li>Turn on the unused OPSIN flags (<code>allowUninterpretableStereo</code> especially) and add
+      deterministic line-join repair, letting OPSIN itself be the acceptance oracle. Free accuracy
+      in the routes already measured most accurate.</li>
+  <li>Add the formula / MS-mass / InChIKey validation layer; require the LLM-cleaned name and the
+      LLM-direct SMILES to agree by InChIKey before trusting either. We already generate both and
+      never compare them.</li>
+  <li>Decide what <code>gp_embedded_meta</code> is for — 65% of the corpus at 0.2% verified
+      accuracy. Demote to corroboration-only, gate it behind validation, or drop it.</li>
+  <li>Build a 20–50 patent golden set; run metamorphic regression through
+      <code>process_patent()</code> itself, not a bypassing eval script.</li>
+</ol>
+
+<p class="tier">Tier 3 — only afterwards</p>
+<ol class="road" start="15">
+  <li>The image route, behind a two-model-agreement gate. Calibrate to reality: PatCID reaches
+      ~45–55% precision on unfiltered patent images, not the 90%+ of method papers.</li>
+  <li>Markush stays out. IBM excludes it from PatCID entirely, stating there is no reliable
+      approach at scale. Holding <code>markush/</code> out of the orchestrator was correct.</li>
+</ol>
+
+<footer>
+  Measured 27 July 2026 against 22 patents in <code>output_v2/text_extraction</code>, with BindingDB
+  as reference. Full working notes, citations and per-stage OSS research:
+  <code>docs/notes/PIPELINE_AUDIT_2026-07-27.md</code>.
+</footer>
+</div>

@@ -1,10 +1,12 @@
 # Architecture
 
-Single-pass pipeline: patent ID in, structured chemistry data out. The orchestrator is `routes/process_patent.py:process_patent`. Six stages run in order; within each stage, deterministic work runs first and LLM work only on residual gaps.
+Single-pass pipeline: patent ID in, structured chemistry data out. The orchestrator is `patentdb/routes/process_patent.py:process_patent`. Six stages run in order; within each stage, deterministic work runs first and LLM work only on residual gaps.
 
 ```
-┌─ 1. Text source ────────────────────────────────────────────────┐
-│ GP HTML description (primary) + MinerU markdown (fallback)      │
+┌─ 1. Text source (RANKED — patentdb/sources/) ───────────────────┐
+│ 1. USPTO grant/publication XML — real CALS tables, no OCR       │
+│ 2. Google Patents HTML — clean prose, no table structure        │
+│ 3. MinerU PDF→Markdown OCR — last resort                        │
 └──────────────────────────────┬──────────────────────────────────┘
                                ▼
 ┌─ 2. Compound discovery (parallel sources → trust-rank merge) ───┐
@@ -12,18 +14,24 @@ Single-pass pipeline: patent ID in, structured chemistry data out. The orchestra
 │ pass on GP, Example-N pass on MinerU, MS stubs                  │
 └──────────────────────────────┬──────────────────────────────────┘
                                ▼
-┌─ 3. Route classification ───────────────────────────────────────┐
-│ text-dominant / markush-dominant / mixed                        │
+┌─ 3. Route classification (INFORMATIONAL TAG ONLY) ──────────────┐
+│ text-dominant / markush-dominant / mixed — does not gate 4      │
 └──────────────────────────────┬──────────────────────────────────┘
                                ▼
-┌─ 4. Branch ─────────────────────────────────────────────────────┐
-│ 4a. text branch: HARVEST → validator → Strategy 5 → targeted    │
-│ 4b. markush branch: enumeration engine (WIP — currently stub)   │
+┌─ 4. Text branch — runs for EVERY patent ────────────────────────┐
+│ HARVEST → validator → Strategy 5 → targeted fill                │
+│ (+ additive Markush region tagging; no enumeration)             │
 └──────────────────────────────┬──────────────────────────────────┘
                                ▼
 ┌─ 5. Post-processing ────────────────────────────────────────────┐
 │ retry impossible fragments → GP↔patent cid bridge → PubChem     │
 │ IUPAC backfill                                                  │
+└──────────────────────────────┬──────────────────────────────────┘
+                               ▼
+┌─ 5b. Gap-triggered repair (patentdb/repair/) ───────────────────┐
+│ tables we largely failed to read → ask for a RULE (not data) →  │
+│ validate → persist by layout fingerprint → re-run. ~$0.002 per  │
+│ new layout, $0 on repeat, $0 when everything parsed.            │
 └──────────────────────────────┬──────────────────────────────────┘
                                ▼
 ┌─ 6. Outputs ────────────────────────────────────────────────────┐
@@ -35,14 +43,24 @@ Single-pass pipeline: patent ID in, structured chemistry data out. The orchestra
 
 ## Stage 1 — Text source
 
-Two views of the patent are pulled:
+Three tiers, tried in order by `patentdb/sources/resolve()`. The ranking is not a
+preference — it states how much reconstruction each source forces on us.
 
-| Source | Properties | Used for |
+| # | Source | Properties |
 |---|---|---|
-| **Google Patents HTML** | OCR-clean flat text; description + claims + per-compound `<meta itemprop="smiles">` tags | Primary input |
-| **MinerU PDF→Markdown** | Carries `<table>` structure; suffers OCR corruption (escaped asterisks, `2-y1}` instead of `2-yl}`, merged rows) | Fallback when GP is empty; secondary safety net for table parsing |
+| 1 | **USPTO grant/publication XML** | The patent's own OASIS/CALS `<table>` markup. Exact cells, qualifiers and run counts intact, no OCR. Grants from 2002; publications via APPXML |
+| 2 | **Google Patents HTML** | OCR-clean flat text, but renders no table structure. Its machine-read chemistry is unreliable — measured 0.2% exact-match against BindingDB |
+| 3 | **MinerU PDF→Markdown** | Recovers table structure by inference and pays for it: `<\|ref\|>` tags, `[[bbox]]` pollution, merged rows, `2-y1}` for `2-yl}` |
 
-`load_patent_description(prefer_format="auto")` returns HTML first; markdown is only consulted when GP yields nothing.
+Tier 1 changed the economics of everything downstream. Assay extraction from
+CALS markup is deterministic and needs no model: **99.9% exact-match against
+BindingDB on ten patents never seen before**, versus 42% for the LLM-backed
+path, at zero API cost.
+
+One thing XML does *not* fix: chemical names wrapped across typeset lines.
+USPTO emits the break as separate `<entry>` elements — the same `2-yl` split we
+blamed on OCR is in the source document. `uspto_xml.join_wrapped_cells` repairs
+it structurally and lets OPSIN adjudicate the ambiguous hyphen.
 
 ---
 
@@ -91,7 +109,7 @@ Per cid: find the marker, slice to the next marker (cap 800 chars), strip `Synth
 
 ## Stage 3 — Route classification
 
-Cheap signals decide which branch handles the patent.
+Cheap signals produce a route tag. **The tag is informational — it does not select a branch.** An earlier version gated on it and zeroed out real data (US11566007: 155 examples + an A-prefix assay table → 0), because specific exemplified compounds exist in nearly every patent, Markush-heavy or not. Stage 4 runs for everything.
 
 | Signal | Meaning |
 |---|---|
@@ -104,7 +122,7 @@ Outputs `text-dominant`, `markush-dominant`, or `mixed`.
 
 ---
 
-## Stage 4a — Text branch
+## Stage 4 — Text branch (all patents)
 
 ### HARVEST (assay extraction)
 
@@ -137,9 +155,13 @@ For every cid HARVEST has an assay for but where `example_index` has no SMILES, 
 
 ---
 
-## Stage 4b — Markush branch (WIP)
+## Markush enumeration — held out of the tree
 
-Patents that describe their chemistry as Markush formulas (`R₁ = …; R₂ = …; combine`) need a different model: enumerate the combinatorial product of a scaffold + R-group libraries rather than extract N named examples. The engine exists; the orchestrator currently calls a stub for safety.
+Patents that describe their chemistry as Markush formulas (`R₁ = …; R₂ = …; combine`) need a different model: enumerate the combinatorial product of a scaffold + R-group libraries rather than extract N named examples.
+
+**The engine is not in the package.** `markush/enumerate.py` and `markush/step.py` now live in `_attic/held_out_markush/` (and in git history). What remains under `markush/` is `context.py` + `mapper.py`, which `routes/text_markush.py` uses to *tag* where the claimed genus is defined — additive metadata, no enumeration. Restoring the engine also means restoring five `config.py` constants removed as unused; see `_attic/MANIFEST.md`.
+
+The design, for whenever it comes back:
 
 | Stage | What it does |
 |---|---|
@@ -149,7 +171,7 @@ Patents that describe their chemistry as Markush formulas (`R₁ = …; R₂ = �
 | **M4 — Combinatorial assembly** | Instantiate each scaffold with all compatible R-group combinations. MaxMin-diverse subset selection when libraries are large. Validate each result (SMILES parses, MW in drug-like range, no clashing groups). Per-scaffold caching. |
 | **M5 — Mapping** | For each enumerated structure, find a matching text-extracted example by InChIKey or stereo-flat skeleton. Symbolic alignment first; LLM-assisted on ambiguous cases. |
 
-**Why stubbed in the live pipeline.** The route classifier already triggers correctly on Markush patents. The enumeration engine produces output on a controlled bench. It's held out pending: better R-group library coverage on real patents, production-grade fragment-compatibility filters, and a precision check (we generate plausible compounds — but are they the same set the claim language actually claims?). When ready, it's a single function call from the `markush_dominant` branch.
+**Why it's held out.** The engine produces output on a controlled bench, but it's pending better R-group library coverage on real patents, production-grade fragment-compatibility filters, and a precision check — we generate plausible compounds, but are they the set the claim language actually claims? Until that's answered, enumerated structures would pollute a corpus whose whole value is being trustworthy.
 
 ---
 
@@ -190,9 +212,10 @@ Per-patent JSON files under `output_v2/text_extraction/{patent_id}/`:
 - **Caching at every LLM boundary.** Re-running the same patent costs near-zero. Chunk fingerprints, IUPAC pattern fingerprints, PubChem InChIKey lookups all cached locally.
 - **Provenance.** Every record carries `extraction_method` and `iupac_source` so reviewers can trust or distrust the row.
 - **Cost-bounded.** Per-patent LLM cap (default $5) enforced across all stages. The cascade and budget guards stop calling the LLM once the cap is reached.
+- **No automatic cache invalidation.** Every cache is cleared by hand — see the cache table in CLAUDE.md. The versioned step-cache DAG this file used to imply was only ever wired to the held-out Markush step, and has been removed.
 
 ## What it doesn't yet do
 
-- Live Markush enumeration (engine ready, orchestrator stub).
+- Live Markush enumeration (engine held out; see above).
 - BDB-side reference-data error detection — Jie sheet flags `ref_iupac_wrong` rows, BDB sheets don't yet.
 - Image-only compounds where GP doesn't publish a SMILES (figure URLs captured; downstream image-to-SMILES not yet wired in).

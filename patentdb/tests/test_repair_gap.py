@@ -1,0 +1,95 @@
+"""Tests for gap detection — especially the value-level signal.
+
+Every parser bug found by hand during the BindingDB hunt was SILENT at row
+level: `_VALUE_PAT` rejected any number >= 1000, and rejected `24 (*)` where
+the parenthetical is a footnote rather than a replicate count. In both cases
+the rows were simply never counted, coverage looked fine, and no gap was
+raised. These tests pin the alarm that would have caught them.
+"""
+import pytest
+
+from patentdb.repair.gap import find_gaps, layout_fingerprint
+from patentdb.sources.uspto_assays import parse_value
+from patentdb.sources.uspto_xml import Cell, Table
+
+
+def _t(n_cols, header_rows, body_rows, table_id="T1", caption=""):
+    def mk(rows):
+        return [[c if isinstance(c, Cell) else Cell(str(c)) for c in r] for r in rows]
+    return Table(table_id=table_id, n_cols=n_cols, header_rows=mk(header_rows),
+                 body_rows=mk(body_rows), caption=caption)
+
+
+# ── the value-level alarm ─────────────────────────────────────────
+
+def test_value_level_gap_fires_when_ids_parse_but_values_do_not():
+    """The branch that row-level coverage cannot see.
+
+    Half the rows extract, half have a cell shape the value parser rejects.
+    Row coverage looks acceptable; the values are being thrown away.
+    """
+    rows = [[str(i), f"{i}.5"] for i in range(1, 9)]          # parse fine
+    rows += [[str(i), f"{i} ‡‡"] for i in range(9, 21)]  # unparseable cell
+    t = _t(2, [["Ex", "IC50 (nM)"]], rows)
+    gaps = find_gaps("USTEST", [t], {"T1": 8})     # 8 of 20 rows produced records
+    assert gaps, "a table discarding 12 populated assay cells must raise a gap"
+    assert "cannot parse" in gaps[0].reason
+
+
+def test_null_markers_are_not_mistaken_for_unparseable_values():
+    """`ND` / `—` mean 'not tested'. They are absence, not a parser failure."""
+    rows = [[str(i), "ND"] for i in range(1, 21)]
+    t = _t(2, [["Ex", "IC50 (nM)"]], rows)
+    assert find_gaps("USTEST", [t], {"T1": 0}) == []
+
+
+def test_a_fully_read_table_raises_nothing():
+    rows = [[str(i), f"{i}.5"] for i in range(1, 21)]
+    t = _t(2, [["Ex", "IC50 (nM)"]], rows)
+    assert find_gaps("USTEST", [t], {"T1": 20}) == []
+
+
+def test_mostly_read_tables_are_not_worth_asking_about():
+    """Measured: proposals for these always yielded fewer rows than the parser."""
+    rows = [[str(i), f"{i}.5"] for i in range(1, 21)]
+    t = _t(2, [["Ex", "IC50 (nM)"]], rows)
+    assert find_gaps("USTEST", [t], {"T1": 18}) == []
+
+
+# ── the two silent parser bugs, as regressions ───────────────────
+
+@pytest.mark.parametrize("cell,expected", [
+    ("1511.5", 1511.5), ("8618", 8618.0), ("1412", 1412.0), ("1,234.5", 1234.5),
+])
+def test_values_of_a_thousand_or_more_parse(cell, expected):
+    """`\\d{1,3}` silently dropped the entire weak-activity tail of the corpus."""
+    got = parse_value(cell)
+    assert got and got["value_numeric"] == expected
+
+
+@pytest.mark.parametrize("cell,value,runs,annot", [
+    ("24 (*)", 24.0, None, "*"),
+    ("0.83 (A)", 0.83, None, "A"),
+    ("12 (8)", 12.0, 8, None),
+])
+def test_parenthetical_is_a_run_count_only_when_it_is_digits(cell, value, runs, annot):
+    got = parse_value(cell)
+    assert got["value_numeric"] == value
+    assert got["n_runs"] == runs
+    assert got.get("annotation") == annot
+
+
+# ── fingerprinting ────────────────────────────────────────────────
+
+def test_fingerprint_ignores_content_so_rules_are_reusable():
+    a = _t(2, [["Ex", "IC50 (nM)"]], [["1", "5.0"], ["2", "6.0"]])
+    b = _t(2, [["Ex", "IC50 (nM)"]], [["941", "88.1"], ["942", "91.4"]])
+    assert layout_fingerprint(a, ["Ex", "IC50 (nM)"]) == \
+           layout_fingerprint(b, ["Ex", "IC50 (nM)"])
+
+
+def test_fingerprint_separates_genuinely_different_shapes():
+    a = _t(2, [["Ex", "IC50 (nM)"]], [["1", "5.0"]])
+    b = _t(3, [["Ex", "MW", "RT"]], [["1", "400.1", "1.2"]])
+    assert layout_fingerprint(a, ["Ex", "IC50 (nM)"]) != \
+           layout_fingerprint(b, ["Ex", "MW", "RT"])

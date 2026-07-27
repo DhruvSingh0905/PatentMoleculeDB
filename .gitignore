@@ -1,4 +1,9 @@
-# ── Python / venv / build artifacts ───────────────────────────────
+# The rule this file follows: everything the pipeline NEEDS to run is tracked;
+# everything it PRODUCES is not. Patterns are root-anchored (leading /) wherever
+# a bare name would also match inside the package — /data/ must not hide
+# patentdb/data/, which is how the vocabulary went untracked before.
+
+# ── Python / build artifacts ─────────────────────────────────────
 __pycache__/
 *.pyc
 *.egg-info/
@@ -7,54 +12,48 @@ __pycache__/
 .DS_Store
 dist/
 build/
+/tmp/
+
+# ── Environments + secrets ───────────────────────────────────────
 venv/
 venv_mineru/
 .env
-/tmp/
 
-# ── v1 codebase (frozen; kept locally for side-by-side benchmark) ──
-patent_extraction/
-run_markush_enum.py
-run_4patent_bench.py
-bench_below_threshold.py
-scripts/debug/
-scripts/strategy/
-scripts/utils/
+# ── Retired code, kept on disk only. See _attic/MANIFEST.md ──────
+/_attic/
 
-# ── Extraction outputs (regenerable, large) ───────────────────────
-output/
-output_v2/
-patent_extraction_v2/output/
-
-# ── Patent source files (large; pulled fresh per-run) ─────────────
-US*/
+# ── Source corpus + reference dumps (large; fetched per run) ─────
+/data/patents/
+/data/*.tsv
+/data/*.zip
 *.pdf
 
-# ── Reference data (huge dumps; subset committed if needed) ───────
-*.tsv
-*.zip
-BindingDB_*.tsv
-BindingDB_*.zip
-test_set/
-data/
+# ── Generated output ─────────────────────────────────────────────
+# output_v2/ holds the LLM and Google-Patents response caches. Regenerable,
+# but only by paying for the API calls again — never delete it casually.
+/output/
+/output_v2/
+/mineru_output/
 
-# ── Local agent + tooling state ───────────────────────────────────
+# ── Local agent + tooling state ──────────────────────────────────
 .claude/
 graphify-out/
 
-# ── Local-only tests + eval scripts ───────────────────────────────
-tests/
-patent_extraction_v2/tests/
-patent_extraction_v2/scripts/
-scripts/eval/
+# ── Learned data under patentdb/data/ ────────────────────────────
+# The canonical vocabulary and the built target index ARE tracked: the
+# pipeline cannot run without them, and rebuilding the index needs the
+# 8 GB BindingDB dump this repo deliberately does not carry. Runtime
+# accumulation and network caches are not.
+# The learned layout-rule library is runtime accumulation (and currently holds
+# mostly negative/escalation entries from experiments), same class as the
+# discovery files below.
+patentdb/data/layout_rules.json
+patentdb/data/*.discoveries.json
+patentdb/data/ref_ik_cache.json
 
-# ── MinerU OCR output (regenerated per run) ───────────────────────
-mineru_output/
-
-# ── Markdown docs: block everything except the three keepers ──────
-# CLAUDE.md / README.md / ARCH.md are the only docs that should
-# travel with the repo. Walkthroughs, phase notes, benchmark write-ups,
-# and ad-hoc analysis stay local.
+# ── Markdown: only the three keepers travel with the repo ────────
+# Walkthroughs, phase notes and ad-hoc analysis live in docs/notes/
+# and stay local by design.
 *.md
 !CLAUDE.md
 !README.md

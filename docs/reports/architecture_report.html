@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Patent Compound Extraction — Pipeline Architecture</title>
+<style>
+:root {
+  --ink:        #1a1f2c;
+  --ink-soft:   #4a5163;
+  --ink-mute:   #8089a0;
+  --paper:      #ffffff;
+  --paper-soft: #f6f7fb;
+  --rule:       #d6dae5;
+  --accent:     #1f4e78;
+  --accent-soft:#5b9bd5;
+  --code-bg:    #f3f5fb;
+}
+@page { size: Letter; margin: 0.55in 0.55in; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; color: var(--ink); background: var(--paper); }
+body {
+  font-family: -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  font-size: 9.8pt; line-height: 1.4;
+  font-feature-settings: "kern", "liga", "ss01";
+}
+
+main { padding: 0; }
+section { page-break-inside: avoid; margin-bottom: 0.18in; }
+section.break { page-break-before: always; }
+section:first-of-type { margin-top: 0; }
+
+h2.section-title {
+  font-family: "SF Pro Display", -apple-system, sans-serif;
+  font-size: 16pt; font-weight: 700; letter-spacing: -0.012em;
+  margin: 0.08in 0 0.04in 0;
+  padding-bottom: 3px; border-bottom: 1.5px solid var(--accent);
+  display: flex; align-items: baseline; gap: 0.1in;
+}
+h2.section-title .num {
+  font-size: 9pt; color: var(--accent); font-weight: 600;
+  letter-spacing: 0.06em;
+}
+h2.section-title .sub {
+  font-size: 9.5pt; color: var(--ink-mute); font-weight: 400;
+  letter-spacing: 0; margin-left: auto;
+}
+
+h3 {
+  font-size: 11pt; font-weight: 600;
+  margin: 0.1in 0 0.03in 0;
+}
+h4 {
+  font-size: 9.6pt; font-weight: 600;
+  margin: 0.04in 0 0.02in 0;
+}
+p { margin: 0.03in 0 0.05in 0; }
+
+code, pre, .mono {
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 8.5pt;
+}
+code {
+  background: var(--code-bg); padding: 1px 4px; border-radius: 3px;
+  font-size: 8.4pt;
+}
+pre {
+  background: var(--code-bg); border-left: 3px solid var(--accent);
+  padding: 6px 10px; margin: 0.05in 0;
+  white-space: pre-wrap; word-break: break-word;
+  border-radius: 0 4px 4px 0; font-size: 8.5pt;
+}
+
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 0.12in; margin: 0.05in 0; }
+.split-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.1in; margin: 0.05in 0; }
+.card {
+  border: 1px solid var(--rule); border-radius: 4px;
+  padding: 0.06in 0.1in;
+}
+.card h4 { margin-top: 0; }
+.card p { font-size: 9.3pt; margin: 0.02in 0; }
+
+table.matrix {
+  width: 100%; border-collapse: collapse; font-size: 8.8pt; margin: 0.04in 0;
+}
+table.matrix th {
+  text-align: left; padding: 4px 7px; background: var(--accent);
+  color: white; font-weight: 600; font-size: 8.3pt;
+  letter-spacing: 0.03em;
+}
+table.matrix td {
+  padding: 3px 7px; border-bottom: 1px solid var(--rule); vertical-align: top;
+}
+table.matrix tr:nth-child(odd) td { background: var(--paper-soft); }
+table.matrix code { background: transparent; padding: 0; font-size: 8pt; }
+
+.diagram { margin: 0.05in 0; text-align: center; }
+.diagram svg { max-width: 100%; height: auto; }
+
+ul { padding-left: 0.2in; margin: 0.03in 0; }
+ul li { margin: 0.015in 0; }
+ul li::marker { color: var(--accent-soft); }
+
+header.titlebar {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin: 0.05in 0 0.15in 0; padding-bottom: 0.08in;
+  border-bottom: 1px solid var(--rule);
+}
+header.titlebar h1 {
+  font-family: "SF Pro Display", -apple-system, sans-serif;
+  font-size: 16pt; font-weight: 700; letter-spacing: -0.015em;
+  margin: 0; color: var(--ink);
+}
+header.titlebar .tag {
+  font-size: 8.5pt; color: var(--ink-mute);
+  font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
+</style>
+</head>
+<body>
+
+<main>
+
+<header class="titlebar">
+  <h1>Patent Compound Extraction — pipeline architecture</h1>
+  <span class="tag">patent_extraction_v2/</span>
+</header>
+
+<!-- §1 PIPELINE -->
+<section>
+  <h2 class="section-title">
+    <span class="num">§ 1</span>
+    <span>Orchestration</span>
+    <span class="sub">routes/process_patent.py</span>
+  </h2>
+
+  <div class="diagram">
+    <svg viewBox="0 0 720 195" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1f4e78"/>
+        </marker>
+        <style>
+          .l { font: 9.5px -apple-system; fill: #1a1f2c; }
+          .s { font: 8px -apple-system; fill: #4a5163; }
+          .box { fill: #ffffff; stroke: #1f4e78; stroke-width: 1; rx: 5; }
+          .head { font-weight: 600; }
+          .ar { stroke: #1f4e78; stroke-width: 1.3; fill: none; }
+        </style>
+      </defs>
+      <rect class="box" x="15"  y="15"  width="120" height="38"/>
+      <text class="l head" x="75" y="32" text-anchor="middle">Google Patents</text>
+      <text class="s" x="75" y="45" text-anchor="middle">description + figures</text>
+
+      <rect class="box" x="15"  y="63"  width="120" height="38"/>
+      <text class="l head" x="75" y="80" text-anchor="middle">MinerU OCR</text>
+      <text class="s" x="75" y="93" text-anchor="middle">per-page md + bbox</text>
+
+      <rect class="box" x="15"  y="111" width="120" height="38"/>
+      <text class="l head" x="75" y="128" text-anchor="middle">Raw PDF</text>
+      <text class="s" x="75" y="141" text-anchor="middle">300 DPI render source</text>
+
+      <rect class="box" x="180" y="15" width="200" height="170"/>
+      <text class="l head" x="280" y="34"  text-anchor="middle">process_patent</text>
+      <line class="ar" x1="200" y1="46" x2="360" y2="46"/>
+      <text class="s" x="280" y="62"  text-anchor="middle">1 · resolve text sources</text>
+      <text class="s" x="280" y="76"  text-anchor="middle">2 · pre-extraction</text>
+      <text class="s" x="280" y="90"  text-anchor="middle">3 · route classification</text>
+      <text class="s" x="280" y="104" text-anchor="middle">4 · extract (text arm) + tag</text>
+      <text class="s" x="280" y="118" text-anchor="middle">5 · post-process · dedupe</text>
+      <text class="s" x="280" y="132" text-anchor="middle">6 · write outputs</text>
+      <text class="s" x="280" y="156" text-anchor="middle" style="font-style:italic">parallel: markush tag · image tag</text>
+      <text class="s" x="280" y="170" text-anchor="middle" style="font-style:italic">→ consumed by § 3 and § 4</text>
+
+      <rect class="box" x="430" y="22"  width="170" height="36"/>
+      <text class="l head" x="515" y="40" text-anchor="middle">example_index.json</text>
+      <text class="s" x="515" y="52" text-anchor="middle">cid → iupac / smiles / inchikey</text>
+
+      <rect class="box" x="430" y="68"  width="170" height="36"/>
+      <text class="l head" x="515" y="86" text-anchor="middle">assay_tables.json</text>
+      <text class="s" x="515" y="98" text-anchor="middle">cid → AssayResult[ ]</text>
+
+      <rect class="box" x="430" y="114" width="170" height="36"/>
+      <text class="l head" x="515" y="132" text-anchor="middle">route_audit.json</text>
+      <text class="s" x="515" y="144" text-anchor="middle">+ markush + image tags</text>
+
+      <line class="ar" x1="135" y1="34"  x2="178" y2="50"  marker-end="url(#arr)"/>
+      <line class="ar" x1="135" y1="82"  x2="178" y2="90"  marker-end="url(#arr)"/>
+      <line class="ar" x1="135" y1="130" x2="178" y2="130" marker-end="url(#arr)"/>
+      <line class="ar" x1="380" y1="40"  x2="428" y2="40"  marker-end="url(#arr)"/>
+      <line class="ar" x1="380" y1="86"  x2="428" y2="86"  marker-end="url(#arr)"/>
+      <line class="ar" x1="380" y1="130" x2="428" y2="132" marker-end="url(#arr)"/>
+    </svg>
+  </div>
+
+  <div class="split-3">
+    <div class="card">
+      <h4>1 · <code>_resolve_text_sources</code></h4>
+      <p>Picks the best <code>(text, src_format, text_md, md_format)</code> combination of GP description + MinerU markdown.</p>
+    </div>
+    <div class="card">
+      <h4>2 · <code>_collect_pre_extraction</code></h4>
+      <p>Regex IUPAC/SMILES, GP-embedded structures (Strategy 0), MS/HPLC stubs, <code>## Example N</code> headers.</p>
+    </div>
+    <div class="card">
+      <h4>3 · <code>classify_route</code></h4>
+      <p>Sets <code>route_class</code> + <code>route_reason</code> for the audit. Descriptive; does not gate execution.</p>
+    </div>
+    <div class="card">
+      <h4>4 · <code>_run_text_dominant</code></h4>
+      <p>Drives the assay FSM, IUPAC pattern library, LLM realigner (§ 2). Parallel: <code>tag_markush_regions</code>, <code>tag_structure_image_figures</code>.</p>
+    </div>
+    <div class="card">
+      <h4>5 · <code>_post_process</code></h4>
+      <p><code>_collapse_cids_by_inchikey</code>, unit harmonisation, impossible-fragment retry, PubChem IUPAC backfill.</p>
+    </div>
+    <div class="card">
+      <h4>6 · <code>_write_outputs</code></h4>
+      <p>Three canonical JSONs to <code>output_v2/text_extraction/{pid}/</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- §2 ASSAY FSM -->
+<section>
+  <h2 class="section-title">
+    <span class="num">§ 2</span>
+    <span>Assay FSM</span>
+    <span class="sub">core/assay_fsm/ + core/adaptive_extraction_cache.py</span>
+  </h2>
+
+  <p>Five-component cascade. Top row: deterministic structural recovery (FSM) feeds an adaptive LLM realigner; the cross-validator emits typed <code>AssayResult</code>. HARVEST runs in parallel and contributes regex patterns to the library.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 720 285" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1f4e78"/>
+        </marker>
+        <style>
+          .l { font: 9.5px -apple-system; fill: #1a1f2c; }
+          .s { font: 8px -apple-system; fill: #4a5163; }
+          .box { fill: #ffffff; stroke: #1f4e78; stroke-width: 1; rx: 5; }
+          .head { font-weight: 600; }
+          .ar { stroke: #1f4e78; stroke-width: 1.3; fill: none; }
+        </style>
+      </defs>
+      <rect class="box" x="10" y="20" width="120" height="50"/>
+      <text class="l head" x="70" y="40" text-anchor="middle">region_detector</text>
+      <text class="s" x="70" y="54" text-anchor="middle">find assay tables</text>
+      <text class="s" x="70" y="66" text-anchor="middle">in patent text</text>
+
+      <rect class="box" x="155" y="20" width="120" height="50"/>
+      <text class="l head" x="215" y="40" text-anchor="middle">tokenizer</text>
+      <text class="s" x="215" y="54" text-anchor="middle">+ AssayVocabulary</text>
+      <text class="s" x="215" y="66" text-anchor="middle">surfaces → tokens</text>
+
+      <rect class="box" x="300" y="20" width="120" height="50"/>
+      <text class="l head" x="360" y="40" text-anchor="middle">row_aligner</text>
+      <text class="s" x="360" y="54" text-anchor="middle">FSM, deterministic</text>
+      <text class="s" x="360" y="66" text-anchor="middle">→ AlignedRow</text>
+
+      <rect class="box" x="445" y="20" width="135" height="50"/>
+      <text class="l head" x="512" y="40" text-anchor="middle">llm_realigner</text>
+      <text class="s" x="512" y="54" text-anchor="middle">adaptive cache</text>
+      <text class="s" x="512" y="66" text-anchor="middle">→ RealignedRow</text>
+
+      <rect class="box" x="600" y="20" width="110" height="50"/>
+      <text class="l head" x="655" y="40" text-anchor="middle">cross_validator</text>
+      <text class="s" x="655" y="54" text-anchor="middle">FSM ↔ LLM merge</text>
+      <text class="s" x="655" y="66" text-anchor="middle">prefer-LLM rule</text>
+
+      <line class="ar" x1="130" y1="45" x2="155" y2="45" marker-end="url(#arr2)"/>
+      <line class="ar" x1="275" y1="45" x2="300" y2="45" marker-end="url(#arr2)"/>
+      <line class="ar" x1="420" y1="45" x2="445" y2="45" marker-end="url(#arr2)"/>
+      <line class="ar" x1="580" y1="45" x2="600" y2="45" marker-end="url(#arr2)"/>
+
+      <rect class="box" x="600" y="100" width="110" height="36"/>
+      <text class="l head" x="655" y="118" text-anchor="middle">AssayResult[ ]</text>
+      <text class="s" x="655" y="130" text-anchor="middle">→ assay_tables.json</text>
+      <line class="ar" x1="655" y1="70" x2="655" y2="100" marker-end="url(#arr2)"/>
+
+      <rect class="box" x="10" y="150" width="700" height="120"/>
+      <text class="l head" x="360" y="168" text-anchor="middle">HARVEST burst — IUPAC + activity tuples · contributes patterns to library</text>
+
+      <rect class="box" x="30"  y="185" width="150" height="70"/>
+      <text class="l head" x="105" y="202" text-anchor="middle">Agent 1 — targets</text>
+      <text class="s" x="105" y="217" text-anchor="middle">extract biological</text>
+      <text class="s" x="105" y="229" text-anchor="middle">targets from text</text>
+      <text class="s" x="105" y="245" text-anchor="middle"><tspan style="font-style:italic">agent1_targets.py</tspan></text>
+
+      <rect class="box" x="195" y="185" width="150" height="70"/>
+      <text class="l head" x="270" y="202" text-anchor="middle">Agent 2 — activities</text>
+      <text class="s" x="270" y="217" text-anchor="middle">cid · target · value</text>
+      <text class="s" x="270" y="229" text-anchor="middle">tuples from chunks</text>
+      <text class="s" x="270" y="245" text-anchor="middle"><tspan style="font-style:italic">agent2_activities.py</tspan></text>
+
+      <rect class="box" x="360" y="185" width="150" height="70"/>
+      <text class="l head" x="435" y="202" text-anchor="middle">Agent 2b — row patterns</text>
+      <text class="s" x="435" y="217" text-anchor="middle">discover regex</text>
+      <text class="s" x="435" y="229" text-anchor="middle">+ column_assays</text>
+      <text class="s" x="435" y="245" text-anchor="middle"><tspan style="font-style:italic">assay_pattern_library</tspan></text>
+
+      <rect class="box" x="525" y="185" width="150" height="70"/>
+      <text class="l head" x="600" y="202" text-anchor="middle">Agent 5 — validation</text>
+      <text class="s" x="600" y="217" text-anchor="middle">cross-check + dedupe</text>
+      <text class="s" x="600" y="229" text-anchor="middle">vs FSM rows</text>
+      <text class="s" x="600" y="245" text-anchor="middle"><tspan style="font-style:italic">iupac_orchestrator</tspan></text>
+    </svg>
+  </div>
+
+  <p>A discovered pattern stores <code>{regex, column_assays, header_text, …}</code> and fires by <strong>header anchor</strong>: structure and labels are decoupled. The <code>regex</code> is purely structural (a row shape like <code>\d+\s+\d+\.\d+</code>) and may match any patent; the <code>column_assays</code> are applied only when the pattern's header — its ordered, Greek-transliterated, punctuation-stripped column tokens — appears, in order and within a compact span, in the target patent's text. This check is evaluated once per pattern against the normalized text, so the decision depends solely on the text being processed. A pattern learned from a RORγ patent therefore re-fires for free on any other RORγ table (the scale win) but cannot fire on a Nav-channel patent that lacks that header (contamination is structurally impossible, not merely guarded). Because firing depends on the local header rather than a lifecycle counter, output is identical regardless of which patent discovered the pattern or in what order the corpus was processed — fully deterministic. The <code>pending</code> → <code>auto_loaded</code> → <code>promoted</code> counters remain as confidence signals only.</p>
+  <p>The realigner cache (<code>adaptive_extraction_rules.json</code>) is keyed on <code>fingerprint_table_shape(headers, n_rows, sample_cells)</code> scoped to <code>patent_id</code>; repeat passes over the same layout skip the LLM call.</p>
+</section>
+
+<!-- §3 MARKUSH -->
+<section class="break">
+  <h2 class="section-title">
+    <span class="num">§ 3</span>
+    <span>Markush handling</span>
+    <span class="sub">detection · context · enumeration hooks</span>
+  </h2>
+
+  <h3>Detection &amp; tagging</h3>
+  <table class="matrix">
+    <tr><th style="width:38%">Component</th><th style="width:22%">Where</th><th>Role</th></tr>
+    <tr><td><code>tag_markush_regions(text, window=4000, min_hits=4)</code></td><td><code>core/route_classifier.py</code></td><td>Sliding-window scan; emits <code>MarkushRegion(offset, n_phrase_hits, snippet)</code> for every cluster with ≥ 4 phrase hits.</td></tr>
+    <tr><td><code>tag_structure_image_figures(figure_urls, n_gp_embedded, gap_threshold=50)</code></td><td><code>core/route_classifier.py</code></td><td>Sets <code>needs_image_recognition = True</code> when GP-embedded SMILES cover &lt; ½ the drawn structures AND the gap ≥ 50.</td></tr>
+    <tr><td><code>extract_markush_dict(...)</code></td><td><code>routes/text_markush.py</code></td><td>Page-by-page parse to a <code>MarkushDict</code> of formulae + R-group option tables.</td></tr>
+    <tr><td><code>derive_scaffold_from_examples</code> · <code>derive_multi_level_cores</code></td><td>core / scaffold mapper</td><td>Infer maximal common scaffold + intermediate cores from a set of exemplified compounds.</td></tr>
+    <tr><td><code>expand_substituent</code> · <code>expand_alkyl_range</code></td><td>core / substituent vocabulary</td><td>Resolve substituent options into SMILES lists. Handles <code>C1–C6 alkyl</code> ranges, nested rules, ChEMBL-dictionary lookups.</td></tr>
+  </table>
+
+  <h3>Schemas (<code>core/models.py</code>)</h3>
+  <table class="matrix">
+    <tr><th style="width:22%">Schema</th><th style="width:28%">Used for</th><th>Key fields</th></tr>
+    <tr><td><code>MarkushDefinition</code></td><td>One parsed Markush from claims</td><td><code>formula_name</code>, <code>core_scaffold</code> (SMILES with <code>[1*]</code>/<code>[2*]</code>), <code>variables: dict[label, list[option_smiles]]</code>, <code>estimated_combinations</code></td></tr>
+    <tr><td><code>MarkushFormula</code></td><td>Canonical ground truth for enumeration</td><td><code>core_smarts</code>, <code>core_smiles</code>, <code>r_groups: dict[label, RGroupDef]</code>, <code>difficulty ∈ LOW|MED|HIGH</code>, <code>source ∈ text|image|reconciled</code></td></tr>
+    <tr><td><code>MarkushContext</code></td><td>Inline context for IUPAC→SMILES</td><td><code>scaffold_smiles</code>, <code>scaffold_description</code>, <code>r_group_definitions</code>, <code>position_mapping</code>, <code>quality ∈ high_confidence|partial|failed</code></td></tr>
+    <tr><td><code>MarkushMapping</code></td><td>Result of binding a named example back to R-group assignments</td><td><code>r_assignments: dict[R-label, substituent]</code>, <code>instance_smiles</code>, <code>confidence</code>, <code>alignment_method ∈ symbolic|lm|reconciled</code></td></tr>
+  </table>
+
+  <h3>Tag flow</h3>
+  <div class="diagram">
+    <svg viewBox="0 0 720 210" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1f4e78"/>
+        </marker>
+        <style>
+          .l { font: 9.5px -apple-system; fill: #1a1f2c; }
+          .s { font: 8px -apple-system; fill: #4a5163; }
+          .box { fill: #ffffff; stroke: #1f4e78; stroke-width: 1; rx: 5; }
+          .head { font-weight: 600; }
+          .ar { stroke: #1f4e78; stroke-width: 1.3; fill: none; }
+        </style>
+      </defs>
+      <rect class="box" x="20" y="20" width="140" height="42"/>
+      <text class="l head" x="90" y="38" text-anchor="middle">Patent text</text>
+      <text class="s" x="90" y="52" text-anchor="middle">GP description + claims</text>
+
+      <rect class="box" x="20" y="74" width="140" height="42"/>
+      <text class="l head" x="90" y="92" text-anchor="middle">GP figure URLs</text>
+      <text class="s" x="90" y="106" text-anchor="middle">C##### figures + count</text>
+
+      <rect class="box" x="200" y="10" width="170" height="98"/>
+      <text class="l head" x="285" y="28" text-anchor="middle">text-side detection</text>
+      <text class="s" x="285" y="46" text-anchor="middle"><tspan style="font-weight:600">tag_markush_regions</tspan></text>
+      <text class="s" x="285" y="58" text-anchor="middle">window 4000 · ≥ 4 hits</text>
+      <text class="s" x="285" y="76" text-anchor="middle"><tspan style="font-weight:600">extract_markush_dict</tspan></text>
+      <text class="s" x="285" y="88" text-anchor="middle">+ MarkushContext</text>
+
+      <rect class="box" x="200" y="118" width="170" height="78"/>
+      <text class="l head" x="285" y="136" text-anchor="middle">image-side flagging</text>
+      <text class="s" x="285" y="154" text-anchor="middle"><tspan style="font-weight:600">tag_structure_image_figures</tspan></text>
+      <text class="s" x="285" y="168" text-anchor="middle">gap = n_structures − n_GP_smiles</text>
+      <text class="s" x="285" y="184" text-anchor="middle">needs_image_recognition ?</text>
+
+      <rect class="box" x="410" y="28" width="135" height="40"/>
+      <text class="l head" x="477" y="46" text-anchor="middle">markush_regions[ ]</text>
+      <text class="s" x="477" y="60" text-anchor="middle">→ route_audit.json</text>
+
+      <rect class="box" x="410" y="78" width="135" height="40"/>
+      <text class="l head" x="477" y="96" text-anchor="middle">MarkushDict</text>
+      <text class="s" x="477" y="110" text-anchor="middle">scaffold + r-groups</text>
+
+      <rect class="box" x="410" y="138" width="135" height="40"/>
+      <text class="l head" x="477" y="156" text-anchor="middle">structure_image_tag</text>
+      <text class="s" x="477" y="170" text-anchor="middle">→ route_audit.json</text>
+
+      <rect class="box" x="580" y="28" width="125" height="48"/>
+      <text class="l head" x="642" y="48" text-anchor="middle">enumeration</text>
+      <text class="s" x="642" y="62" text-anchor="middle">scaffold × R-options</text>
+      <text class="s" x="642" y="72" text-anchor="middle">→ Compound[ ]</text>
+
+      <rect class="box" x="580" y="92" width="125" height="48"/>
+      <text class="l head" x="642" y="112" text-anchor="middle">IUPAC → SMILES</text>
+      <text class="s" x="642" y="126" text-anchor="middle">+ MarkushContext</text>
+      <text class="s" x="642" y="136" text-anchor="middle">disambiguation</text>
+
+      <rect class="box" x="580" y="158" width="125" height="40"/>
+      <text class="l head" x="642" y="176" text-anchor="middle">image arm</text>
+      <text class="s" x="642" y="190" text-anchor="middle">§ 4</text>
+
+      <line class="ar" x1="160" y1="40"  x2="200" y2="42"  marker-end="url(#arr4)"/>
+      <line class="ar" x1="160" y1="94"  x2="200" y2="156" marker-end="url(#arr4)"/>
+      <line class="ar" x1="370" y1="42"  x2="410" y2="48"  marker-end="url(#arr4)"/>
+      <line class="ar" x1="370" y1="78"  x2="410" y2="96"  marker-end="url(#arr4)"/>
+      <line class="ar" x1="370" y1="156" x2="410" y2="156" marker-end="url(#arr4)"/>
+      <line class="ar" x1="545" y1="48"  x2="580" y2="48"  marker-end="url(#arr4)"/>
+      <line class="ar" x1="545" y1="96"  x2="580" y2="112" marker-end="url(#arr4)"/>
+      <line class="ar" x1="545" y1="156" x2="580" y2="172" marker-end="url(#arr4)"/>
+    </svg>
+  </div>
+
+  <p>Consumers: IUPAC→SMILES uses <code>MarkushContext</code> to graft a named R-substituent onto the scaffold; enumeration takes a <code>MarkushFormula</code> + <code>RGroupDef</code> options and emits <code>Compound</code> records with <code>source = MARKUSH_ENUMERATED</code>, <code>markush_parent</code> back-pointer, and an <code>r_groups</code> assignment map; the image arm consults <code>needs_image_recognition</code> when the specific examples live only in figures.</p>
+</section>
+
+<!-- §4 IMAGE ARM -->
+<section class="break">
+  <h2 class="section-title">
+    <span class="num">§ 4</span>
+    <span>Image-recognition arm</span>
+    <span class="sub">DECIMER + DECIMER-Seg + PaddleOCR</span>
+  </h2>
+
+  <p>Two substrates feed one classifier. Sequential by design — DECIMER-Seg, DECIMER, and PaddleOCR are heavy local models; only one is held in memory at a time.</p>
+
+  <div class="split">
+    <div class="card">
+      <h4>URL substrate · <code>core/image_recog.py</code></h4>
+      <p>Accepts Google's pre-cropped <code>C#####.png</code> URLs. Download → DECIMER → classify → emit <code>Compound</code>.</p>
+    </div>
+    <div class="card">
+      <h4>PDF substrate · <code>core/image_cid_associate.py</code></h4>
+      <p>Uses <code>routes/decimer_segmentation_crop.segment_page()</code>. Handles multi-structure figures and yields per-structure bboxes plus crops.</p>
+    </div>
+  </div>
+
+  <h3>Shared classifier</h3>
+  <p><code>image_recog.classify_decimer_output(raw)</code> sorts every DECIMER prediction into <code>complete</code>, <code>markush</code>, or <code>fail</code> using two cheap signals — RDKit parseability with a reasonable MW, plus a pseudo-atom regex:</p>
+  <pre>main = raw.split(".")[0].strip()
+if validate_smiles(main) and 150 ≤ MW ≤ 1500:
+    return "complete", main
+if _RGROUP_TOKEN.search(raw) or "*" in raw:   # [R1] [X] [G] [W] [L] [Z] [Q] [A]
+    return "markush",  main
+return "fail",       main</pre>
+
+  <h3>CID association (PDF substrate)</h3>
+  <p>Each structure crop is fed sequentially to DECIMER, then matched to its compound ID by an incremental directional expansion of its bbox. The search grows in small steps until a CID label is OCR'd; per-direction caps prevent reaching into the neighbouring row, and a distance metric resolves conflicts when two structures claim the same CID — the nearer keeps it, the other re-resolves.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 720 210" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1f4e78"/>
+        </marker>
+        <style>
+          .l { font: 9.5px -apple-system; fill: #1a1f2c; }
+          .s { font: 8px -apple-system; fill: #4a5163; }
+          .box { fill: #ffffff; stroke: #1f4e78; stroke-width: 1; rx: 5; }
+          .head { font-weight: 600; }
+          .ar { stroke: #1f4e78; stroke-width: 1.3; fill: none; }
+        </style>
+      </defs>
+      <rect class="box" x="15" y="22" width="120" height="52"/>
+      <text class="l head" x="75" y="40" text-anchor="middle">render_pdf_page</text>
+      <text class="s" x="75" y="55" text-anchor="middle">300 DPI</text>
+      <text class="s" x="75" y="67" text-anchor="middle">PIL Image</text>
+
+      <rect class="box" x="155" y="22" width="120" height="52"/>
+      <text class="l head" x="215" y="40" text-anchor="middle">segment_page</text>
+      <text class="s" x="215" y="55" text-anchor="middle">DECIMER-Seg</text>
+      <text class="s" x="215" y="67" text-anchor="middle">SegCrop[bbox, path]</text>
+
+      <rect class="box" x="295" y="22" width="120" height="52"/>
+      <text class="l head" x="355" y="40" text-anchor="middle">_decimer_predict</text>
+      <text class="s" x="355" y="55" text-anchor="middle">sequential</text>
+      <text class="s" x="355" y="67" text-anchor="middle">raw SMILES per crop</text>
+
+      <rect class="box" x="435" y="22" width="125" height="52"/>
+      <text class="l head" x="497" y="40" text-anchor="middle">classify_decimer_output</text>
+      <text class="s" x="497" y="55" text-anchor="middle">complete / markush / fail</text>
+      <text class="s" x="497" y="67" text-anchor="middle">MW gate 150 – 1500</text>
+
+      <rect class="box" x="580" y="22" width="125" height="52"/>
+      <text class="l head" x="642" y="40" text-anchor="middle">PaddleOCR</text>
+      <text class="s" x="642" y="55" text-anchor="middle">label candidates</text>
+      <text class="s" x="642" y="67" text-anchor="middle">+ noise filter</text>
+
+      <rect class="box" x="155" y="110" width="220" height="52"/>
+      <text class="l head" x="265" y="128" text-anchor="middle">incremental directional expand</text>
+      <text class="s" x="265" y="143" text-anchor="middle">vcap 5.5% H · left 42% W · right 6% W</text>
+      <text class="s" x="265" y="155" text-anchor="middle">nearest CID label wins</text>
+
+      <rect class="box" x="395" y="110" width="180" height="52"/>
+      <text class="l head" x="485" y="128" text-anchor="middle">distance-based conflict resolution</text>
+      <text class="s" x="485" y="143" text-anchor="middle">2 structures → same CID</text>
+      <text class="s" x="485" y="155" text-anchor="middle">nearer keeps; other re-resolves</text>
+
+      <rect class="box" x="595" y="110" width="110" height="52"/>
+      <text class="l head" x="650" y="128" text-anchor="middle">Compound</text>
+      <text class="s" x="650" y="143" text-anchor="middle">image_pipeline /</text>
+      <text class="s" x="650" y="155" text-anchor="middle">decimer_local</text>
+
+      <line class="ar" x1="135" y1="48" x2="155" y2="48" marker-end="url(#arr5)"/>
+      <line class="ar" x1="275" y1="48" x2="295" y2="48" marker-end="url(#arr5)"/>
+      <line class="ar" x1="415" y1="48" x2="435" y2="48" marker-end="url(#arr5)"/>
+      <line class="ar" x1="560" y1="48" x2="580" y2="48" marker-end="url(#arr5)"/>
+      <line class="ar" x1="265" y1="74" x2="265" y2="110" marker-end="url(#arr5)"/>
+      <line class="ar" x1="375" y1="136" x2="395" y2="136" marker-end="url(#arr5)"/>
+      <line class="ar" x1="575" y1="136" x2="595" y2="136" marker-end="url(#arr5)"/>
+      <line class="ar" x1="642" y1="74" x2="642" y2="110" marker-end="url(#arr5)"/>
+    </svg>
+  </div>
+
+  <p>Emitted records: <code>provenance.route = "image_pipeline"</code>, <code>provenance.stage = "decimer_local"</code>, <code>source = EXEMPLIFIED</code>, original crop retained in <code>image_path</code>. They merge into the same <code>example_index.json</code> the text arm writes, keyed by InChIKey so duplicates collapse.</p>
+</section>
+
+</main>
+</body>
+</html>

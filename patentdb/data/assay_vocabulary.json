@@ -1,0 +1,303 @@
+{
+  "schema_version": "1.0",
+  "last_updated": "2026-05-04",
+  "comment": "Canonical assay-table token vocabulary. Sources: BindingDB TSV format (Jul 2025), ChEMBL standard_type set, HARVEST Mar-2026 paper. Patent-agnostic: NO patent IDs, target names, or compound IDs may appear here.",
+  "tokens": [
+    {
+      "lemma": "lt",
+      "class": "QUALIFIER",
+      "surface_forms": ["<", "&lt;"],
+      "maps_to": "<",
+      "source": "BindingDB"
+    },
+    {
+      "lemma": "gt",
+      "class": "QUALIFIER",
+      "surface_forms": [">", "&gt;"],
+      "maps_to": ">",
+      "source": "BindingDB"
+    },
+    {
+      "lemma": "le",
+      "class": "QUALIFIER",
+      "surface_forms": ["≤", "<=", "&le;"],
+      "maps_to": "≤",
+      "source": "BindingDB"
+    },
+    {
+      "lemma": "ge",
+      "class": "QUALIFIER",
+      "surface_forms": ["≥", ">=", "&ge;"],
+      "maps_to": "≥",
+      "source": "BindingDB"
+    },
+    {
+      "lemma": "approx",
+      "class": "QUALIFIER",
+      "surface_forms": ["~", "≈", "ca.", "ca", "approx", "approximately"],
+      "maps_to": "~",
+      "source": "common_pharma_convention"
+    },
+    {
+      "lemma": "much_less",
+      "class": "QUALIFIER",
+      "surface_forms": ["≪", "<<"],
+      "maps_to": "≪"
+    },
+    {
+      "lemma": "much_greater",
+      "class": "QUALIFIER",
+      "surface_forms": ["≫", ">>"],
+      "maps_to": "≫"
+    },
+    {
+      "lemma": "plusminus",
+      "class": "PLUSMINUS",
+      "surface_forms": ["±", "+/-", "+-", "&plusmn;"],
+      "maps_to": "±",
+      "source": "common_pharma_convention"
+    },
+    {
+      "lemma": "not_tested",
+      "class": "NULL_MARKER",
+      "surface_forms": ["nt", "n.t.", "NT", "N.T.", "n. t.", "N. T.", "Not tested", "not tested", "NOT TESTED"],
+      "source": "common_pharma_convention"
+    },
+    {
+      "lemma": "not_determined",
+      "class": "NULL_MARKER",
+      "surface_forms": ["nd", "n.d.", "ND", "N.D.", "n. d.", "N. D.", "Not determined", "not determined", "NOT DETERMINED"],
+      "source": "common_pharma_convention"
+    },
+    {
+      "lemma": "not_applicable",
+      "class": "NULL_MARKER",
+      "surface_forms": ["na", "n/a", "NA", "N/A", "N.A.", "n.a."],
+      "source": "common_pharma_convention"
+    },
+    {
+      "lemma": "dash_placeholder",
+      "class": "NULL_MARKER",
+      "surface_forms": ["—", "–", "--", "-", "–", "—", "−"],
+      "source": "common_pharma_convention",
+      "note": "em-dash, en-dash, double-hyphen, single-hyphen, minus-sign"
+    },
+    {
+      "lemma": "asterisk_footnote",
+      "class": "NULL_MARKER",
+      "surface_forms": ["*", "**"],
+      "source": "common_pharma_convention",
+      "note": "single asterisk in numeric column = footnote reference; treat as no-value unless context disambiguates"
+    },
+    {
+      "lemma": "inactive",
+      "class": "NULL_MARKER",
+      "surface_forms": ["inactive", "Inactive", "INACTIVE", "no inhibition", "No inhibition", "no inhib.", "no inhib", "tbd", "TBD"],
+      "maps_to_qualifier": ">",
+      "source": "common_pharma_convention",
+      "note": "maps to qualifier '>' (above detection limit) when value missing; pure null if no detection-limit context"
+    },
+    {
+      "lemma": "n_runs_paren",
+      "class": "RUN_COUNT",
+      "regex": "\\((\\d{1,3})\\)",
+      "capture_group": 1,
+      "source": "common_pharma_convention",
+      "note": "parenthesized small integer following a numeric value, e.g. '0.0038 (8)'"
+    },
+    {
+      "lemma": "n_runs_bracket",
+      "class": "RUN_COUNT",
+      "regex": "\\[(\\d{1,3})\\]",
+      "capture_group": 1
+    },
+    {
+      "lemma": "n_runs_eq",
+      "class": "RUN_COUNT",
+      "regex": "n\\s*=\\s*(\\d{1,3})",
+      "capture_group": 1
+    },
+    {
+      "lemma": "n_runs_word",
+      "class": "RUN_COUNT",
+      "regex": "(\\d{1,3})\\s*(?:runs|reps|replicates|determinations)",
+      "capture_group": 1
+    },
+    {
+      "lemma": "uM",
+      "class": "UNIT",
+      "surface_forms": ["μM", "uM", "µM", "Î¼M", "ÂµM", "mcM", "uMol", "umol/L", "μmol/L"],
+      "canonical": "μM",
+      "nM_factor": 1000.0,
+      "source": "BindingDB"
+    },
+    {
+      "lemma": "nM",
+      "class": "UNIT",
+      "surface_forms": ["nM", "nmol/L", "nmol\\u00b7L", "nanomolar"],
+      "canonical": "nM",
+      "nM_factor": 1.0,
+      "source": "BindingDB"
+    },
+    {
+      "lemma": "mM",
+      "class": "UNIT",
+      "surface_forms": ["mM", "mmol/L", "millimolar"],
+      "canonical": "mM",
+      "nM_factor": 1000000.0,
+      "source": "BindingDB"
+    },
+    {
+      "lemma": "pM",
+      "class": "UNIT",
+      "surface_forms": ["pM", "pmol/L", "picomolar"],
+      "canonical": "pM",
+      "nM_factor": 0.001,
+      "source": "BindingDB"
+    },
+    {
+      "lemma": "M",
+      "class": "UNIT",
+      "surface_forms": ["M", "mol/L", "molar"],
+      "canonical": "M",
+      "nM_factor": 1000000000.0
+    },
+    {
+      "lemma": "percent",
+      "class": "UNIT",
+      "surface_forms": ["%", "percent"],
+      "canonical": "%",
+      "note": "percent inhibition or percent activity — context-dependent assay value"
+    },
+    {
+      "lemma": "IC50",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["IC50", "IC 50", "IC-50", "IC_50", "IC₅₀", "IC_{50}", "ic50", "Ic50"],
+      "canonical": "IC50",
+      "source": "ChEMBL_standard_type"
+    },
+    {
+      "lemma": "EC50",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["EC50", "EC 50", "EC-50", "EC_50", "EC₅₀", "ec50", "Ec50"],
+      "canonical": "EC50",
+      "source": "ChEMBL_standard_type"
+    },
+    {
+      "lemma": "Ki",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["Ki", "K i", "K_i", "K_{i}", "Kᵢ", "ki", "K i ", "Ki app", "KiApp", "Ki(app)", "Ki app."],
+      "canonical": "Ki",
+      "source": "ChEMBL_standard_type"
+    },
+    {
+      "lemma": "Kd",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["Kd", "K d", "K_d", "K_{d}", "Kᴅ", "kd", "Kd app", "KdApp", "Kd(app)"],
+      "canonical": "Kd",
+      "source": "ChEMBL_standard_type"
+    },
+    {
+      "lemma": "CC50",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["CC50", "CC 50", "CC-50", "CC_50", "CC₅₀", "cc50"],
+      "canonical": "CC50",
+      "note": "cytotoxicity 50%"
+    },
+    {
+      "lemma": "AC50",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["AC50", "AC 50", "AC-50", "AC_50", "AC₅₀"],
+      "canonical": "AC50",
+      "source": "ChEMBL_standard_type"
+    },
+    {
+      "lemma": "XC50",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["XC50", "XC 50"],
+      "canonical": "XC50",
+      "source": "ChEMBL_standard_type"
+    },
+    {
+      "lemma": "ED50",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["ED50", "ED 50", "ED-50", "ED_50", "ED₅₀"],
+      "canonical": "ED50",
+      "source": "ChEMBL_standard_type"
+    },
+    {
+      "lemma": "Potency",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["Potency", "potency", "POTENCY"],
+      "canonical": "Potency",
+      "source": "ChEMBL_standard_type"
+    },
+    {
+      "lemma": "pIC50",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["pIC50", "pIC 50", "pIC₅₀", "-log IC50", "-log10 IC50"],
+      "canonical": "pIC50",
+      "note": "negative log10 of molar IC50 — the value is unitless and inverted",
+      "source": "ChEMBL"
+    },
+    {
+      "lemma": "pKi",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["pKi", "pK_i", "pKᵢ"],
+      "canonical": "pKi",
+      "note": "negative log10 of molar Ki",
+      "source": "ChEMBL"
+    },
+    {
+      "lemma": "pKd",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["pKd", "pK_d", "pKᴅ"],
+      "canonical": "pKd",
+      "source": "ChEMBL"
+    },
+    {
+      "lemma": "IC90",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["IC90", "IC 90", "IC-90", "IC₉₀"],
+      "canonical": "IC90"
+    },
+    {
+      "lemma": "EC90",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["EC90", "EC 90", "EC-90", "EC₉₀"],
+      "canonical": "EC90"
+    },
+    {
+      "lemma": "MIC",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["MIC", "MIC50", "MIC 50", "MIC₅₀"],
+      "canonical": "MIC",
+      "note": "minimum inhibitory concentration (antimicrobial)"
+    },
+    {
+      "lemma": "GI50",
+      "class": "ASSAY_TYPE",
+      "surface_forms": ["GI50", "GI 50", "GI₅₀"],
+      "canonical": "GI50",
+      "note": "growth inhibition 50% (oncology)"
+    },
+    {
+      "lemma": "Cpd_prefix",
+      "class": "COMPOUND_ID_PREFIX",
+      "surface_forms": ["Cpd.", "Cpd", "Compound", "compound", "Example", "Ex.", "Ex", "Cmp", "Cmp.", "Cmp No.", "Cmp. No.", "Compound No.", "Cpd. No.", "Example No."],
+      "note": "Stripped before compound-id matching; 'Cpd. No. 5' → '5'"
+    },
+    {
+      "lemma": "range_separator",
+      "class": "RANGE_SEP",
+      "surface_forms": ["-", "–", "to", "..."],
+      "note": "Used in range values like '0.5-1.0'; resolved by context (between two NUMBER tokens)"
+    },
+    {
+      "lemma": "row_separator",
+      "class": "ROW_BREAK",
+      "surface_forms": ["\\n", "\\r\\n"],
+      "note": "Hard line break is the strongest row delimiter signal"
+    }
+  ]
+}

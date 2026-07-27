@@ -1,0 +1,166 @@
+"""Configuration for patent molecule extraction pipeline."""
+
+import os
+from pathlib import Path
+
+# API
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# Load from .env if not in environment. Search both v2-package-local
+# (patentdb/.env) and the repo root (where the project's
+# canonical .env actually lives — same one v1 uses). Fall through if
+# absent so unit tests / CI can run without a key.
+if not ANTHROPIC_API_KEY:
+    _candidate_env_paths = [
+        Path(__file__).parent.parent / ".env",        # patentdb/.env
+        Path(__file__).parent.parent.parent / ".env", # repo root (canonical location)
+    ]
+    for _env_path in _candidate_env_paths:
+        if not _env_path.exists():
+            continue
+        for line in _env_path.read_text().splitlines():
+            if line.startswith("ANTHROPIC_API_KEY="):
+                ANTHROPIC_API_KEY = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+        if ANTHROPIC_API_KEY:
+            break
+MODEL_OPUS = "claude-opus-4-6"
+MODEL_SONNET = "claude-sonnet-4-6"
+DEFAULT_MODEL = MODEL_SONNET  # Sonnet for $200 proof phase; upgrade to Opus after budget increase
+
+# Paths
+# PACKAGE_ROOT = patentdb/          (source code lives here)
+# REPO_ROOT    = project root.
+# DATA_DIR     = per-patent source dirs, one per patent ID:
+#                  data/patents/{pid}/{pid}.pdf
+#                  data/patents/{pid}/all_pages/page_*.md   (MinerU output)
+#                Every consumer builds its path as `DATA_DIR / patent_id / ...`,
+#                so this one constant relocates the whole corpus.
+# OUTPUT_DIR   = output_v2/. Kept at this name deliberately — renaming it would
+#                orphan every cached LLM response and GP scrape under it.
+#                Reference dumps (BindingDB_All.tsv) sit beside it in data/.
+PACKAGE_ROOT = Path(__file__).parent.parent
+REPO_ROOT = PACKAGE_ROOT.parent
+DATA_DIR = REPO_ROOT / "data" / "patents"
+OUTPUT_DIR = REPO_ROOT / "output_v2"
+IMAGES_DIR = OUTPUT_DIR / "images"
+LOGS_DIR = OUTPUT_DIR / "logs"
+
+# ── HARVEST burst tier (coverage safety net) ──────────────────────
+# When True, the pipeline runs the gap detector after the cheap tier
+# completes; on signal trip, fires the HARVEST 5-agent burst over the
+# full patent text. Default ON. Disable via `HARVEST_BURST=0` for
+# regression debugging or cost-controlled re-runs.
+HARVEST_BURST_ENABLED = os.environ.get("HARVEST_BURST", "1") == "1"
+
+# ── Message Batches API (50% off, async) ──────────────────────────
+# When True, HARVEST burst collects all Agent 1 / Agent 2 / Agent 2b
+# prompts for a patent up front, submits them as one Message Batch,
+# polls until completion, then processes results. Costs roughly half
+# the per-token rate (Anthropic batches discount) and runs requests
+# concurrently server-side. Disable with `LLM_BATCH=0` for the
+# sequential path (faster debug feedback, full price).
+LLM_BATCH_ENABLED = os.environ.get("LLM_BATCH", "1") == "1"
+
+# ── HARVEST skip-when-library-covers gate ─────────────────────────
+# When True, the pipeline skips the HARVEST burst tier if the pre-applied
+# pattern library already extracted enough rows AND prior runs' HARVEST
+# hit-rate is below the threshold. This prevents wasted LLM spend on
+# patents the library already covers — US11292791's last run had a 3 %
+# HARVEST hit-rate against 8,693 pre-library rows; the 75 batched LLM
+# calls contributed essentially nothing. With the gate active those
+# calls would be skipped (~$0.50 per patent saved).
+#
+# Defaults are conservative:
+#   - need ≥ 500 pre-library rows AND
+#   - patent has its own recently-seen pattern (avoid skipping novel
+#     patents we know nothing about)
+# Tune with env vars HARVEST_SKIP_MIN_PRELIB_ROWS / HARVEST_SKIP_ENABLED.
+HARVEST_SKIP_ENABLED = os.environ.get("HARVEST_SKIP", "1") == "1"
+HARVEST_SKIP_MIN_PRELIB_ROWS = int(os.environ.get("HARVEST_SKIP_MIN_PRELIB_ROWS", "500"))
+
+# ── Substituent-table LLM fallback ────────────────────────────────
+# The substituent-table scan is symbolic-first ($0). When the regex
+# undershoots on a Markush-likely patent (TABLE-format definitions the
+# prose regex can't read), an LLM agent fires on the top-scoring
+# substituent-shaped chunks ONLY. Tightly capped — the LLM never reads a
+# chunk without R-label shape, and never fires when symbolic already
+# yields an enumerable table. Tune with env SUBSTITUENT_LLM / *_MAX_CHUNKS.
+# Default OFF — production substituent scan stays $0 (symbolic-only); the
+# LLM arm is opt-in (SUBSTITUENT_LLM=1), so no surprise per-patent cost.
+SUBSTITUENT_LLM_ENABLED = os.environ.get("SUBSTITUENT_LLM", "0") == "1"
+SUBSTITUENT_LLM_MAX_CHUNKS = int(os.environ.get("SUBSTITUENT_LLM_MAX_CHUNKS", "2"))
+
+# ── Gap-triggered repair loop ─────────────────────────────────────
+# Asks a model for an extraction RULE (not data) when a table largely fails
+# to parse, validates it, and persists it by layout fingerprint so the cost
+# amortises across every patent sharing that shape. Measured at ~$0.001-0.005
+# per NEW layout and $0 thereafter, against ~$8.81/patent for the HARVEST
+# burst it is intended to replace. Disable with REPAIR=0.
+REPAIR_ENABLED = os.environ.get("REPAIR", "1") == "1"
+REPAIR_MAX_CALLS_PER_PATENT = int(os.environ.get("REPAIR_MAX_CALLS", "4"))
+
+# Cost — global budget across all patents
+COST_THRESHOLDS = [50, 100, 150, 200]
+COST_CEILING = 200
+
+MODEL_HAIKU = "claude-haiku-4-5-20251001"
+
+# Pricing (per million tokens). A model missing from this table gets billed at
+# Opus rates by `cost_tracker.compute_cost`, which silently overstated the
+# repair loop's cost by ~15x until Haiku was added — keep new models in here.
+PRICING = {
+    MODEL_OPUS: {"input": 15.0, "output": 75.0},
+    MODEL_SONNET: {"input": 3.0, "output": 15.0},
+    MODEL_HAIKU: {"input": 1.0, "output": 5.0},
+}
+
+# Memory mode for the upstream-OCR wrappers (DECIMER-Seg, PaddleOCR text-det,
+# PP-Structure cell-det). When True, each wrapper's `unload()` actually frees
+# its model singletons + runs gc; subsequent calls re-load from scratch.
+# When False, models stay hot in RAM after first load and `unload()` is a no-op.
+#
+# - Local laptop (16-32 GB): leave True. Sequential phases keep peak under
+#   one model's footprint (~6 GB for PaddleOCR is the worst case).
+# - Cloud / GPU box (64+ GB): set to False to maximize throughput across
+#   many pages — first-load cost amortizes over the batch.
+#
+# Override via env var at runtime: `EXTRACTION_UNLOAD_MODELS=0` for cloud,
+# `=1` for local. Default favors safety on the laptop.
+UNLOAD_MODELS_AFTER_USE = (
+    os.environ.get("EXTRACTION_UNLOAD_MODELS", "1") not in ("0", "false", "False", "")
+)
+
+# Per-patent LM spend cap — guards Stages 3a/3b + synthesis-block route
+PER_PATENT_LM_CAP = 0.20  # USD
+# Hard alarm threshold (NOT a stopper — record() logs ONE loud WARNING per
+# patent when crossed). The soft cap above is enforced by per-path guards
+# (patent_lm_exceeded checks); this alarm is the backstop that makes any
+# *unguarded* path visible instead of silently burning budget. Set well
+# above the soft cap so normal multi-strategy spend doesn't trip it.
+PER_PATENT_LM_HARD_CAP = 1.00  # USD
+
+# Per-patent image-pipeline cost cap (Sonnet/Opus Vision + Sonnet layout calls)
+# Separate from LM cap so a Tier-B patent can spend on diagrams without burning LM budget
+PER_PATENT_IMAGE_CAP = 0.50  # USD
+
+# Per-patent LLM-realigner cap — the always-fire assay-table extractor. Bigger
+# than the LM cap because one large multi-column table can legitimately need
+# 15-20 chunked LLM calls (US11254686's 645-row table ≈ $1). Separate bucket so
+# it doesn't starve IUPAC name recovery, but still bounded so a runaway can't
+# eat the global budget. The global COST_CEILING is the final backstop.
+PER_PATENT_REALIGN_CAP = 1.50  # USD
+
+# Drug-likeness filter — read by `smiles_utils.passes_lipinski`.
+LIPINSKI_MW_MAX = 500
+LIPINSKI_LOGP_MAX = 5
+LIPINSKI_HBD_MAX = 5
+LIPINSKI_HBA_MAX = 10
+
+# API retry
+MAX_RETRIES = 3
+RETRY_MIN_WAIT = 4
+RETRY_MAX_WAIT = 60
+
+# Ensure output directories exist
+for d in [OUTPUT_DIR, IMAGES_DIR, LOGS_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
