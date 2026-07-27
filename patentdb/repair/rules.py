@@ -11,6 +11,14 @@ actually goes wrong:
   column_map  — say which column is the id, which are assays, their units.
                 Covers most failures; no regex, nothing to over-match.
   row_regex   — a pattern applied per row when the cell structure is lost.
+  value_pattern — how to read an individual CELL. This is what makes the loop
+                self-healing for parser bugs rather than only layout bugs. When
+                `_VALUE_PAT` rejected any number >= 1000, the columns were
+                mapped perfectly and the cells were plainly numeric; nothing in
+                the other rule kinds could say "your number regex is too
+                narrow". Adopting one is gated hard: it must parse the cells we
+                currently fail on, agree with the existing parser on every cell
+                we already read, and still reject the adversarial battery.
   not_assay   — a NEGATIVE rule. US11566007's `A1 | 944.5` table is mass-spec.
                 The correct outcome is "never treat this shape as assay data",
                 and recording it stops us paying to rediscover that forever.
@@ -33,6 +41,7 @@ from ..core import config
 
 COLUMN_MAP = "column_map"
 ROW_REGEX = "row_regex"
+VALUE_PATTERN = "value_pattern"
 NOT_ASSAY = "not_assay"
 ESCALATE = "escalate"
 
@@ -183,6 +192,85 @@ ADVERSARIAL_ROWS = [
 ]
 
 
+def _validate_value_pattern(rule: Rule, table) -> dict:
+    """Gate a proposed CELL parser. Three conditions, all mandatory.
+
+    A value pattern is the most dangerous rule kind, because it changes how
+    every cell in scope is read rather than which cells are read. So it is only
+    adopted when it is a strict improvement:
+
+      1. RESCUES — it parses cells the current parser rejects. A pattern that
+         adds nothing is not a repair.
+      2. NO REGRESSION — on every cell the current parser already reads, it
+         must agree on the number. A pattern that rescues 100 cells while
+         changing the value of 1,000 others is catastrophic, and it would sail
+         through a naive "did coverage go up" check.
+      3. NO OVER-REACH — it must still refuse the adversarial battery. This is
+         what stops "just match any number" from being adopted, which is the
+         obvious and wrong way to make condition 1 pass.
+    """
+    from ..sources.uspto_assays import _header_rows_of, parse_value
+
+    raw = rule.payload.get("pattern", "")
+    pat = _safe_regex(raw)
+    if "num" not in (pat.groupindex or {}):
+        # A single unnamed capture group is unambiguous — it can only be the
+        # number — so promote it rather than failing the call over syntax.
+        if pat.groups == 1 and not pat.groupindex:
+            raw = raw.replace("(", "(?P<num>", 1)
+            pat = _safe_regex(raw)
+            rule.payload["pattern"] = raw
+        else:
+            raise Rejected(
+                "value_pattern must capture a named group `num` "
+                f"(got groups={pat.groups}, named={list(pat.groupindex)})")
+
+    _, data = _header_rows_of(table)
+    cols = rule.payload.get("columns")
+    rescued = agreed = 0
+    regressions: list[str] = []
+    for r in data:
+        for i, cell in enumerate(r):
+            if cols and i not in cols:
+                continue
+            s = cell.text.strip()
+            if not s:
+                continue
+            current = parse_value(s)
+            m = _search(pat, s)
+            proposed = None
+            if m:
+                try:
+                    proposed = float(m.group("num").replace(",", ""))
+                except (TypeError, ValueError):
+                    proposed = None
+            if current and current.get("value_numeric") is not None:
+                if proposed is None or abs(proposed - current["value_numeric"]) > 1e-9:
+                    regressions.append(f"{s!r}: {current['value_numeric']} -> {proposed}")
+                else:
+                    agreed += 1
+            elif proposed is not None:
+                rescued += 1
+
+    if regressions:
+        raise Rejected(
+            f"pattern changes {len(regressions)} cells the parser already reads "
+            f"correctly (e.g. {regressions[0]}) — a value rule must be a strict "
+            f"superset, never a reinterpretation")
+    if rescued < 3:
+        raise Rejected(
+            f"pattern rescues only {rescued} unparsed cells; it is not repairing "
+            f"anything the current parser cannot already do")
+    for probe in ("1H NMR (CDCl3, 400 MHz)", "m/z 489.2 [M+H]+", "QC-ACN-AA-XB",
+                  "RT 1.24 min", "Method F"):
+        if _search(pat, probe):
+            raise Rejected(
+                f"pattern also matches {probe!r} — it is matching text, not a "
+                f"measurement")
+    return {"rescued": rescued, "agreed_with_parser": agreed,
+            "regressions": 0, "kind": VALUE_PATTERN}
+
+
 def validate(rule: Rule, table, *, min_yield: float = 0.5,
              baseline_rows: int = 0, shown_rows: int = 4) -> dict:
     """Run a proposed rule against the table it came from. Raise on failure.
@@ -203,6 +291,9 @@ def validate(rule: Rule, table, *, min_yield: float = 0.5,
 
     if rule.kind in (NOT_ASSAY, ESCALATE):
         return {"checked": "none required", "kind": rule.kind}
+
+    if rule.kind == VALUE_PATTERN:
+        return _validate_value_pattern(rule, table)
 
     _, data = _header_rows_of(table)
     all_rows = [r for r in data if any(c.text.strip() for c in r)]

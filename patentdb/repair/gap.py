@@ -49,6 +49,10 @@ class Gap:
     sample: str                      # the minimal fragment to show a model
     headers: list[str] = field(default_factory=list)
     column_kinds: list[str] = field(default_factory=list)
+    # Cells we could see but could not read. The single most informative thing
+    # we can show a model: without them it sees a healthy-looking table and
+    # proposes a column_map, because nothing on screen says which cells failed.
+    unparsed_examples: list[str] = field(default_factory=list)
 
     @property
     def severity(self) -> int:
@@ -230,6 +234,7 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
             unread_cells = 0
             total_cells = 0
             example: str | None = None
+            unparsed: list[str] = []
             for r in rows[:80]:
                 if len(r) <= cid_idx or not _CID_PAT.match(r[cid_idx].text.strip()):
                     continue
@@ -243,6 +248,8 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
                     if not parse_value(cell):
                         unread_cells += 1
                         example = example or cell
+                        if len(unparsed) < 8 and cell not in unparsed:
+                            unparsed.append(cell)
             if total_cells and unread_cells >= max(3, total_cells * 0.05):
                 gaps.append(Gap(
                     patent_id=patent_id, table_id=t.table_id, n_cols=t.n_cols,
@@ -251,7 +258,7 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
                     reason=(f"{unread_cells} of {total_cells} populated assay cells "
                             f"cannot be parsed as a value (e.g. {example!r})"),
                     sample=_sample_of(t, headers), headers=headers,
-                    column_kinds=kinds,
+                    column_kinds=kinds, unparsed_examples=unparsed,
                 ))
                 seen_blocks.add(t.table_id)
                 continue

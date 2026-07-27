@@ -117,3 +117,52 @@ def test_a_header_only_tgroup_still_registers_its_header():
     assert a, "BLOCK-A must be visible to the detector"
     assert "assay" in a[0].column_kinds, (
         f"inherited the wrong header: {a[0].headers}")
+
+
+# ── value_pattern: self-healing for parser bugs ──────────────────
+
+def _cellstable(cells):
+    return _t(2, [["Ex", "IC50 (nM)"]], [[str(i), c] for i, c in enumerate(cells, 1)])
+
+
+def test_value_pattern_must_not_change_cells_the_parser_already_reads():
+    """The dangerous failure mode: rescue a few cells, silently reinterpret many.
+
+    A pattern capturing the wrong span would sail through a naive
+    'did coverage go up' check while corrupting everything else.
+    """
+    from patentdb.repair.rules import VALUE_PATTERN, Rejected, Rule, validate
+    t = _cellstable(["5.1", "37.6", "1412\u2020", "8618\u2020", "9015\u2020"])
+    bad = Rule(fingerprint="f", kind=VALUE_PATTERN,
+               payload={"pattern": r"^\s*(?P<num>\d)"})   # first digit only
+    with pytest.raises(Rejected, match="already read"):
+        validate(bad, t)
+
+
+def test_value_pattern_must_actually_rescue_something():
+    from patentdb.repair.rules import VALUE_PATTERN, Rejected, Rule, validate
+    t = _cellstable(["5.1", "37.6", "2.2", "0.7"])       # all already parse
+    r = Rule(fingerprint="f", kind=VALUE_PATTERN,
+             payload={"pattern": r"^\s*(?P<num>\d+(?:\.\d+)?)\s*$"})
+    with pytest.raises(Rejected, match="rescues only"):
+        validate(r, t)
+
+
+def test_value_pattern_must_still_refuse_non_measurements():
+    from patentdb.repair.rules import VALUE_PATTERN, Rejected, Rule, validate
+    t = _cellstable(["1412\u2020", "8618\u2020", "9015\u2020", "1912\u2020"])
+    greedy = Rule(fingerprint="f", kind=VALUE_PATTERN,
+                  payload={"pattern": r"(?P<num>\d+(?:\.\d+)?)"})   # unanchored
+    with pytest.raises(Rejected, match="matching text"):
+        validate(greedy, t)
+
+
+def test_a_lone_unnamed_group_is_promoted_rather_than_failing_the_call():
+    """Models write `^(\\d+)$`; the single group can only be the number."""
+    from patentdb.repair.rules import VALUE_PATTERN, Rule, validate
+    t = _cellstable(["1412\u2020", "8618\u2020", "9015\u2020", "1912\u2020"])
+    r = Rule(fingerprint="f", kind=VALUE_PATTERN,
+             payload={"pattern": r"^(\d+)\u2020$", "columns": [1]})
+    ev = validate(r, t)
+    assert ev["rescued"] >= 3
+    assert "?P<num>" in r.payload["pattern"]

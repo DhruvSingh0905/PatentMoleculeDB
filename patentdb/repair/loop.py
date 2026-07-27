@@ -23,8 +23,8 @@ from dataclasses import dataclass, field
 from ..sources.uspto_xml import Table, parse_tables
 from .gap import Gap, find_gaps
 from .rules import (
-    COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX, Rejected, Rule, RuleLibrary,
-    validate,
+    COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX, VALUE_PATTERN, Rejected, Rule,
+    RuleLibrary, validate,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,7 +164,7 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
                 continue
 
             table = by_id.get(gap.table_id)
-            if rule.kind in (COLUMN_MAP, ROW_REGEX) and table is not None:
+            if rule.kind in (COLUMN_MAP, ROW_REGEX, VALUE_PATTERN) and table is not None:
                 try:
                     rule.validated_on = validate(
                         rule, table, baseline_rows=per_table.get(gap.table_id, 0))

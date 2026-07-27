@@ -39,7 +39,7 @@ from ..core import config
 from ..core.api_cache import get_cached, store_cached
 from ..core.cost_tracker import cost_tracker
 from .gap import Gap
-from .rules import COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX, Rule
+from .rules import COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX, VALUE_PATTERN, Rule
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ SYNTH_MODEL = config.MODEL_HAIKU
 # the layout fingerprint, which is content-independent by design — so without
 # a version here, improving the prompt silently replays answers produced by
 # the old one. Exactly the stale-cache trap the repo's CLAUDE.md warns about.
-PROMPT_VERSION = "v2-indexed-columns"
+PROMPT_VERSION = "v5-named-groups"
 
 # Frozen prefix — identical on every call so it can be prompt-cached (cache
 # reads bill at ~0.1x). Everything patent-specific goes in the user turn.
@@ -72,6 +72,12 @@ than a regex because there is nothing to over-match. Use `row_regex` only when \
 cell boundaries are lost. Anchor any regex and keep it specific — a pattern \
 that matches "some number somewhere in the row" will be rejected.
 
+If the columns are already identified correctly and the cells plainly contain \
+numbers we are failing to read, the problem is our cell parser, not the layout \
+— return `value_pattern` with a regex for ONE CELL. It must be a strict \
+superset of what already works: it will be rejected if it changes the value of \
+any cell we currently read correctly, or if it matches non-measurements.
+
 If the table is characterisation data rather than assay data, return \
 `not_assay`. If you cannot describe a safe rule, return `escalate` and say \
 what capability is missing. Guessing is worse than escalating: a wrong rule \
@@ -85,7 +91,7 @@ TOOL = {
         "properties": {
             "kind": {
                 "type": "string",
-                "enum": [COLUMN_MAP, ROW_REGEX, NOT_ASSAY, ESCALATE],
+                "enum": [COLUMN_MAP, ROW_REGEX, VALUE_PATTERN, NOT_ASSAY, ESCALATE],
                 "description": "Which sort of rule applies to this layout.",
             },
             "cid_column": {
@@ -113,6 +119,21 @@ TOOL = {
                                 "rendered as 'cell | cell | cell'. Must capture a "
                                 "named group `cid` and at least one `value1`, "
                                 "`value2`, ... group."),
+            },
+            "value_pattern": {
+                "type": "string",
+                "description": (
+                    "value_pattern only: a Python regex matched against ONE CELL. "
+                    "It MUST use named groups. Example: "
+                    r"^\s*(?P<qual>[<>~])?\s*(?P<num>\d+(?:\.\d+)?)\s*"
+                    r"(?P<unit>nM|uM)?\s*$"
+                    " — `num` is required; `qual` and `unit` are optional. Use "
+                    "this when the columns are already identified correctly but "
+                    "our parser fails on cells that plainly contain a value."),
+            },
+            "value_columns": {
+                "type": "array", "items": {"type": "integer"},
+                "description": "value_pattern only: which column indices it applies to.",
             },
             "because": {
                 "type": "string",
@@ -177,6 +198,9 @@ def _to_rule(fingerprint: str, out: dict, model: str, sample: str = "") -> Rule:
         }
     elif kind == ROW_REGEX:
         payload = {"pattern": out.get("pattern", "")}
+    elif kind == VALUE_PATTERN:
+        payload = {"pattern": out.get("value_pattern", ""),
+                   "columns": out.get("value_columns") or None}
     elif kind == NOT_ASSAY:
         payload = {"because": out.get("because") or out.get("note", "")}
     else:
@@ -189,10 +213,23 @@ def _to_rule(fingerprint: str, out: dict, model: str, sample: str = "") -> Rule:
 
 def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "") -> Rule | None:
     """One call. Returns an UNVALIDATED proposal — the caller must gate it."""
+    # Lead with the diagnosis and the cells that actually failed. Buried at the
+    # bottom, this information was ignored: shown a healthy-looking table the
+    # model proposed a column_map every time, because nothing on screen told it
+    # WHICH cells we could not read.
+    failing = ""
+    if gap.unparsed_examples:
+        failing = (
+            "\nCELLS WE COULD NOT READ (the columns are already identified; "
+            "our cell parser rejected these):\n  "
+            + "\n  ".join(repr(c) for c in gap.unparsed_examples)
+            + "\nIf these are plainly measurements, the fault is our cell parser "
+              "and the fix is `value_pattern`, not `column_map`.\n")
     prompt = (
+        f"PROBLEM: {gap.reason}\n"
+        f"{failing}\n"
         f"Table fragment (patent {gap.patent_id}, {gap.n_cols} columns, "
         f"{gap.n_data_rows} data rows).\n"
-        f"Our parser said: {gap.reason}\n"
         f"Columns currently classified as: {gap.column_kinds}\n\n"
         f"{gap.sample}\n"
     )
