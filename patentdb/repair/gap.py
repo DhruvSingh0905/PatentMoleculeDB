@@ -166,16 +166,28 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table: dict[str,
     for t in tables:
         hdr_rows, data = _header_rows_of(t)
         rows = [r for r in data if any(c.text.strip() for c in r)]
+
+        # Register this tgroup's header BEFORE any skip. A header-only tgroup
+        # has zero data rows, so `min_rows` used to discard it first — and with
+        # it the only copy of the block's real header. The continuation that
+        # followed then inherited a stale header of the same width from an
+        # unrelated block: US10071079's 982-row assay table picked up an LCMS
+        # characterisation header, classified as [cid, structure, ms, rt, rt],
+        # found no assay column, and the value-level check never ran. The
+        # extractor registers first and skips second; the detector must agree
+        # with it or it judges a table that never existed.
+        own = merge_header(t, hdr_rows)
+        if any(own):
+            inherit_by_width[t.n_cols] = own
+            inherit_by_block[t.table_id] = own
+
         if len(rows) < min_rows:
             continue
         # One gap per block, raised from its largest tgroup.
         if t.table_id in seen_blocks:
             continue
         block_rows = rows_per_block.get(t.table_id, len(rows))
-        headers = merge_header(t, hdr_rows)
-        if any(headers):
-            inherit_by_width[t.n_cols] = headers
-            inherit_by_block[t.table_id] = headers
+        headers = own
         if not any(headers):
             headers = (inherit_by_width.get(t.n_cols)
                        or inherit_by_block.get(t.table_id) or headers)

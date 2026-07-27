@@ -93,3 +93,27 @@ def test_fingerprint_separates_genuinely_different_shapes():
     b = _t(3, [["Ex", "MW", "RT"]], [["1", "400.1", "1.2"]])
     assert layout_fingerprint(a, ["Ex", "IC50 (nM)"]) != \
            layout_fingerprint(b, ["Ex", "MW", "RT"])
+
+
+def test_a_header_only_tgroup_still_registers_its_header():
+    """The bug that made the detector blind to the largest table in a patent.
+
+    A `<tables>` block often splits into a header-only tgroup (zero data rows)
+    plus continuations. `min_rows` discarded the header-only one BEFORE its
+    header was recorded, so the continuation inherited a stale same-width
+    header from an unrelated block, classified as [cid, structure, ms, rt, rt],
+    found no assay column, and the value-level check never ran.
+    """
+    header_only = _t(3, [["Ex No.", "TLR7 IC50 (nM)", "TLR8 IC50 (nM)"]], [],
+                     table_id="BLOCK-A")
+    data = _t(3, [], [[str(i), f"{i}.5", f"{i}.9"] for i in range(1, 21)],
+              table_id="BLOCK-A")
+    # An unrelated 3-column block earlier in the document, whose header would be
+    # inherited if BLOCK-A's own header were dropped.
+    decoy = _t(3, [["Cpd", "MW", "RT (min)"]], [["1", "400.1", "1.2"]],
+               table_id="BLOCK-DECOY")
+    gaps = find_gaps("USTEST", [decoy, header_only, data], {"BLOCK-A": 0})
+    a = [g for g in gaps if g.table_id == "BLOCK-A"]
+    assert a, "BLOCK-A must be visible to the detector"
+    assert "assay" in a[0].column_kinds, (
+        f"inherited the wrong header: {a[0].headers}")
