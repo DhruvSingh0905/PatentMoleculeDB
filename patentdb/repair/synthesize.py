@@ -52,7 +52,7 @@ SYNTH_MODEL = config.MODEL_HAIKU
 # the layout fingerprint, which is content-independent by design — so without
 # a version here, improving the prompt silently replays answers produced by
 # the old one. Exactly the stale-cache trap the repo's CLAUDE.md warns about.
-PROMPT_VERSION = "v11-request-more-context"
+PROMPT_VERSION = "v13b-describe-not-decide"
 
 # Frozen prefix — identical on every call so it can be prompt-cached (cache
 # reads bill at ~0.1x). Everything patent-specific goes in the user turn.
@@ -88,9 +88,21 @@ columns it governs. Escalating a multi-scale legend throws away data we can \
 extract; merging the scales, or picking one, is a silent 50-fold error.
 
 If the table is characterisation data rather than assay data, return \
-`not_assay`. If you cannot describe a safe rule, return `escalate` and say \
-what capability is missing. Guessing is worse than escalating: a wrong rule \
-silently corrupts a chemistry database, a missing one is merely absent."""
+`not_assay`.
+
+YOUR JOB IS TO DESCRIBE, NOT TO DECIDE. Every rule you return is re-run \
+against real rows before anything is adopted: it must beat the coverage the \
+current parser achieves, generalise to rows you were never shown, and survive \
+an adversarial battery of NMR, MS, molecular-weight and retention-time lines. \
+A rule that fails is discarded and cannot reach the database. Judging safety \
+is that check's job — it can test an answer against thousands of rows and you \
+cannot see past the fragment in front of you.
+
+So there is no option here for "this is awkward" or "I am unsure". Report what \
+the fragment shows. If two readings are possible, return the more likely one. \
+If part of the layout defeats you, describe the part you DO understand — a \
+rule covering three of five columns is worth more than nothing, and the check \
+downstream will keep whichever part holds up."""
 
 # At most this many model turns per gap: an ask, a look, an answer. Bounded so
 # a model that keeps requesting context cannot spend without end.
@@ -131,7 +143,15 @@ TOOL = {
         "properties": {
             "kind": {
                 "type": "string",
-                "enum": [COLUMN_MAP, ROW_REGEX, VALUE_PATTERN, BIN_KEY, NOT_ASSAY, ESCALATE],
+                # ESCALATE is deliberately NOT offered. While it was in this
+                # enum it was a free exit from any awkward layout, and awkward
+                # layouts are exactly where the data we are missing lives: on
+                # US10172859 the model escalated eight times while its own note
+                # showed it had read the table correctly. Escalation is now
+                # DERIVED — a gap escalates when the validator rejects real
+                # proposals against real rows, carrying that evidence, rather
+                # than when the model feels unsure.
+                "enum": [COLUMN_MAP, ROW_REGEX, VALUE_PATTERN, BIN_KEY, NOT_ASSAY],
                 "description": "Which sort of rule applies to this layout.",
             },
             "cid_column": {
@@ -332,14 +352,21 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "") -> Rule 
     if gap.legend_candidates:
         legends = ("\nTEXT FOUND ELSEWHERE IN THIS PATENT THAT MAY DEFINE THESE "
                    "GRADES:\n  " + "\n  ".join(c[:800] for c in gap.legend_candidates)
-                   + "\nIf it defines them, return `bin_key` mapping each symbol "
-                     "to its numeric range.\nIf the text defines MORE THAN ONE "
-                     "scale over the same symbols — a potency scale and a "
-                     "selectivity/hERG scale, say — do NOT merge them and do NOT "
-                     "pick one. They frequently run in opposite directions, so "
-                     "applying the wrong one is a large silent error. Return "
-                     "`scales` instead, one entry per scale, each with a `match` "
-                     "regex naming the assay columns it governs.\n")
+                   # Transcription, not adjudication. Asking "is it safe to
+                   # encode this legend" got `escalate` every time, with a note
+                   # proving the legend had been read correctly. Asking "write
+                   # down what it says" got the right answer on the first try.
+                   # Phrased for ANY number of scales so nothing here decides
+                   # what shape the legend has — one scale in, one scale out.
+                   + "\nTRANSCRIBE it into `bin_key`. Do not judge whether "
+                     "transcribing is wise; that is already decided. Write down "
+                     "every scale the text defines, using `scales` with one "
+                     "entry per scale and a `match` regex naming the assay "
+                     "columns that scale governs — one entry if it defines one "
+                     "scale, three if it defines three. Use `bins` alone only "
+                     "when a single scale governs the whole table. Copy each "
+                     "bound in the direction the text states it, even where "
+                     "scales run opposite ways.\n")
     prompt = (
         f"PROBLEM: {gap.reason}\n{legends}"
         f"{failing}\n"
