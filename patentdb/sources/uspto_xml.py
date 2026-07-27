@@ -362,6 +362,15 @@ def _is_namelike(cells: list["Cell"]) -> bool:
         return False
     if any(_PROSE_CELL.search(t) or len(t) > 60 for t in texts):
         return False
+    # A fragment torn out of running prose — "diethylamine)", "4H)." — is short
+    # and free of NMR keywords, so the checks above pass it. Harvesting headers
+    # across every fragment width let these into the column names, and a header
+    # reading "hERG] 4H)." is one the model cannot map a bin scale onto.
+    # Unbalanced brackets are the tell: a real column label closes what it opens.
+    for t in texts:
+        for op, cl in (("(", ")"), ("[", "]")):
+            if t.count(cl) > t.count(op):
+                return False
     # All-numeric rows are data, not headers.
     return not all(re.fullmatch(r"[\d.,;:<>=~\s-]+", t) for t in texts)
 

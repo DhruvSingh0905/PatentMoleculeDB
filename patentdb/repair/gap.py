@@ -500,6 +500,19 @@ _LEGEND_SHAPE = re.compile(
     rf"(?:nM|[μuµ]M|mM|pM|nanomolar|micromolar)", re.I)
 
 
+# Two bin definitions this far apart in the flattened text still belong to one
+# legend. Sized from US10172859, whose two scales are separated by their second
+# scale's name plus punctuation.
+_LEGEND_JOIN = 120
+_LEGEND_LOOKBACK = 260
+# Where a scale starts: its assay label, or the first symbol of the run.
+_LEGEND_ANCHOR = re.compile(
+    r"(?:[A-Za-z0-9][A-Za-z0-9 .()/\[\]-]{0,40}?\s*:\s*)?(?:\b[A-E]\b|\+{1,5})\s*(?::|[<>≤≥≦≧])")
+# Analytical-method prose that habitually abuts a legend and is never part of it.
+_LEGEND_STOP = re.compile(
+    r"\b(?:Analysis|NMR|Instruments?|Bruker|Reference\s*:\s*TMS|LC[-/]?MS|HPLC)\b", re.I)
+
+
 def hunt_legends(xml: str, symbols: set[str], *, max_hits: int = 4) -> list[str]:
     """Search the WHOLE document for text that defines these grade symbols.
 
@@ -520,9 +533,39 @@ def hunt_legends(xml: str, symbols: set[str], *, max_hits: int = 4) -> list[str]
     """
     import html as _html
     flat = re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", xml)))
+
+    # A legend is a RUN of these shapes, not one of them, and its length is set
+    # by the patent — US10172859 defines two scales over ~350 characters. A
+    # fixed window around a single match cut that run open: the span began
+    # midway through the second bin of the first scale, so neither that scale's
+    # name nor its opening bound was ever sent. The model then reported two
+    # scales and escalated, which was the only correct answer available to it.
+    # Cluster adjacent matches and take the whole run instead.
+    hits = [(m.start(), m.end()) for m in _LEGEND_SHAPE.finditer(flat)]
+    if not hits:
+        return []
+    clusters: list[list[int]] = [[hits[0][0], hits[0][1]]]
+    for s, e in hits[1:]:
+        if s - clusters[-1][1] <= _LEGEND_JOIN:
+            clusters[-1][1] = e
+        else:
+            clusters.append([s, e])
+
     out: list[str] = []
-    for m in _LEGEND_SHAPE.finditer(flat):
-        span = flat[max(0, m.start() - 90):m.start() + 260].strip()
+    for start, end in clusters:
+        # Reach back for the scale's own label — "Kv11.1 hERG:", "IC 50 :" —
+        # which sits before the first bin and is what tells the model WHICH
+        # column a scale governs. Then trim forward to a bin or label boundary
+        # so the span does not open mid-number.
+        lead = flat[max(0, start - _LEGEND_LOOKBACK):start]
+        anchor = _LEGEND_ANCHOR.search(lead)
+        span = (lead[anchor.start():] if anchor else lead[-90:]) + flat[start:end + 80]
+        # Drop trailing analytical boilerplate: NMR/MS method prose routinely
+        # abuts a legend and crowded out ~150 chars of the send window.
+        cut = _LEGEND_STOP.search(span)
+        if cut and cut.start() > 40:
+            span = span[:cut.start()]
+        span = span.strip()
         if symbols and not any(
                 re.search(rf"(?:\b{re.escape(s)}\b|{re.escape(s)}\s*(?:{_CMP}))", span)
                 for s in symbols):

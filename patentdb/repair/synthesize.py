@@ -52,7 +52,7 @@ SYNTH_MODEL = config.MODEL_HAIKU
 # the layout fingerprint, which is content-independent by design — so without
 # a version here, improving the prompt silently replays answers produced by
 # the old one. Exactly the stale-cache trap the repo's CLAUDE.md warns about.
-PROMPT_VERSION = "v8-scales-in-system"
+PROMPT_VERSION = "v9-full-legend-run"
 
 # Frozen prefix — identical on every call so it can be prompt-cached (cache
 # reads bill at ~0.1x). Everything patent-specific goes in the user turn.
@@ -300,7 +300,7 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "") -> Rule 
     legends = ""
     if gap.legend_candidates:
         legends = ("\nTEXT FOUND ELSEWHERE IN THIS PATENT THAT MAY DEFINE THESE "
-                   "GRADES:\n  " + "\n  ".join(c[:300] for c in gap.legend_candidates)
+                   "GRADES:\n  " + "\n  ".join(c[:800] for c in gap.legend_candidates)
                    + "\nIf it defines them, return `bin_key` mapping each symbol "
                      "to its numeric range.\nIf the text defines MORE THAN ONE "
                      "scale over the same symbols — a potency scale and a "
