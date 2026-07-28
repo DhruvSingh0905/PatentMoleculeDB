@@ -311,7 +311,13 @@ def parse_tables(xml: str) -> list[Table]:
         # are silently dropped, which accounted for the single largest block of
         # missed assay values. Look back a bounded window for the nearest
         # preceding paragraph or heading.
-        window = xml[max(0, tbl.start() - 3000):tbl.start()]
+        # 12k, not 3k. US11566007's bin tables list their compounds inline —
+        # hundreds of `A###,` tokens — so the whole of a 3,000-character
+        # look-back is the PREVIOUS table's id list and the key that defines
+        # this table's grades sits beyond it. The consumer searches this text
+        # by shape and takes the nearest match, so a wider window costs
+        # nothing and a narrow one silently loses the key.
+        window = xml[max(0, tbl.start() - 12000):tbl.start()]
         prev = re.findall(r"<(?:p|heading)\b[^>]*>(.*?)</(?:p|heading)>", window, re.S)
         caption = _text(prev[-1]) if prev else ""
         # Raw preceding text, tags stripped, regardless of element type. Bin-key
@@ -319,7 +325,7 @@ def parse_tables(xml: str) -> list[Table]:
         # "IC 50 : A <= 10 nM; 10 nM < B <= 100 nM; ..." in the trailing content
         # of the PREVIOUS <tables> element, so a <p>-only look-back cannot see
         # it and the grades are unreadable without it.
-        preceding = _text(window)[-700:]
+        preceding = _text(window)[-6000:]
         # ...and AFTER it. A bin key is as often a footnote as a caption:
         # US9656988 prints "IC 50 : A <= 10 nM; 10 nM < B <= 100 nM; ..."
         # immediately following TABLE-US-00001, serving both that table and the

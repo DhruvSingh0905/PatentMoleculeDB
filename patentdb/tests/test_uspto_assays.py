@@ -421,3 +421,49 @@ def test_a_hyphenated_sub_index_is_an_identifier():
     assert A._CID_PAT.fullmatch("100AA")
     assert not A._CID_PAT.fullmatch("0.5-1.0")
     assert not A._CID_PAT.fullmatch("100-200 nM")
+
+
+def test_scientific_notation_is_a_measurement():
+    """US9765018 reports its most potent compounds as `6.49E−03`.
+
+    Nine cells, all in the sub-nanomolar tail — the compounds anyone reads
+    first — parsed as nothing at all. The minus may be ASCII, U+2212 or an en
+    dash; typesetting must not decide whether a measurement survives.
+    """
+    assert A.parse_value("6.49E-03")["value_numeric"] == 0.00649
+    assert A.parse_value("6.49E−03")["value_numeric"] == 0.00649
+    assert A.parse_value("1.2e-5")["value_numeric"] == 1.2e-5
+    # ...and the exponent must not turn text into a number.
+    assert A.parse_value("Method F") is None
+    assert A.parse_value("10E") is None
+
+
+def test_a_bin_key_is_taken_from_the_nearest_preceding_run():
+    """The last MATCH is one grade; the last RUN is the whole key.
+
+    US11566007 prints ten bin tables whose keys sit past a wall of inline
+    compound ids. Taking the final match alone returns `+: IC50 < 0.01 uM` —
+    a one-grade scale that leaves three quarters of the table unbinned.
+    """
+    from patentdb.sources.bin_legend import nearest_key_before, parse_bin_key
+    text = ("A643, A644, A646, A648, A649, A657, A663 "
+            "*Key: ++++: IC50 >= 1 uM +++: 1 uM > IC50 >= 0.1 uM "
+            "++: 0.1 uM > IC50 >= 0.01 uM +: IC50 < 0.01 uM")
+    k = parse_bin_key(nearest_key_before(text))
+    assert len(k) == 4 and (k["++++"].lo, k["++++"].hi) == (1.0, None)
+
+
+def test_the_nearest_key_wins_when_two_scales_precede_a_table():
+    """US11566007 defines a four-grade scale and then a five-grade one.
+
+    `++++` means `>= 1 uM` in the first and `1-10 uM` in the second. Reaching
+    back past the nearer definition would rewrite an upper-bounded bin as
+    unbounded — a 10x overstatement presented as free recall.
+    """
+    from patentdb.sources.bin_legend import nearest_key_before, parse_bin_key
+    text = ("*Key: ++++: IC50 >= 1 uM +++: 1 uM > IC50 >= 0.1 uM "
+            "A100, A101, A102, A103 "
+            "+++++: IC50 >= 10 uM ++++: 10 uM > IC50 >= 1 uM "
+            "+++: 1 uM > IC50 >= 0.1 uM")
+    k = parse_bin_key(nearest_key_before(text))
+    assert (k["++++"].lo, k["++++"].hi) == (1.0, 10.0)

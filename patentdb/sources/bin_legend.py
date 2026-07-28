@@ -195,6 +195,59 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
     return out
 
 
+def nearest_key_before(text: str) -> str:
+    """The LAST key-shaped span in a table's preceding text, or "".
+
+    A fixed slice of the look-back cannot find these. US11566007's bin tables
+    print their compound lists inline, so 1,200 characters before TABLE 7 are
+    entirely the previous table's `A###,` tokens and its own key — sitting
+    just beyond them — was never read: ten blocks, 110 rows each, silent.
+
+    Nearest-PRECEDING is the safe direction and the reason is asymmetry. A key
+    printed above a table governs it until the document redefines it, so
+    reaching further back can only find an older definition of the same
+    grades. Reaching FORWARD finds the next table's key, which is how a
+    four-grade scale gets read with five-grade ranges — the 10x error this
+    file's header warns about. `following` was tried and reverted for exactly
+    that; this searches backwards only, and takes the closest match.
+    """
+    if not text:
+        return ""
+    hits = [(m.start(), (m.group(1) or "").strip())
+            for m in re.finditer(r"(?:[*\s]|^)(?:Key\s*:\s*)?(" + _SYMBOL + r")"
+                                 + _DEFINES, text, re.I)]
+    if not hits:
+        return ""
+    # A key is a RUN of grade definitions, not one. Taking the last match alone
+    # returned `+: IC50 < 0.01 uM` — the final line of a four-line key — and a
+    # one-grade scale reads three quarters of the table as unbinned.
+    #
+    # A run ends where a symbol REPEATS, not at some character distance. A key
+    # defines each grade once, so seeing `++++` a second time means a second
+    # key began — and distance cannot tell you that: in US11566007 two keys are
+    # separated by hundreds of inline compound ids, and nothing says the next
+    # patent will not print them back to back. Splitting on the repeat is what
+    # makes "nearest wins" hold, because `parse_bin_key` takes the FIRST
+    # definition of a symbol and merging two keys would hand back the older.
+    runs: list[list[int]] = []
+    cur: list[int] = []
+    seen: set[str] = set()
+    for pos, sym in hits:
+        if sym in seen:
+            runs.append(cur)
+            cur, seen = [], set()
+        cur.append(pos)
+        seen.add(sym)
+    runs.append(cur)
+    for run in reversed(runs):
+        if not run:
+            continue
+        span = text[run[0]:run[-1] + 260]
+        if parse_bin_key(span):
+            return span
+    return ""
+
+
 def looks_like_key(text: str) -> bool:
     """Cheap test for whether text is worth running the full parser over."""
     if not text:

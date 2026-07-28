@@ -83,9 +83,14 @@ _SPELLED_UNIT = {
 # footnote marker there — `24 (*)`, `0.83 (A)` — and requiring digits made those
 # cells unparseable, so whole rows were dropped with their values sitting in
 # plain sight.
+# The exponent group is not decoration: US9765018 reports its most potent
+# compounds as `6.49E−03`, and without it those nine cells — the sub-nanomolar
+# tail, the compounds anyone would care about first — parsed as nothing at all.
+# The minus may be ASCII `-`, U+2212 MINUS or an en dash; typesetting picks.
+_EXP = r"(?:\s*[Ee]\s*[-−–+]?\s*\d{1,3})?"
 _VALUE_PAT = re.compile(
     r"^\s*(?P<qual>[<>~≈≥≤]|>=|<=)?\s*"
-    r"(?P<num>\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)"
+    r"(?P<num>(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)" + _EXP + r")"
     r"\s*(?P<unit>nM|µM|μM|uM|mM|pM|%)?"
     r"(?:\s*\(\s*(?P<paren>[^)]{1,12}?)\s*\))?\s*$")
 
@@ -856,7 +861,10 @@ def parse_value(cell: str) -> dict | None:
         qual = quals.get(qual.lower(), qual)
         qual = {">=": "≥", "<=": "≤", "≈": "~"}.get(qual, qual)
     try:
-        num = float(m.group("num").replace(",", ""))
+        # `float` knows `6.49E-03` but not `6.49E−03`; the minus a typesetter
+        # chose must not decide whether a measurement survives.
+        num = float(m.group("num").replace(",", "")
+                    .replace("−", "-").replace("–", "-").replace(" ", ""))
     except ValueError:
         return None
     # A parenthetical of digits is a replicate count; anything else is a
@@ -1052,7 +1060,7 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
             [raw_block[0].caption] + [table_legend(t) for t in raw_block]
             + [c.text for t in raw_block for r in t.body_rows for c in r
                if bin_legend.looks_like_key(c.text)]
-            + [(raw_block[0].preceding or "")[-1200:]]
+            + [bin_legend.nearest_key_before(raw_block[0].preceding or "")]
         )
         if not bin_legend.looks_like_key(text):
             continue
