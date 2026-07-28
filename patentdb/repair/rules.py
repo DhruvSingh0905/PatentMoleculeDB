@@ -361,8 +361,17 @@ def _validate_value_pattern(rule: Rule, table) -> dict:
       3. NO OVER-REACH — it must still refuse the adversarial battery. This is
          what stops "just match any number" from being adopted, which is the
          obvious and wrong way to make condition 1 pass.
+
+    Counted only where the rule will actually RUN — the columns classified as
+    assays. Scoring every column instead let a pattern aimed at the identifier
+    column report 24 rescues on `48-1`, `48-2`, …: real cells, really
+    unparsed, and in a column `apply_rule` will never read a value from. The
+    two halves of a repair have to be measured on the same cells or the score
+    is about a different rule than the one that ships.
     """
-    from ..sources.uspto_assays import _header_rows_of, parse_value
+    from ..sources.uspto_assays import (
+        ASSAY, CID, _HEADER_CID, _header_rows_of, build_columns, parse_value,
+    )
 
     raw = rule.payload.get("pattern", "")
     pat = _safe_regex(raw)
@@ -380,11 +389,15 @@ def _validate_value_pattern(rule: Rule, table) -> dict:
 
     _, data = _header_rows_of(table)
     cols = rule.payload.get("columns")
+    built = build_columns(table)
+    assay_idx = {i for i, c in enumerate(built) if c.kind == ASSAY}
     rescued = agreed = 0
     regressions: list[str] = []
     for r in data:
         for i, cell in enumerate(r):
             if cols and i not in cols:
+                continue
+            if i not in assay_idx:
                 continue
             s = cell.text.strip()
             if not s:
@@ -420,6 +433,18 @@ def _validate_value_pattern(rule: Rule, table) -> dict:
             raise Rejected(
                 f"pattern also matches {probe!r} — it is matching text, not a "
                 f"measurement")
+
+    # ...and there must be a compound to attach the rescued values TO. This
+    # rule's own history is the argument: its 63 "rescued" cells were all in
+    # a PK table headed `PEG-length | Cmax | AUC`, which has no compound
+    # identifier at all. Rescuing a value with nothing to name it is not a
+    # repair, and scoring it as one is how a rule that can never fire gets
+    # adopted.
+    if not any(c.kind == CID and _HEADER_CID.search((c.header or "").lower())
+               for c in built):
+        raise Rejected(
+            "no column is NAMED as a compound identifier, so a rescued value "
+            "has nothing to attach to; a value_pattern cannot repair this table")
     return {"rescued": rescued, "agreed_with_parser": agreed,
             "regressions": 0, "kind": VALUE_PATTERN}
 

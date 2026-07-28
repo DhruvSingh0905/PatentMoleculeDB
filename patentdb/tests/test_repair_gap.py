@@ -122,7 +122,7 @@ def test_a_header_only_tgroup_still_registers_its_header():
 # ── value_pattern: self-healing for parser bugs ──────────────────
 
 def _cellstable(cells):
-    return _t(2, [["Ex", "IC50 (nM)"]], [[str(i), c] for i, c in enumerate(cells, 1)])
+    return _t(2, [["Example", "IC50 (nM)"]], [[str(i), c] for i, c in enumerate(cells, 1)])
 
 
 def test_value_pattern_must_not_change_cells_the_parser_already_reads():
@@ -351,3 +351,46 @@ def test_scattered_junk_in_an_id_column_is_not_a_gap():
             + [[Cell(x), Cell("20")] for x in ("Vehicle", "(R132H)", "CDCl3")])
     t = Table(table_id="T1", n_cols=2, header_rows=hdr, body_rows=body)
     assert coherent_unread_ids(t) == []
+
+
+def test_a_value_pattern_actually_produces_records():
+    """There was no `VALUE_PATTERN` branch in `apply_rule` at all.
+
+    The kind is in the tool schema, has the strictest validator in the file,
+    is named in `apply_rule`'s own dispatch guard, and two rules of this kind
+    sit adopted in the shipped library — and every one fell through to an
+    empty list. `validate` said rescued=24; `apply_rule` said 0.
+    """
+    from patentdb.repair.loop import apply_rule
+    from patentdb.repair.rules import VALUE_PATTERN, Rule
+
+    t = _cellstable(["12.3 ± 1.4", "45.6 ± 2.0", "7.8 ± 0.3"])
+    r = Rule(fingerprint="f", kind=VALUE_PATTERN,
+             payload={"pattern": r"^\s*(?P<num>\d+(?:\.\d+)?)\s*±\s*\d+(?:\.\d+)?\s*$",
+                      "columns": [1]})
+    out = apply_rule(r, t, "USTEST")
+    assert [x.value_numeric for x in out] == [12.3, 45.6, 7.8]
+    assert [x.cid for x in out] == ["1", "2", "3"]
+    assert all(x.unit == "nM" for x in out)
+
+
+def test_a_value_pattern_will_not_invent_a_compound_id():
+    """US9233167 TABLE-US-00005 is `PEG-length | Cmax | T1/2 | AUC`.
+
+    Its first column runs 0,1,2,3… and classifies as an id on digit shape
+    alone. Applying a value rule there mints records whose compound id is a
+    polymer chain length — 54 of them, on a table the live parser correctly
+    produces nothing for. Both halves refuse: `validate` rejects the table,
+    and `apply_rule` returns nothing even if a rule reaches it.
+    """
+    from patentdb.repair.loop import apply_rule
+    from patentdb.repair.rules import VALUE_PATTERN, Rejected, Rule, validate
+
+    t = _t(2, [["PEG-length", "Cmax (ng/mL)"]],
+           [[str(i), f"{100 + i} ± 5.0"] for i in range(4)])
+    r = Rule(fingerprint="f", kind=VALUE_PATTERN,
+             payload={"pattern": r"^\s*(?P<num>\d+(?:\.\d+)?)\s*±\s*\d+(?:\.\d+)?\s*$",
+                      "columns": [1]})
+    assert apply_rule(r, t, "USTEST") == []
+    with pytest.raises(Rejected, match="NAMED as a compound identifier"):
+        validate(r, t)

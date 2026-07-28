@@ -239,6 +239,62 @@ def apply_rule(rule: Rule, table: Table, patent_id: str) -> list:
                     table_id=table.table_id,
                     source="repair_rule_row_regex",
                 ))
+
+    elif rule.kind == VALUE_PATTERN:
+        # There was no branch here at all. `value_pattern` is in the tool
+        # schema, has the most careful validator of any kind in `rules.py`
+        # (rescue + no-regression + adversarial battery), is named in the
+        # `rule.kind in (...)` guard below, and two rules of this kind sit
+        # adopted in the library — one reading `12.3 ± 1.4`, validated at 63
+        # rescued cells. Every one of them fell through to an empty list. The
+        # loop has been recording those as wins and producing nothing.
+        from ..sources.uspto_assays import ASSAY, CID, _HEADER_CID, build_columns
+        pat = _safe_regex(rule.payload["pattern"])
+        cols = build_columns(table)
+        kinds = [c.kind for c in cols]
+        if CID not in kinds:
+            return out
+        cid_i = kinds.index(CID)
+        # The id column must be one the patent NAMES as identifiers, not one
+        # inferred from digit shape. US9233167 TABLE-US-00005 is a PK table
+        # headed `PEG-length | Cmax | T1/2 | AUC | ...`; its first column runs
+        # 0,1,2,3… and classifies as CID on shape alone. Applying a value rule
+        # there mints 54 records whose compound id is a polymer chain length.
+        # The live parser produces nothing for that table, correctly, and a
+        # repair must not be the thing that invents it.
+        if not _HEADER_CID.search((cols[cid_i].header or "").lower()):
+            return out
+        wanted = rule.payload.get("columns")
+        for row in data:
+            if len(row) <= cid_i:
+                continue
+            cid = normalize_cid(row[cid_i].text.strip())
+            if not cid:
+                continue
+            for i, col in enumerate(cols):
+                # Only where a measurement could live. A pattern aimed at the
+                # id column would otherwise mint records whose value IS the
+                # compound number.
+                if col.kind != ASSAY or (wanted and i not in wanted):
+                    continue
+                if len(row) <= i:
+                    continue
+                s = row[i].text.strip()
+                if not s or parse_value(s):
+                    continue          # the parser already reads this cell
+                m = _search(pat, s)
+                if not m:
+                    continue
+                try:
+                    v = float(m.group("num").replace(",", ""))
+                except (TypeError, ValueError, IndexError):
+                    continue
+                out.append(AssayRecord(
+                    cid=cid, assay_name=col.assay_name or col.header or "assay",
+                    value_numeric=v, unit=col.unit, value_text=s,
+                    table_id=table.table_id, column_header=col.header,
+                    source="repair_rule_value_pattern",
+                ))
     return out
 
 
