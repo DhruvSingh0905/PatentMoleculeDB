@@ -358,6 +358,7 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
                     sample=_sample_of(t, headers), headers=headers,
                     expanded_sample=_sample_of(t, headers, 24, expand=True),
                     column_kinds=kinds, unparsed_examples=unparsed,
+                    raw_source=raw_block(_source_xml or "", t.table_id),
                 ))
                 seen_blocks.add(t.table_id)
                 continue
@@ -423,6 +424,7 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
             expanded_sample=_sample_of(t, headers, 24, expand=True),
             headers=headers,
             column_kinds=kinds,
+            raw_source=raw_block(_source_xml or "", t.table_id),
         ))
     gaps.sort(key=lambda g: -g.severity)
     return gaps

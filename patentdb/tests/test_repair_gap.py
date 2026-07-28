@@ -261,3 +261,38 @@ def test_the_same_layout_yielding_hundreds_and_zero_is_a_contradiction():
     # Two tables that BOTH yield nothing are simply an unsolved layout, not a
     # contradiction — that is a question for the model, and must stay one.
     assert yield_contradictions([live, dead], []) == []
+
+
+def test_every_gap_carries_the_raw_source_when_the_xml_is_available():
+    """The agent can ASK for raw CALS. Two of three Gap sites never filled it.
+
+    US10376513's two assay gaps were both built by those sites, so
+    `request_more_context("raw_source")` would have returned nothing. The
+    colspec widths that resolve the table were in the document, reachable by
+    a tool the model was told about, and empty at the only moment it mattered.
+    A per-site assertion would not have caught this — the invariant is that
+    NO construction site may drop it.
+    """
+    import collections
+    from patentdb.repair.gap import find_gaps
+    from patentdb.sources import uspto_assays, uspto_xml
+
+    xml = """<?xml version="1.0"?><us-patent-grant>
+    <p>Table 1 lists IC50 values.</p>
+    <tables id="TABLE-US-00001" num="00001">
+    <table><tgroup cols="3">
+    <colspec colname="offset" colwidth="42pt"/><colspec colname="1" colwidth="49pt"/>
+    <colspec colname="2" colwidth="126pt"/>
+    <thead><row><entry/><entry>Example #</entry><entry>MYSTERY IC50</entry></row></thead>
+    <tbody>""" + "".join(
+        f"<row><entry/><entry>{i}</entry><entry>~~{i}~~</entry></row>" for i in range(1, 31)
+    ) + """</tbody></tgroup></table></tables></us-patent-grant>"""
+
+    tables = uspto_assays._best_per_block(uspto_xml.parse_tables(xml))
+    counts = collections.Counter(
+        r.table_id for r in uspto_assays.extract_from_patent(xml))
+    gaps = find_gaps("USTEST", tables, counts, _source_xml=xml)
+    assert gaps, "a table of unparseable values must register as a gap"
+    for g in gaps:
+        assert g.raw_source, f"{g.reason!r} produced a gap with no raw_source"
+        assert "<colspec" in g.raw_source
