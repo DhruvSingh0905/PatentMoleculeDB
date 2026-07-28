@@ -1008,10 +1008,25 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
 
     for block_id, raw_block in by_block.items():
         block = [assembled[block_id]] if block_id in assembled else raw_block
+        # ...INCLUDING the prose immediately before and after the block.
+        #
+        # Each of US11566007's bin tables states its own key, and eleven of them
+        # state it in the paragraph above rather than in a caption or a cell.
+        # Harvesting only caption + legend + cells found the key for two blocks
+        # and missed it for eleven, which read as an unreadable layout.
+        #
+        # It is NOT a transfer from the blocks that worked, and that distinction
+        # is worth 10x: TABLE-US-00006 defines a FOUR-grade scale where `++++` is
+        # `IC50 >= 1 uM`, while TABLE-US-00007 defines a FIVE-grade scale where
+        # `++++` is `10 uM > IC50 >= 1 uM`. Carrying one key to the other looked
+        # like a free +2,261 records and would have silently rewritten an
+        # upper-bounded bin as an unbounded one. Each block's own key is the only
+        # safe answer, and each block has one.
         text = " ".join(
             [raw_block[0].caption] + [table_legend(t) for t in raw_block]
             + [c.text for t in raw_block for r in t.body_rows for c in r
                if bin_legend.looks_like_key(c.text)]
+            + [(raw_block[0].preceding or "")[-1200:]]
         )
         if not bin_legend.looks_like_key(text):
             continue
