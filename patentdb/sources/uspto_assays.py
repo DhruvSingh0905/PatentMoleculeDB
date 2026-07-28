@@ -431,9 +431,21 @@ def _choose_offsets(table: Table, rows) -> list[int]:
 
     Rows carrying CALS `namest` are authoritative and pinned at 0 (the cells
     place themselves). For the rest we try every feasible offset and keep the
-    combination that scores best, evaluating rows in isolation first — full
-    joint search is unnecessary because misalignment is almost always confined
-    to one or two short rows.
+    combination that scores best.
+
+    Unpinned rows of the SAME WIDTH are solved together, not one at a time.
+    They are lines of one stacked label block — US10172859's Table 6 heads its
+    three right-hand columns with::
+
+        IC50   IC50   Ki
+        DNA-   pDNA-  [Kv1.11
+
+    which is one set of labels typeset over two lines, so they cover the same
+    columns by construction. Scoring each line on its own put the first at
+    columns 3-5 and its own continuation at 0-2: both assay columns came out
+    called `IC50 PK`, and since the patent measures DNA-PK in nM and pDNA-PK in
+    μM, nothing downstream could tell which was which. Sharing the offset makes
+    that split unrepresentable rather than merely unlikely.
     """
     _, data = _header_rows_of(table)
     shapes = _column_shapes(table, data)
@@ -446,18 +458,22 @@ def _choose_offsets(table: Table, rows) -> list[int]:
         slack = table.n_cols - _row_width(row)
         offsets.append(0 if slack <= 0 else None)   # type: ignore[arg-type]
 
+    groups: dict[int, list[int]] = {}
     for i, off in enumerate(offsets):
-        if off is not None:
-            continue
-        slack = table.n_cols - _row_width(rows[i])
+        if off is None:
+            groups.setdefault(_row_width(rows[i]), []).append(i)
+
+    for width, idxs in groups.items():
         best_off, best_score = 0, None
-        for cand in range(slack + 1):
+        for cand in range(table.n_cols - width + 1):
             trial = [0 if o is None else o for o in offsets]
-            trial[i] = cand
+            for i in idxs:
+                trial[i] = cand
             s = _header_coherence(_merge_with_offsets(table, rows, trial), shapes)
             if best_score is None or s > best_score:
                 best_off, best_score = cand, s
-        offsets[i] = best_off
+        for i in idxs:
+            offsets[i] = best_off
     return [0 if o is None else o for o in offsets]
 
 
@@ -594,8 +610,29 @@ def _merge_with_offsets(table: Table, rows, offsets: list[int]) -> list[str]:
             if p.lower() not in seen:
                 seen.add(p.lower())
                 uniq.append(p)
-        out.append(" ".join(uniq).strip())
+        out.append(_join_header_lines(uniq))
     return out
+
+
+def _join_header_lines(parts: list[str]) -> str:
+    """Join the lines of one stacked column label.
+
+    A fragment ending in a hyphen is a word the typesetter broke across lines,
+    not two words: US10172859 stacks `DNA-` over `PK`, meaning `DNA-PK`. Joining
+    those with a space yields `IC50 DNA- PK`, which reads fine to a human and
+    breaks every consumer that matches on the name — the bin-key scale patterns
+    for that patent are `DNA-?PK`, and a stray space made them bind nothing, so
+    three tables extracted only their hERG column.
+    """
+    text = ""
+    for p in parts:
+        if not text:
+            text = p
+        elif text.endswith("-"):
+            text += p
+        else:
+            text += " " + p
+    return text.strip()
 
 
 def _unit_from(text: str) -> str | None:

@@ -51,28 +51,74 @@ class RepairReport:
                 f"{self.escalated} escalated, +{self.rows_recovered} rows")
 
 
+# Regex syntax, removed to leave the literal words a pattern is really looking
+# for. Used only to rank two patterns that both matched — never to match.
+_META = re.compile(r"[.^$*+?{}\[\]\\()|]")
+
+
+def _literal_overlap(pattern: str, name: str) -> int:
+    """How specifically `pattern` speaks about `name`, in characters.
+
+    The longest literal word the pattern contains that actually appears in the
+    name. Deliberately not the length of the regex match: `IC50.*PK` matches
+    the whole of "ic50 pdna-pk" through a wildcard, which makes the vaguest
+    pattern look like the most precise one.
+    """
+    best = 0
+    for alt in pattern.split("|"):
+        for lit in _META.sub(" ", alt).split():
+            if len(lit) > best and lit.lower() in name:
+                best = len(lit)
+    return best
+
+
 def _bins_for(payload: dict, assay_name: str | None) -> dict:
     """The bin scale that governs one column.
 
-    A grade letter is not globally meaningful. US10172859 defines two A–D
-    scales in one legend and they run in OPPOSITE directions — `A` is
-    `IC50 < 0.5 μM` for potency and `Ki > 25 μM` for hERG, a 50-fold error if
-    the wrong one is applied. So a key may carry `scales`, each naming the
-    assays it governs; `bins` alone stays valid for the single-scale case.
+    A grade letter is not globally meaningful. US10172859 defines three A–D
+    scales in one legend: DNA-PK enzymatic in nM, pDNA-PK cellular in μM, and
+    a Kv11.1 hERG scale running the OPPOSITE way — `A` is `IC50 < 3 nM` for the
+    first and `Ki > 25 μM` for the last. So a key may carry `scales`, each
+    naming the assays it governs; `bins` alone stays valid for one scale.
+
+    Two things decide which scale claims a column, and the first one was
+    missing:
+
+    **Specificity.** `DNA-` is a substring of `pDNA-`, so first-match-wins gave
+    the cellular column the enzymatic scale — 0–3 nM where the patent says
+    0–0.5 μM, a 166-fold understatement recorded as a measurement. The more
+    specific pattern wins, measured by the longest literal word it shares with
+    the column name.
+
+    **Refusal.** When specificity cannot separate two scales that disagree, we
+    do not know, and a coin flip between opposite directions is the one outcome
+    worse than extracting nothing. The grade is left raw; the record stays
+    unusable and the gap detector keeps reporting it.
     """
     scales = payload.get("scales")
     if not scales:
         return payload.get("bins") or {}
     name = (assay_name or "").lower()
+    hits: list[tuple[int, dict]] = []
     for s in scales:
         pat = (s.get("match") or "").strip()
         if not pat:
             continue
         try:
             if re.search(pat, name, re.I):
-                return s.get("bins") or {}
+                hits.append((_literal_overlap(pat, name), s))
         except re.error:
             continue
+    if hits:
+        best = max(score for score, _ in hits)
+        winners = [s for score, s in hits if score == best]
+        chosen = winners[0].get("bins") or {}
+        if len(winners) > 1 and any((w.get("bins") or {}) != chosen for w in winners):
+            logger.warning(
+                "repair: %d scales claim %r with equal specificity and disagree; "
+                "leaving the grade raw rather than guessing", len(winners), assay_name)
+            return {}
+        return chosen
     # No scale claims this column. Returning the first would be a coin flip
     # between opposite directions, so return nothing and leave the grade raw.
     return next((s.get("bins") or {} for s in scales if not s.get("match")), {})

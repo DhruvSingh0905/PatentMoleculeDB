@@ -40,7 +40,7 @@ from ..core.api_cache import get_cached, store_cached
 from ..core.cost_tracker import cost_tracker
 from .gap import Gap
 from .rules import (BIN_KEY, COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX,
-                    VALUE_PATTERN, Rule)
+                    SYNTH_EPOCH, VALUE_PATTERN, Rule)
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,13 @@ SYNTH_MODEL = config.MODEL_HAIKU
 # the layout fingerprint, which is content-independent by design — so without
 # a version here, improving the prompt silently replays answers produced by
 # the old one. Exactly the stale-cache trap the repo's CLAUDE.md warns about.
-PROMPT_VERSION = "v14-aligned-headers"
+#
+# One string for both caches. They were separate, and only this one was
+# honoured: a bumped prompt bought a fresh API call whose answer was then
+# discarded in favour of the stale `escalate` already sitting in the rule
+# library. Two version keys for one question is a drift hazard, so there is now
+# one, defined next to the library it also governs.
+PROMPT_VERSION = SYNTH_EPOCH
 
 # Frozen prefix — identical on every call so it can be prompt-cached (cache
 # reads bill at ~0.1x). Everything patent-specific goes in the user turn.
@@ -290,8 +296,52 @@ def _veto_not_assay(kind: str, sample: str) -> tuple[str, str | None]:
     return kind, None
 
 
+# What each rule kind needs in order to be that kind. Order matters only for a
+# response carrying two payloads at once, which is rare and resolved by
+# specificity: a bin legend is a stronger signal than a lone `pattern` string.
+_PAYLOAD_SIGNATURES = (
+    (BIN_KEY, ("scales", "bins")),
+    (COLUMN_MAP, ("assay_columns",)),
+    (VALUE_PATTERN, ("value_pattern",)),
+    (ROW_REGEX, ("pattern",)),
+    (NOT_ASSAY, ("because",)),
+)
+
+_KNOWN_KINDS = {COLUMN_MAP, ROW_REGEX, VALUE_PATTERN, BIN_KEY, NOT_ASSAY, ESCALATE}
+
+
+def _infer_kind(out: dict) -> str | None:
+    """Which rule this response actually is, judged by what it contains.
+
+    The `kind` enum in the tool schema is ADVISORY — the Messages API does not
+    constrain a tool argument to its enum — and our own prompt uses the word
+    `scales` as if it named an outcome ("return `scales`, one entry per
+    scale"). So Haiku answered `kind: "scales"` on US10172859 and carried a
+    flawless three-scale legend underneath: every bound matching the patent
+    text, both directions of the opposite-running hERG scale intact. The old
+    catch-all wrote that to the library as `escalate / capability:
+    unspecified`, and eight tables' worth of data went with it.
+
+    Reading the payload instead of the label is not leniency. It is safe
+    precisely because it decides nothing: whatever we route to still faces
+    `validate()` against real rows, so a wrong guess becomes a rejection
+    carrying evidence — which is strictly more use than an escalation carrying
+    none.
+    """
+    for kind, keys in _PAYLOAD_SIGNATURES:
+        if any(out.get(k) for k in keys):
+            return kind
+    return None
+
+
 def _to_rule(fingerprint: str, out: dict, model: str, sample: str = "") -> Rule:
     kind = out.get("kind")
+    if kind not in _KNOWN_KINDS:
+        inferred = _infer_kind(out)
+        if inferred is not None:
+            logger.info("repair: %s returned kind=%r; routing as %s on payload shape",
+                        fingerprint, kind, inferred)
+            kind = inferred
     kind, veto = _veto_not_assay(kind, sample)
     if veto:
         return Rule(fingerprint=fingerprint, kind=ESCALATE,
@@ -327,9 +377,17 @@ def _to_rule(fingerprint: str, out: dict, model: str, sample: str = "") -> Rule:
     elif kind == NOT_ASSAY:
         payload = {"because": out.get("because") or out.get("note", "")}
     else:
+        # Nothing recognisable came back. That is a real escalation — but say
+        # what arrived. "capability: unspecified" was the single least useful
+        # string in the queue, and it was what a correct three-scale legend got
+        # recorded as for eight tables.
         kind = ESCALATE
-        payload = {"capability": out.get("capability") or "unspecified",
-                   "note": out.get("note", "")}
+        keys = sorted(k for k, v in out.items() if v not in (None, "", [], {}))
+        payload = {
+            "capability": out.get("capability")
+            or f"response carried no usable rule payload (keys: {keys})",
+            "note": out.get("note", ""),
+        }
     return Rule(fingerprint=fingerprint, kind=kind, payload=payload,
                 source="llm", model=model)
 

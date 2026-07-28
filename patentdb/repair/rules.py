@@ -48,6 +48,17 @@ ESCALATE = "escalate"
 
 _LIBRARY = config.PACKAGE_ROOT / "data" / "layout_rules.json"
 
+# Bump whenever the prompt, the tool schema, the sample rendering or the way a
+# response is routed changes — anything that could make us answer a question
+# better than we did last time.
+#
+# This governs BOTH caches. The API response cache was already versioned; the
+# rule library was not, and that asymmetry is why eight US10172859 gaps were
+# frozen at a stale `escalate` through every subsequent improvement. `lib.get()`
+# short-circuits before the model is called, so a persisted escalation pins the
+# layout to the capability we had the day it was written.
+SYNTH_EPOCH = "v15-payload-routing"
+
 # Regex constructs that make catastrophic backtracking possible. A synthesized
 # pattern runs over thousands of rows, so a quadratic blowup is a hang, and the
 # model has no idea it wrote one.
@@ -66,6 +77,9 @@ class Rule:
     source: str = "llm"                  # llm | human | builtin
     model: str = ""
     created: str = ""
+    # Which synthesis epoch produced this. Only negatives consult it — see
+    # RuleLibrary.get.
+    epoch: str = ""
     # Evidence, kept so a bad rule can be traced and revoked.
     validated_on: dict = field(default_factory=dict)
     times_applied: int = 0
@@ -105,17 +119,36 @@ class RuleLibrary:
         tmp.replace(self.path)
 
     def get(self, fingerprint: str) -> Rule | None:
-        return self._rules.get(fingerprint)
+        """The stored answer, unless it is an escalation we have outgrown.
+
+        A validated rule is EVIDENCE: it was re-run against real rows and it
+        held, so it stays true no matter what changes here. An escalation is
+        not an answer at all — it is a record that our capability ran out on
+        this layout, on a particular day, with a particular prompt. Treating
+        the two the same froze eight US10172859 gaps at "capability:
+        unspecified" while the fixes that would have resolved them landed one
+        after another and were never consulted.
+
+        `not_assay` deliberately does NOT expire. It is a positive claim about
+        what the table contains, already guarded by the veto in synthesize, and
+        re-litigating it every epoch would pay to rediscover mass-spec tables
+        forever.
+        """
+        rule = self._rules.get(fingerprint)
+        if rule is not None and rule.kind == ESCALATE and rule.epoch != SYNTH_EPOCH:
+            return None
+        return rule
 
     def add(self, rule: Rule) -> None:
         rule.created = rule.created or time.strftime("%Y-%m-%dT%H:%M:%S")
+        rule.epoch = rule.epoch or SYNTH_EPOCH
         self._rules[rule.fingerprint] = rule
 
     def knows(self, fingerprint: str) -> bool:
-        """True when this layout has already been answered — including
-        `not_assay` and `escalate`. Re-asking a question we have paid for is
+        """True when this layout has a live answer — including `not_assay` and
+        a current-epoch `escalate`. Re-asking a question we have paid for is
         the single easiest way to lose the cost advantage."""
-        return fingerprint in self._rules
+        return self.get(fingerprint) is not None
 
     def record_use(self, fingerprint: str, rows: int) -> None:
         r = self._rules.get(fingerprint)
@@ -164,6 +197,19 @@ def _safe_regex(pattern: str):
     try:
         return _re_engine.compile(pattern)
     except Exception as e:
+        # `(?P&lt;cid&gt;\d+)` — "bad character in group name at position 21".
+        # The model escaped its own output; the sample it read contained no
+        # entities (US11613531's source XML has zero `&lt;`). A pattern one
+        # unescape away from valid is malformed, not wrong, and rejecting it
+        # cost a whole layout. Repaired only AFTER a genuine failure, so a
+        # pattern matching a literal `&` is never rewritten.
+        import html
+        repaired = html.unescape(pattern)
+        if repaired != pattern:
+            try:
+                return _re_engine.compile(repaired)
+            except Exception:
+                pass
         raise Rejected(f"regex does not compile: {e}") from e
 
 

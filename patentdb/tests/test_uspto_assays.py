@@ -291,3 +291,47 @@ def test_a_prose_cell_is_not_mistaken_for_a_compound_list():
     t = _t(2, [], [["+", "prepared as described above, see Example 1, and purified"]])
     assert A.extract_inverted([t], parse_bin_key("*Key: +: IC50 < 1 uM"),
                               assay_name="x", unit="uM") == []
+
+
+def test_stacked_header_lines_of_equal_width_share_one_offset():
+    """US10172859 Table 6, where two assay columns merged to the SAME name.
+
+    The header is three physical lines::
+
+        IC50   IC50   Ki
+        DNA-   pDNA-  [Kv1.11
+        No. | Structural formula | Name | PK | PK | hERG]
+
+    The two short lines are the same three labels stacked, so they occupy the
+    same columns by construction. Choosing an offset per row independently sent
+    line 1 to columns 3-5 and line 2 to columns 0-2, and both assay columns
+    came out named `IC50 PK`.
+
+    That collision is not cosmetic: the patent measures DNA-PK in **nM** and
+    pDNA-PK in **μM**, so one identical name over both columns means half those
+    records get a scale that is 166-fold wrong, with nothing to distinguish
+    them afterwards.
+    """
+    t = _t(6,
+           [["IC50", "IC50", "Ki"],
+            ["DNA-", "pDNA-", "[Kv1.11"],
+            ["No.", "Structural formula", "Name", "PK", "PK", "hERG]"]],
+           [["207", "", "[4-Fluoro-2-methyl]thiazol-2-ylmethanol", "A", "B", "B"],
+            ["208", "", "[4-Fluoro-2-methyl]oxazol-2-ylmethanol", "B", "C", "A"],
+            ["209", "", "[5-Chloro-2-methyl]thiazol-2-ylmethanol", "A", "A", "C"]])
+    hdr, _ = A._header_rows_of(t)
+    merged = A.merge_header(t, hdr)
+
+    assert merged[3] != merged[4], (
+        f"the two assay columns must not collapse to one name: {merged!r}")
+    assert "DNA-" in merged[3] and "PK" in merged[3]
+    assert "pDNA-" in merged[4]
+    # The label lines must not land on the identifier/structure columns.
+    assert "pDNA-" not in merged[1] and "Kv1.11" not in merged[2]
+
+
+def test_a_line_break_hyphen_joins_without_a_space():
+    """`DNA-` stacked over `PK` is `DNA-PK`, not `DNA- PK`."""
+    assert A._join_header_lines(["IC50", "DNA-", "PK"]) == "IC50 DNA-PK"
+    assert A._join_header_lines(["Ki", "[Kv1.11", "hERG]"]) == "Ki [Kv1.11 hERG]"
+    assert A._join_header_lines(["IC50", "(nM)"]) == "IC50 (nM)"
