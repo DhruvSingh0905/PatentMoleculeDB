@@ -251,3 +251,41 @@ def test_parse_fidelity_reports_cells_lost_before_extraction_ran():
         assert "lost before any extraction logic ran" in bad[0]["detail"]
     finally:
         U._parse_row = real
+
+
+def test_a_reader_defect_reduces_to_one_repro_for_the_whole_corpus():
+    """One bug must ask one question, not sixty.
+
+    Grouping defects by the raw shape of the failing row fragmented a single
+    regex bug into 60 "distinct" signatures — `eE`, `eE2`, `e2E`, `e2E3` — which
+    would have been 60 paid questions for one line of code. Delta-debugging each
+    row down to the smallest fragment that still breaks collapses them onto one
+    motif: on the real defect, `<entry/>` followed by any paired entry.
+    """
+    import re
+
+    from patentdb.repair.parser_repair import _reduce, _row_shape
+    import patentdb.sources.uspto_xml as U
+
+    row = ("<row><entry/><entry/><entry>LCMS m/z</entry><entry>HPLC</entry>"
+           "<entry>HPLC</entry></row>")
+    real = U._parse_row
+
+    def defective(row_xml):
+        """The original alternation: paired branch first, so `<entry/>` matches
+        it and `(.*?)</entry>` swallows the next cell."""
+        return [U.Cell(U._text(m.group(2) or ""))
+                for m in re.finditer(
+                    r"<entry\b([^>]*)>(.*?)</entry>|<entry\b([^>]*)/>",
+                    row_xml, re.S)]
+
+    try:
+        U._parse_row = defective
+        small = _reduce(row)
+        assert _row_shape(small) == "eE", small
+        assert len(small) < len(row)
+    finally:
+        U._parse_row = real
+
+    # A healthy reader has nothing to reduce.
+    assert _reduce(row) == row

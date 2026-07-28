@@ -98,6 +98,11 @@ SUBSTITUENT_LLM_MAX_CHUNKS = int(os.environ.get("SUBSTITUENT_LLM_MAX_CHUNKS", "2
 # burst it is intended to replace. Disable with REPAIR=0.
 REPAIR_ENABLED = os.environ.get("REPAIR", "1") == "1"
 REPAIR_MAX_CALLS_PER_PATENT = int(os.environ.get("REPAIR_MAX_CALLS", "4"))
+# Let a VERIFIED parser patch write itself into the tree. Off by default: a
+# reader change is global, so the blast radius of a wrong one is every patent,
+# past and future. `parser_repair.verify_patch` must pass first either way —
+# this only decides whether the accepted patch is applied or handed back.
+PARSER_REPAIR_APPLY = os.environ.get("PARSER_REPAIR_APPLY", "0") == "1"
 
 # Cost — global budget across all patents
 COST_THRESHOLDS = [50, 100, 150, 200]
