@@ -229,3 +229,35 @@ def test_a_record_is_usable_only_when_it_is_actually_a_measurement():
     real = AssayRecord(cid="1", assay_name="hERG IC50",
                        value_numeric=0.0038, unit="uM")
     assert real.is_usable
+
+
+def test_the_same_layout_yielding_hundreds_and_zero_is_a_contradiction():
+    """US11566007: TABLE-US-00006 and 00007 share a fingerprint. 761 vs 0.
+
+    The fingerprint IS our claim that a rule written for one works on the other.
+    When the yields disagree that completely, the claim is false and no rule can
+    mend it — the difference is in our code path. The loop had no way to
+    represent that, so eleven blocks were escalated as unreadable layouts while
+    the working counterpart sat in the same document.
+
+    The useful half: the answer already exists in our own output, so this is a
+    transfer rather than a question, and it costs no model call.
+    """
+    from patentdb.repair.gap import yield_contradictions
+    from patentdb.sources.uspto_assays import AssayRecord
+
+    rows = [["+++", f"A{i:03d}, A{i+1:03d}"] for i in range(5, 20)]
+    live = _t(2, [["IC50*", "Examples"]], rows, table_id="LIVE")
+    dead = _t(2, [["IC50*", "Examples"]], rows, table_id="DEAD")
+    records = [AssayRecord(cid=str(i), assay_name="IC50", table_id="LIVE",
+                           value_numeric=1.0, unit="nM") for i in range(30)]
+
+    got = yield_contradictions([live, dead], records)
+    assert len(got) == 1
+    assert got[0]["table_id"] == "DEAD" and got[0]["twin"] == "LIVE"
+    assert got[0]["twin_records"] == 30
+    assert "in our code path" in got[0]["detail"]
+
+    # Two tables that BOTH yield nothing are simply an unsolved layout, not a
+    # contradiction — that is a question for the model, and must stay one.
+    assert yield_contradictions([live, dead], []) == []

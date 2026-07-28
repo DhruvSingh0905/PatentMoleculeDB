@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from ..sources.uspto_xml import (
     Table, assemble_blocks, parse_fidelity, parse_tables,
 )
-from .gap import Gap, find_gaps
+from .gap import Gap, find_gaps, yield_contradictions
 from .rules import (
     BIN_KEY, COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX, VALUE_PATTERN,
     Rejected, Rule, RuleLibrary, validate,
@@ -283,6 +283,13 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
     # a layout gap. It never reaches the model: the escalation names the file to
     # look in instead of asking for a rule that would encode the corruption.
     broken = {d["table_id"]: d for d in parse_fidelity(xml)}
+    # ...and the second question the loop could not ask: does our handling agree
+    # with ITSELF? A block yielding nothing while an identically-fingerprinted
+    # block in the same document yields hundreds is not a hard layout — the
+    # fingerprint is our own claim that one rule serves both. Buying a rule here
+    # pays to encode an asymmetry whose fix is already running a few tables away.
+    contradictions = {c["table_id"]: c
+                      for c in yield_contradictions(tables, baseline)}
     if broken:
         logger.warning("repair: %s has %d block(s) that do not reconcile with "
                        "their source; not asking for rules on those",
@@ -291,6 +298,16 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
     calls = 0
 
     for gap in gaps:
+        clash = contradictions.get(gap.table_id)
+        if clash is not None:
+            report.escalated += 1
+            report.escalations.append({
+                "fingerprint": gap.fingerprint, "patent": patent_id,
+                "table": gap.table_id, "rows_at_stake": gap.severity,
+                "capability": "INCONSISTENT HANDLING — not a layout gap",
+                "note": clash["detail"],
+            })
+            continue
         defect = broken.get(gap.table_id)
         if defect is not None:
             report.escalated += 1

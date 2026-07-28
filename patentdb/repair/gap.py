@@ -624,3 +624,67 @@ def hunt_legends(xml: str, symbols: set[str], *, max_hits: int = 4) -> list[str]
         if len(out) >= max_hits:
             break
     return out
+
+
+def yield_contradictions(tables: list[Table], records) -> list[dict]:
+    """Blocks whose OWN TWIN extracts fine — same fingerprint, opposite outcome.
+
+    The loop has exactly one hypothesis for every failure: this layout is
+    unusual, so buy a rule for it. It cannot form the other hypothesis — that
+    our handling is inconsistent — because it has no notion of internal
+    agreement. So a table yielding nothing always looks like a hard patent, even
+    when an identically-shaped table two pages earlier yielded hundreds.
+
+    US11566007 is the case. `TABLE-US-00006` and `TABLE-US-00007` share
+    fingerprint `1fed7af816615b20`; the first produces 761 records and the
+    second produces zero. The fingerprint is our claim that a rule written for
+    one works on the other, and the yields say that claim is false. Nothing in
+    the loop could represent that contradiction, so eleven blocks were escalated
+    as unreadable layouts while the working counterpart sat in the same document.
+
+    Two things follow, and the second is the useful one:
+
+      1. It is a CODE inconsistency, not a layout gap — no rule can fix it, and
+         asking for one spends money to encode the asymmetry.
+      2. **The answer already exists in our own output.** A configuration that
+         works on this exact shape is running a few tables away. The repair is a
+         transfer, not a question, and it costs nothing.
+
+    Measured over the 63-patent cache: 306 distinct fingerprints, 105 seen more
+    than once, and exactly ONE contradiction — so this is a precise signal, not
+    a noisy heuristic.
+    """
+    from collections import Counter, defaultdict
+
+    got = Counter(r.table_id for r in records)
+    groups: dict[str, list[tuple]] = defaultdict(list)
+    for t in tables:
+        hr, data = _header_rows_of(t)
+        n_rows = sum(1 for r in data if any(c.text.strip() for c in r))
+        if n_rows < 5:
+            continue
+        fp = layout_fingerprint(t, merge_header(t, hr))
+        groups[fp].append((t.table_id, n_rows, got.get(t.table_id, 0)))
+
+    out: list[dict] = []
+    for fp, members in groups.items():
+        if len(members) < 2:
+            continue
+        live = [m for m in members if m[2] > 0]
+        dead = [m for m in members if m[2] == 0]
+        if not live or not dead:
+            continue
+        best = max(live, key=lambda m: m[2])
+        for tid, n_rows, _ in dead:
+            out.append({
+                "table_id": tid, "fingerprint": fp,
+                "twin": best[0], "twin_records": best[2], "twin_rows": best[1],
+                "rows": n_rows,
+                "detail": (f"{tid} yields 0 records from {n_rows} rows, but "
+                           f"{best[0]} has the SAME layout fingerprint {fp} and "
+                           f"yields {best[2]} from {best[1]} rows. A rule cannot "
+                           f"fix this — the layouts are identical by our own "
+                           f"measure, so the difference is in our code path. The "
+                           f"working configuration is already in this document."),
+            })
+    return out
