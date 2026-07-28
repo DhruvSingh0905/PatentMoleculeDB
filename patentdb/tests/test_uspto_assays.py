@@ -335,3 +335,22 @@ def test_a_line_break_hyphen_joins_without_a_space():
     assert A._join_header_lines(["IC50", "DNA-", "PK"]) == "IC50 DNA-PK"
     assert A._join_header_lines(["Ki", "[Kv1.11", "hERG]"]) == "Ki [Kv1.11 hERG]"
     assert A._join_header_lines(["IC50", "(nM)"]) == "IC50 (nM)"
+
+
+def test_four_separated_stereoisomers_are_four_distinct_compounds():
+    """US11312727 labels them 100AA / 100AB / 100BA / 100BB.
+
+    `_CID_CORE` allowed ONE trailing letter, so all four failed the id test and
+    the whole example was dropped — 135 of that patent's 382 compounds, and 131
+    of the 171 compounds missing across the entire BindingDB reference corpus.
+    The same document also uses single-letter ids (`102A`), which is why the
+    gap was invisible: most of the patent extracted fine.
+    """
+    for cid in ("100AA", "100AB", "100BA", "100BB", "97AA"):
+        assert A._CID_PAT.match(cid), cid
+        assert A.normalize_cid(cid) == cid
+    # Single-letter and bare forms must keep working.
+    for cid in ("102A", "488-B", "12a", "I-2300", "Z1", "7"):
+        assert A._CID_PAT.match(cid), cid
+    # ...and a three-letter tail is a word, not a stereo label.
+    assert not A._CID_PAT.match("12abc")

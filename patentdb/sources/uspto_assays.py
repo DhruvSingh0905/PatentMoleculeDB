@@ -100,10 +100,17 @@ _LETTER_BIN = re.compile(r"^\s*([A-E])\s*$")
 _CID_LABEL = re.compile(
     r"^\s*(?:examples?|ex\.?|compounds?|cpds?\.?(?:\s*nos?\.?)?|entry|nos?\.?|#)\s*[:.]?\s*",
     re.I)
-# The trailing `(?:[-–]?[a-zA-Z])?` covers separated stereoisomers, which
-# patents label `488-A` / `488-B` (or `12a` / `12b`). Without the hyphenated
-# form those rows fail the id test and the whole compound is dropped.
-_CID_CORE = r"(?:[A-Za-z]{1,3}[-–]?)?\d{1,5}(?:[-–]?[a-zA-Z])?"
+# The trailing suffix covers separated stereoisomers, which patents label
+# `488-A` / `488-B` (or `12a` / `12b`). Without the hyphenated form those rows
+# fail the id test and the whole compound is dropped.
+#
+# TWO letters, not one. US11312727 separates four stereoisomers per example and
+# labels them `100AA`, `100AB`, `100BA`, `100BB` — 135 of its 382 compounds —
+# alongside 227 single-letter ids in the same document. Allowing one letter
+# matched none of the four and cost every one of them: measured against
+# BindingDB, which uses the patent's own labels, it was 131 of the 171 compounds
+# we were missing across the whole reference corpus.
+_CID_CORE = r"(?:[A-Za-z]{1,3}[-–]?)?\d{1,5}(?:[-–]?[a-zA-Z]{1,2})?"
 _CID_PAT = re.compile(rf"^\s*(?:{_CID_LABEL.pattern[2:]})?{_CID_CORE}\s*$", re.I)
 
 
