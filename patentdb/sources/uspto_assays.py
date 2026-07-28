@@ -336,7 +336,16 @@ _TABLE_TITLE = re.compile(r"^\s*TABLE\s*[-–]?\s*[0-9IVXLC]*\s*[-–]?\s*[0-9]*
 
 
 def _row_width(row) -> int:
-    return sum(max(1, c.colspan) for c in row if c.text.strip() or c.colspan > 1)
+    """Columns this row OCCUPIES, counting empty cells.
+
+    An empty `<entry/>` is a position, not an absence — CALS writes a label
+    sitting over columns 6-8 of a nine-column table as six empty entries and
+    three full ones. Skipping them made that row look three wide and sent it to
+    the offset search, which then had to rediscover a placement the source had
+    already stated. Rows that are genuinely short (fewer entries than the table
+    has columns, no padding) still need the search and still get it.
+    """
+    return sum(max(1, c.colspan) for c in row)
 
 
 _SHAPE_NUM = re.compile(r"^\s*[<>~≈≥≤]?\s*\d*\.?\d+\s*$")

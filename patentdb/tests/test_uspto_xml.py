@@ -187,3 +187,67 @@ def test_promotion_stops_at_the_first_compound_id():
     b = U.assemble_block(frags, "T1")
     assert "(IC50)" in b.header_text
     assert [r[0].text for r in b.body_rows] == ["1", "2"]
+
+
+def test_empty_entries_hold_their_column_position():
+    """US11254686's header is fully determined in the source. We destroyed it.
+
+    CALS marks an unoccupied header cell with a self-closing `<entry/>`, which
+    is how a 9-column table writes a label that sits over columns 6-8 only. The
+    row is still nine entries wide, so nothing about the alignment is ambiguous.
+
+    The parser's alternation tried `<entry\\b([^>]*)>(.*?)</entry>` FIRST, and
+    `[^>]*` matches the `/` of a self-closing tag — so `<entry/>` matched the
+    paired branch and `(.*?)</entry>` ran forward to the NEXT closing tag,
+    swallowing the following cell. Empty cells did not merely vanish: they
+    consumed their neighbour and shifted the rest of the row left.
+
+    Nine entries came back as five, every `col_start` was -1, and the offset
+    search then had to guess positions the patent had stated outright.
+    """
+    from patentdb.sources.uspto_xml import _parse_row
+
+    row = ("<row><entry/><entry>Ave</entry><entry>Ave</entry><entry/>"
+           "<entry/><entry/><entry>450</entry><entry>CLint</entry>"
+           "<entry>CLint</entry></row>")
+    cells = _parse_row(row)
+    assert len(cells) == 9, [c.text for c in cells]
+    assert [c.text for c in cells] == [
+        "", "Ave", "Ave", "", "", "", "450", "CLint", "CLint"]
+
+    # A spanning rule row still parses, and keeps its explicit position.
+    span = _parse_row('<row><entry namest="1" nameend="9" align="center"/></row>')
+    assert len(span) == 1 and span[0].colspan == 9 and span[0].col_start == 0
+
+
+def test_parse_fidelity_reports_cells_lost_before_extraction_ran():
+    """The check that would have ended a three-session hunt in one run.
+
+    Every gap signal in this repo is computed from the PARSED view, so a defect
+    in the parser is invisible to all of them — it presents as a hard layout and
+    the repair loop buys rules to describe damage we inflicted ourselves.
+    US11613531 lost 2,359 cells this way and was reported twice as "fires on
+    336/687 held-out rows (49%), just under the 50% floor".
+
+    This compares the two views directly: `<entry>` elements in, Cells out.
+    No model, no reference data, no judgement.
+    """
+    from patentdb.sources.uspto_xml import parse_fidelity
+
+    xml = ('<tables id="TABLE-US-00001" num="00001"><table><tgroup cols="3">'
+           '<thead><row><entry/><entry>A</entry><entry>B</entry></row></thead>'
+           '<tbody><row><entry>1</entry><entry>2</entry><entry>3</entry></row>'
+           '</tbody></tgroup></table></tables>')
+    assert parse_fidelity(xml) == [], "a faithfully parsed block reports nothing"
+
+    # Simulate the defect: a reader that silently drops empty cells.
+    import patentdb.sources.uspto_xml as U
+    real = U._parse_row
+    try:
+        U._parse_row = lambda rx: [c for c in real(rx) if c.text.strip()]
+        bad = parse_fidelity(xml)
+        assert len(bad) == 1
+        assert bad[0]["source_entries"] == 6 and bad[0]["parsed_cells"] == 5
+        assert "lost before any extraction logic ran" in bad[0]["detail"]
+    finally:
+        U._parse_row = real

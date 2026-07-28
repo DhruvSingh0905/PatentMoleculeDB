@@ -32,12 +32,15 @@ rule that cannot reproduce what a human can see in the sample is rejected.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from ..core import config
+
+logger = logging.getLogger(__name__)
 
 COLUMN_MAP = "column_map"
 ROW_REGEX = "row_regex"
@@ -57,7 +60,7 @@ _LIBRARY = config.PACKAGE_ROOT / "data" / "layout_rules.json"
 # frozen at a stale `escalate` through every subsequent improvement. `lib.get()`
 # short-circuits before the model is called, so a persisted escalation pins the
 # layout to the capability we had the day it was written.
-SYNTH_EPOCH = "v15-payload-routing"
+SYNTH_EPOCH = "v16-grounded-names"
 
 # Regex constructs that make catastrophic backtracking possible. A synthesized
 # pattern runs over thousands of rows, so a quadratic blowup is a hang, and the
@@ -456,6 +459,65 @@ def validate(rule: Rule, table, *, min_yield: float = 0.5,
                 raise Rejected(
                     f"column {i} is headed {head.strip()!r}, which reads as "
                     f"{kind} — refusing to record it as an assay")
+        # Grounding gate: a proposed name may REGROUP the patent's words, never
+        # add new ones.
+        #
+        # Shown US11254686's raw header stacks, Haiku correctly recovered
+        # `A2B cAMP` and `A2A cAMP` from cells our merge had fused into
+        # `CYP Ave A2A cAMP` — and then named two more columns `CYP3A4 %
+        # inhibition` and `CYP2D6 % inhibition`. The patent contains neither
+        # "3A4" nor "2D6", and the second of those columns is liver-microsome
+        # clearance, not a CYP inhibition assay at all. Plausible domain
+        # knowledge, applied to the wrong columns, and indistinguishable from a
+        # correct answer once written to the database.
+        #
+        # DIGITS are the load-bearing part: CYP3A4 vs CYP2D6, A2A vs A2B,
+        # ROCK1 vs ROCK2 differ only there. So a token carrying a digit must
+        # appear in the patent's own text for this table verbatim; a purely
+        # alphabetic token may be an expansion of an abbreviation the table does
+        # use (`% INH` → `% inhibition`), which prefix matching allows.
+        from ..sources.uspto_assays import table_legend as _legend
+        source_text = " ".join(
+            [" ".join(c.text for r in hdr_rows for c in r), table.caption or "",
+             getattr(table, "preceding", "") or "", _legend(table) or ""]).lower()
+        source_toks = set(re.findall(r"[a-z0-9]+", source_text))
+        def _ungrounded(name: str) -> str | None:
+            for tok in re.findall(r"[a-z0-9]+", (name or "").lower()):
+                if len(tok) < 3 and not any(ch.isdigit() for ch in tok):
+                    continue
+                if any(ch.isdigit() for ch in tok):
+                    if tok in source_toks:
+                        continue
+                elif any(s.startswith(tok) or tok.startswith(s)
+                         for s in source_toks if len(s) >= 3):
+                    continue
+                return tok
+            return None
+
+        # Drop the ungrounded COLUMNS, do not discard the whole answer. On
+        # US11254686 the same response that invented `CYP3A4` also correctly
+        # recovered `A2B cAMP` and `A2A cAMP` from header cells our merge had
+        # fused; failing the rule outright threw the good columns away with the
+        # bad ones. The system prompt already tells the model a rule covering
+        # three of five columns beats nothing — the gate has to honour that.
+        kept, dropped = [], []
+        for a in assays:
+            bad = _ungrounded(a.get("name") or "")
+            (dropped if bad else kept).append((a, bad))
+        if dropped:
+            logger.info("repair: dropped %d ungrounded column name(s): %s",
+                        len(dropped),
+                        "; ".join(f"{a.get('name')!r} introduces {b!r}"
+                                  for a, b in dropped))
+        if not kept:
+            raise Rejected(
+                "every proposed name introduces a word that appears nowhere in "
+                "this table's header, caption or surrounding text (e.g. "
+                f"{dropped[0][0].get('name')!r} introduces {dropped[0][1]!r}) — a "
+                "repair may regroup the patent's own words, not supply new ones")
+        assays = [a for a, _ in kept]
+        rule.payload["assays"] = assays
+
         # An unlabelled column is the ambiguous case: we cannot read its header
         # because it has none. Accept it only when the surrounding prose says
         # this table is assay data, mirroring the caption gate used elsewhere.

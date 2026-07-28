@@ -63,6 +63,11 @@ class Gap:
     # is deliberately small because it is billed on every gap; this one is paid
     # for only when the model says the small one was not enough.
     expanded_sample: str = ""
+    # The table's ORIGINAL CALS XML. The one view we have not transformed, so
+    # the only one that can contradict the others — served on request, because
+    # a model that says "the source disagrees with what you showed me" has found
+    # a parser bug, which is worth more than any rule.
+    raw_source: str = ""
 
     @property
     def severity(self) -> int:
@@ -101,6 +106,15 @@ def layout_fingerprint(table: Table, headers: list[str]) -> str:
         words.append("+".join(toks[:6]))
     raw = f"{table.n_cols}|{','.join(shapes)}|{','.join(words)}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def raw_block(xml: str, table_id: str) -> str:
+    """The `<tables>` element for one block, verbatim."""
+    if not (xml and table_id):
+        return ""
+    m = re.search(r"<tables\b[^>]*id=\"" + re.escape(table_id) + r"\".*?</tables>",
+                  xml, re.S)
+    return m.group(0) if m else ""
 
 
 def _sample_of(table: Table, headers: list[str], max_rows: int = 4,
@@ -246,6 +260,7 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
                 expanded_sample=_sample_of(t, hdrs, 24, expand=True),
                 column_kinds=[c.kind for c in build_columns(t)],
                 legend_candidates=legends,
+                raw_source=raw_block(_source_xml or '', tid),
             ))
             seen_blocks.add(tid)
     for t in tables:

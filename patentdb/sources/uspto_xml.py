@@ -253,10 +253,20 @@ def _text(fragment: str) -> str:
 
 def _parse_row(row_xml: str) -> list[Cell]:
     cells: list[Cell] = []
-    for m in re.finditer(r"<entry\b([^>]*)>(.*?)</entry>|<entry\b([^>]*)/>",
+    # SELF-CLOSING FIRST. With the paired form leading, `[^>]*` matched the `/`
+    # of `<entry/>`, so an empty cell took the paired branch and `(.*?)</entry>`
+    # ran forward to the NEXT closing tag — swallowing the following cell.
+    #
+    # CALS uses `<entry/>` as a positional placeholder: a label sitting over
+    # columns 6-8 of a 9-column table is written as six empty entries and three
+    # full ones. Losing them did not just drop blanks, it shifted every
+    # subsequent cell left, so US11254686's nine-entry header rows came back as
+    # 3/5/7/7 with no column position at all — and the offset search then had to
+    # guess an alignment the patent had stated outright.
+    for m in re.finditer(r"<entry\b([^>]*?)/>|<entry\b([^>]*)>(.*?)</entry>",
                          row_xml, re.S):
-        attrs = m.group(1) or m.group(3) or ""
-        body = m.group(2) or ""
+        attrs = m.group(1) if m.group(1) is not None else (m.group(2) or "")
+        body = m.group(3) or ""
         span, start = 1, -1
         st = re.search(r'namest="(\w+)"', attrs)
         en = re.search(r'nameend="(\w+)"', attrs)
@@ -355,8 +365,12 @@ def _row_key(cells: list["Cell"]) -> tuple[str, ...]:
     return tuple(c.text.strip() for c in cells)
 
 
-def _is_namelike(cells: list["Cell"]) -> bool:
-    """Does this row look like column names rather than data or prose?"""
+def _is_namelike(cells: list["Cell"], *, declared: bool = False) -> bool:
+    """Does this row look like column names rather than data or prose?
+
+    `declared` means the row came out of a `<thead>`: the patent has already
+    said it is a header, so the guesswork below is not ours to redo.
+    """
     texts = [c.text.strip() for c in cells if c.text.strip()]
     if len(texts) < 2:
         return False
@@ -367,10 +381,18 @@ def _is_namelike(cells: list["Cell"]) -> bool:
     # across every fragment width let these into the column names, and a header
     # reading "hERG] 4H)." is one the model cannot map a bin scale onto.
     # Unbalanced brackets are the tell: a real column label closes what it opens.
-    for t in texts:
-        for op, cl in (("(", ")"), ("[", "]")):
-            if t.count(cl) > t.count(op):
-                return False
+    #
+    # ...unless the typesetter wrapped the label across rows, which is exactly
+    # what a multi-row header IS. US11254686's last header row reads
+    # `Compound | IC50 | ... | protein) | 10^6 cells)` — the `(` sits two rows
+    # above — and rejecting it cost the names of columns 0 and 3 outright. So
+    # this only polices rows we are PROMOTING out of a body; a row the source
+    # marked as header is taken at its word.
+    if not declared:
+        for t in texts:
+            for op, cl in (("(", ")"), ("[", "]")):
+                if t.count(cl) > t.count(op):
+                    return False
     # All-numeric rows are data, not headers.
     return not all(re.fullmatch(r"[\d.,;:<>=~\s-]+", t) for t in texts)
 
@@ -457,11 +479,13 @@ def assemble_block(tables: list["Table"], table_id: str) -> "Table | None":
     # is not column position, and `_choose_offsets` already aligns partial
     # header rows against the data; feeding it fewer rows is what loses columns.
     for t in same:
-        rows = list(t.header_rows)
+        rows = [(r, True) for r in t.header_rows]
         if id(t) not in data_ids:
-            rows += t.body_rows          # a header fragment's "body" is header
-        for r in rows:
-            if not _is_namelike(r):
+            # a header fragment's "body" is header — but only by inference, so
+            # those rows still face the full heuristic
+            rows += [(r, False) for r in t.body_rows]
+        for r, declared in rows:
+            if not _is_namelike(r, declared=declared):
                 continue
             k = _row_key(r)
             if k not in seen_hdr:
@@ -512,6 +536,54 @@ def assemble_block(tables: list["Table"], table_id: str) -> "Table | None":
         caption=first.caption, preceding=first.preceding,
         following=same[-1].following,
     )
+
+
+def parse_fidelity(xml: str) -> list[dict]:
+    """Blocks where our Cells do not account for the source's own elements.
+
+    The one question the repair loop could never ask: **is what I am looking at
+    what the patent says?** Every gap signal in this codebase is computed from
+    the PARSED view, so a defect in the parser is invisible to all of them — it
+    presents as a hard layout, and the loop dutifully buys rules to paper over
+    damage we inflicted ourselves.
+
+    That is not hypothetical. `_parse_row` matched `<entry/>` with the paired-tag
+    branch, so every empty cell swallowed its neighbour: US11254686's nine-entry
+    header rows arrived as five, US11613531 lost 440 measurements, and the loop
+    spent three sessions proposing renames and bin keys for a regex bug. This
+    check compares the two views directly and needs no model, no reference data
+    and no judgement — `<entry>` elements in, Cells out, and they must match.
+
+    It is the machine-checkable form of the rule this repo already states for
+    humans: never diagnose from the parsed view.
+    """
+    parsed: dict[str, list[int]] = {}
+    for t in parse_tables(xml):
+        acc = parsed.setdefault(t.table_id, [0, 0])
+        for r in t.header_rows + t.body_rows:
+            acc[0] += len(r)
+            acc[1] += 1
+
+    out: list[dict] = []
+    for tbl in re.finditer(r"<tables\b([^>]*)>(.*?)</tables>", xml, re.S):
+        m = re.search(r'id="([^"]+)"', tbl.group(1) or "")
+        table_id = m.group(1) if m else ""
+        block = tbl.group(2)
+        want_entries = len(re.findall(r"<entry\b", block))
+        want_rows = len(re.findall(r"<row\b", block))
+        got_entries, got_rows = parsed.get(table_id, [0, 0])
+        if got_entries == want_entries and got_rows == want_rows:
+            continue
+        out.append({
+            "table_id": table_id,
+            "source_entries": want_entries, "parsed_cells": got_entries,
+            "source_rows": want_rows, "parsed_rows": got_rows,
+            "detail": (f"{table_id}: source declares {want_entries} <entry> in "
+                       f"{want_rows} <row>, parser produced {got_entries} cells "
+                       f"in {got_rows} rows — {want_entries - got_entries} cells "
+                       f"lost before any extraction logic ran"),
+        })
+    return out
 
 
 def assemble_blocks(tables: list["Table"]) -> list["Table"]:

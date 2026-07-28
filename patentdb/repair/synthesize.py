@@ -121,6 +121,10 @@ MORE_TOOL = {
         "is not enough to decide safely — a header you cannot align to columns, "
         "a legend that appears cut off, too few rows to see the pattern. You "
         "will be shown a larger view of the same table and can then answer. "
+        "`raw_source` returns the table's ORIGINAL CALS XML, which is the only "
+        "view we have not already transformed: if what you were shown "
+        "contradicts it, say so in `note` — that is a bug in our reader and is "
+        "worth more to us than a rule. "
         "Prefer this over `escalate` whenever the obstacle is that you cannot "
         "SEE enough: escalate means the capability is missing, not the data."),
     "input_schema": {
@@ -129,7 +133,7 @@ MORE_TOOL = {
             "what": {
                 "type": "string",
                 "enum": ["more_rows", "full_legend", "raw_headers",
-                         "surrounding_text", "everything"],
+                         "surrounding_text", "raw_source", "everything"],
                 "description": "Which part is insufficient.",
             },
             "why": {
@@ -518,6 +522,13 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "") -> Rule 
 def _more_context(gap: Gap, what: str) -> str:
     """Serve the wider view of the gap the model just asked for."""
     parts: list[str] = []
+    if what in ("raw_source", "everything") and gap.raw_source:
+        # Truncated from the FRONT of the block: the thead is what disagreements
+        # are usually about, and it is the part our merge most often damages.
+        parts.append(
+            "ORIGINAL CALS XML FOR THIS TABLE (the source of truth — everything "
+            "else you were shown is derived from this):\n"
+            + gap.raw_source[:6000])
     if what in ("full_legend", "everything") and gap.legend_candidates:
         parts.append("LEGEND TEXT FOUND ELSEWHERE IN THIS PATENT (untruncated):\n  "
                      + "\n  ".join(c for c in gap.legend_candidates))

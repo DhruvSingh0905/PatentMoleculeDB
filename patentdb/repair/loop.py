@@ -21,7 +21,9 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from ..sources.uspto_xml import Table, assemble_blocks, parse_tables
+from ..sources.uspto_xml import (
+    Table, assemble_blocks, parse_fidelity, parse_tables,
+)
 from .gap import Gap, find_gaps
 from .rules import (
     BIN_KEY, COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX, VALUE_PATTERN,
@@ -264,10 +266,44 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
     # needs the document. Passing counts here silently disabled both.
     gaps = find_gaps(patent_id, tables, baseline, _source_xml=xml)
     report = RepairReport(patent_id=patent_id, gaps_found=len(gaps))
+
+    # Before buying a single rule: is what we are looking at what the patent
+    # says? Every gap signal above is computed from the PARSED view, so a defect
+    # in the parser is invisible to all of them — it presents as a hard layout,
+    # and the loop pays a model to describe damage we inflicted ourselves.
+    #
+    # `_parse_row` matched `<entry/>` with the paired-tag branch, so every empty
+    # cell swallowed its neighbour. US11613531 lost 2,359 cells that way and
+    # spent two sessions being reported as "fires on 336/687 held-out rows
+    # (49%), just under the 50% floor" — an honest-looking rejection of a
+    # perfectly ordinary table. No rule could have fixed it, and the loop had no
+    # way to say so.
+    #
+    # A block whose cells do not reconcile with its source is a CODE defect, not
+    # a layout gap. It never reaches the model: the escalation names the file to
+    # look in instead of asking for a rule that would encode the corruption.
+    broken = {d["table_id"]: d for d in parse_fidelity(xml)}
+    if broken:
+        logger.warning("repair: %s has %d block(s) that do not reconcile with "
+                       "their source; not asking for rules on those",
+                       patent_id, len(broken))
     recovered: list = []
     calls = 0
 
     for gap in gaps:
+        defect = broken.get(gap.table_id)
+        if defect is not None:
+            report.escalated += 1
+            report.escalations.append({
+                "fingerprint": gap.fingerprint, "patent": patent_id,
+                "table": gap.table_id, "rows_at_stake": gap.severity,
+                "capability": "PARSER DEFECT — not a layout gap",
+                "note": (f"{defect['detail']}. Fix `uspto_xml._parse_row` / the "
+                         f"table reader, not this layout. No rule was requested: "
+                         f"a rule written against a corrupted view would encode "
+                         f"the corruption."),
+            })
+            continue
         rule = lib.get(gap.fingerprint)
         if rule is not None:
             report.already_known += 1
@@ -322,6 +358,7 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
         table = by_id.get(gap.table_id)
         if table is None:
             continue
+
         try:
             got = apply_rule(rule, table, patent_id)
         except Rejected as e:

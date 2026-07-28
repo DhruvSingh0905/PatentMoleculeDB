@@ -204,3 +204,33 @@ def test_new_rules_are_stamped_with_the_current_epoch(tmp_path):
     stored = json.loads((tmp_path / "rules.json").read_text())["rules"][0]
     assert stored["epoch"] == SYNTH_EPOCH
     assert RuleLibrary(path=tmp_path / "rules.json").get("x") is not None
+
+
+def test_a_proposed_name_may_regroup_the_patents_words_but_not_add_new_ones():
+    """Haiku renamed two US11254686 columns `CYP3A4`/`CYP2D6 % inhibition`.
+
+    The patent contains neither "3A4" nor "2D6", and the second of those
+    columns is liver-microsome clearance, not a CYP assay at all. Digits are
+    the load-bearing part of these names — CYP3A4 vs CYP2D6, A2A vs A2B,
+    ROCK1 vs ROCK2 differ only there — so a digit-bearing token must appear
+    verbatim, while a plain word may expand an abbreviation the table uses.
+    """
+    from patentdb.repair.rules import COLUMN_MAP, Rejected, Rule, validate
+    from patentdb.sources.uspto_xml import Cell, Table
+
+    def mk(rows):
+        return [[c if isinstance(c, Cell) else Cell(str(c)) for c in r] for r in rows]
+
+    t = Table(table_id="T", n_cols=3,
+              header_rows=mk([["Ex.", "A2A", "% INH"], ["", "cAMP", ""]]),
+              body_rows=mk([[str(i), "12", "45"] for i in range(12)]))
+
+    grounded = Rule(fingerprint="f", kind=COLUMN_MAP, payload={
+        "cid": 0, "assays": [{"index": 1, "name": "A2A cAMP", "unit": "nM"},
+                             {"index": 2, "name": "% inhibition"}]})
+    assert validate(grounded, t, baseline_rows=0)["coverage"] > 0.5
+
+    invented = Rule(fingerprint="f", kind=COLUMN_MAP, payload={
+        "cid": 0, "assays": [{"index": 1, "name": "CYP3A4 % inhibition"}]})
+    with pytest.raises(Rejected, match="cyp3a4"):
+        validate(invented, t, baseline_rows=0)
