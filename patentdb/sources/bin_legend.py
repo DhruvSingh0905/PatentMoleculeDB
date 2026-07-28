@@ -51,10 +51,10 @@ _DEFINES = r"(?:\s*[:=]\s*|\s+(?:refers?\s+to|means|indicates?|represents?|denot
 # bounds, and read every one of its bins as unbounded above until this landed.
 _KEY_COMPACT = re.compile(
     rf"({_SYMBOL}){_DEFINES}"
-    rf"(?:(?P<hi>{_NUM})\s*(?P<hiu>{_UNIT})?\s*(?P<hiop>>=|>|≥|≤|<=|<)\s*)?"
+    rf"(?:(?P<hi>{_NUM})\s*(?P<hiu>{_UNIT})?\s*(?P<hiop>>=|>|≥|≧|⩾|≤|≦|⩽|<=|<)\s*)?"
     rf"(?:IC\s*50|EC\s*50|Ki|Kd|value)?\s*"
-    rf"(?P<loop>>=|>|≥|≤|<=|<)?\s*(?P<lo>{_NUM})\s*(?P<lou>{_UNIT})?"
-    rf"(?:\s*(?:to|[-–—−])\s*[<>≤≥]?\s*(?P<hi2>{_NUM})\s*(?P<hi2u>{_UNIT})?)?",
+    rf"(?P<loop>>=|>|≥|≧|⩾|≤|≦|⩽|<=|<)?\s*(?P<lo>{_NUM})\s*(?P<lou>{_UNIT})?"
+    rf"(?:\s*(?:to|[-–—−])\s*[<>≤≥≦≧⩽⩾]?\s*(?P<hi2>{_NUM})\s*(?P<hi2u>{_UNIT})?)?",
     re.I)
 
 # Form 2 — prose:  "a value greater than 0.01 μM and less than or equal to
@@ -70,9 +70,23 @@ _KEY_PROSE = re.compile(
     rf"is\s+marked\s*[\"“'`]?({_SYMBOL})[\"”'`]?",
     re.I)
 
-_GT = re.compile(rf"(?:greater than or equal to|at least|≥|>=)\s*({_NUM})\s*({_UNIT})?", re.I)
+# Form 3 — the symbol is defined by a prose clause: "A = IC50 of less than
+# 10 nM". Bounded by `;` for the same reason `_KEY_PROSE` is: a period cannot
+# be a clause boundary when every value contains one.
+# The body may NOT cross into the next symbol's definition. Without the
+# lookahead, `+ refers to ≤10 nM ++ refers to >10 nM to 50 nM` gives `+` a body
+# running through `++`'s clause, and `+` comes out as 10..10 — the exact bleed
+# that made `following` unusable for keys, reappearing inside a single string.
+_NEXT_DEF = rf"(?:(?!{_SYMBOL}{_DEFINES})[^;])"
+_KEY_WORDY = re.compile(
+    rf"({_SYMBOL}){_DEFINES}(?P<body>{_NEXT_DEF}{{0,60}}?"
+    rf"(?:greater\s+than|less\s+than|at\s+least|at\s+most|[<>≤≥≦≧⩽⩾])"
+    rf"{_NEXT_DEF}{{0,240}})",
+    re.I)
+
+_GT = re.compile(rf"(?:greater than or equal to|at least|≥|≧|⩾|>=)\s*({_NUM})\s*({_UNIT})?", re.I)
 _GT_STRICT = re.compile(rf"(?:greater than|>)\s*({_NUM})\s*({_UNIT})?", re.I)
-_LT = re.compile(rf"(?:less than or equal to|at most|≤|<=)\s*({_NUM})\s*({_UNIT})?", re.I)
+_LT = re.compile(rf"(?:less than or equal to|at most|≤|≦|⩽|<=)\s*({_NUM})\s*({_UNIT})?", re.I)
 _LT_STRICT = re.compile(rf"(?:less than|<)\s*({_NUM})\s*({_UNIT})?", re.I)
 
 
@@ -123,21 +137,42 @@ class BinRange:
                 and self.unit == other.unit)
 
 
+# Relative size of each unit, for reconciling a clause that states its two
+# bounds in DIFFERENT units.
+_SCALE = {"pM": 1e-3, "nM": 1.0, "uM": 1e3, "mM": 1e6}
+
+
 def _prose_bounds(body: str) -> tuple[float | None, float | None, str | None]:
-    """Pull (lo, hi, unit) out of one prose clause."""
+    """Pull (lo, hi, unit) out of one prose clause.
+
+    Each bound carries its OWN unit, because patents mix them inside a single
+    clause: US11752149 defines `C = IC50 less than 1 μM (1,000 nM) but greater
+    than or equal to 100 nM`. Taking the first unit seen and applying it to
+    both returned lo=100, hi=1 — an interval inverted and 1,000x wrong, which
+    then silently labels every `C` compound in the patent.
+    """
     lo = hi = None
-    unit = None
+    lo_u = hi_u = None
     for pat, is_lo in ((_GT, True), (_GT_STRICT, True), (_LT, False), (_LT_STRICT, False)):
         m = pat.search(body)
         if not m:
             continue
-        val = float(m.group(1))
-        unit = unit or _canon_unit(m.group(2))
+        val = float(m.group(1).replace(",", ""))
+        u = _canon_unit(m.group(2))
         if is_lo and lo is None:
-            lo = val
+            lo, lo_u = val, u
         elif not is_lo and hi is None:
-            hi = val
-    return lo, hi, unit
+            hi, hi_u = val, u
+    # Reconcile a clause whose two bounds are stated in different units by
+    # converting to the finer of the two. `1 μM` and `100 nM` describe the same
+    # interval only once one of them moves.
+    if (lo is not None and hi is not None and lo_u and hi_u and lo_u != hi_u
+            and lo_u in _SCALE and hi_u in _SCALE):
+        if _SCALE[lo_u] <= _SCALE[hi_u]:
+            hi, hi_u = hi * _SCALE[hi_u] / _SCALE[lo_u], lo_u
+        else:
+            lo, lo_u = lo * _SCALE[lo_u] / _SCALE[hi_u], hi_u
+    return lo, hi, lo_u or hi_u
 
 
 def parse_bin_key(text: str) -> dict[str, BinRange]:
@@ -168,14 +203,14 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
         lo_op, lo_val = m.group("loop"), m.group("lo")
         if lo_val is not None:
             v = float(lo_val)
-            if lo_op in (">", ">=", "≥", None):
+            if lo_op in (">", ">=", "≥", "≧", "⩾", None):
                 lo = v
             else:
                 hi = v
         if m.group("hi") is not None:
             v = float(m.group("hi"))
             # "1 uM > IC50" means 1 uM is the UPPER bound.
-            if m.group("hiop") in (">", ">=", "≥"):
+            if m.group("hiop") in (">", ">=", "≥", "≧", "⩾"):
                 hi = v
             else:
                 lo = v
@@ -183,6 +218,38 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
             hi = float(m.group("hi2"))
         if lo is not None or hi is not None:
             out[sym] = BinRange(sym, lo, hi, unit)
+
+    # Form 3 — a symbol defined by a prose CLAUSE rather than an operator:
+    #   "A = IC50 of less than 10 nM; B = IC50 less than 100 nM but greater
+    #    than or equal to 10 nM"
+    # Form 1 needs a comparison symbol or a bare number straight after the
+    # separator and finds neither, so US11752149's whole key parsed as {} and
+    # all 47 of its graded records came back with no value. Runs last, so a
+    # clause Form 1 can already read keeps Form 1's reading.
+    for m in _KEY_WORDY.finditer(text):
+        sym = m.group(1)
+        lo, hi, unit = _prose_bounds(m.group("body"))
+        if lo is None and hi is None:
+            continue
+        prev = out.get(sym)
+        if prev is None:
+            out[sym] = BinRange(sym, lo, hi, unit)
+            continue
+        # A symbol Form 1 already read. Replace it ONLY when the prose reading
+        # is a strict REFINEMENT — same unit, and the new interval sits inside
+        # the old one. US9670210 writes `++ refers to IC50 >100 nM and ≦500 nM`
+        # and Form 1 stops at the lower bound because `and` is not a range
+        # separator, so `++` came out as "anything above 100 nM" when the
+        # patent bounds it at 500. Requiring containment means this can only
+        # ever tighten a bin, never move or widen one — the failure mode this
+        # file exists to prevent.
+        if prev.unit and unit and prev.unit != unit:
+            continue
+        tighter = ((prev.lo is None or (lo is not None and lo >= prev.lo))
+                   and (prev.hi is None or (hi is not None and hi <= prev.hi))
+                   and (lo, hi) != (prev.lo, prev.hi))
+        if tighter:
+            out[sym] = BinRange(sym, lo, hi, unit or prev.unit)
 
     # A key defined without units on every line usually states it once; adopt
     # the single unit seen, rather than leaving most entries unitless.
@@ -253,5 +320,5 @@ def looks_like_key(text: str) -> bool:
     if not text:
         return False
     return bool(re.search(r"is\s+marked|\bkey\s*:|\*\s*key", text, re.I)) or \
-        bool(re.search(rf"{_SYMBOL}{_DEFINES}(?:IC\s*50|EC\s*50|{_NUM}|[<>≤≥])",
+        bool(re.search(rf"{_SYMBOL}{_DEFINES}(?:IC\s*50|EC\s*50|{_NUM}|[<>≤≥≦≧⩽⩾])",
                        text, re.I))

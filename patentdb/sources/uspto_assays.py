@@ -89,7 +89,7 @@ _SPELLED_UNIT = {
 # The minus may be ASCII `-`, U+2212 MINUS or an en dash; typesetting picks.
 _EXP = r"(?:\s*[Ee]\s*[-−–+]?\s*\d{1,3})?"
 _VALUE_PAT = re.compile(
-    r"^\s*(?P<qual>[<>~≈≥≤]|>=|<=)?\s*"
+    r"^\s*(?P<qual>[<>~≈≥≤≦≧⩽⩾]|>=|<=)?\s*"
     r"(?P<num>(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)" + _EXP + r")"
     r"\s*(?P<unit>nM|µM|μM|uM|mM|pM|%)?"
     r"(?:\s*\(\s*(?P<paren>[^)]{1,12}?)\s*\))?\s*$")

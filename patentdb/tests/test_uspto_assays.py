@@ -467,3 +467,54 @@ def test_the_nearest_key_wins_when_two_scales_precede_a_table():
             "+++: 1 uM > IC50 >= 0.1 uM")
     k = parse_bin_key(nearest_key_before(text))
     assert (k["++++"].lo, k["++++"].hi) == (1.0, 10.0)
+
+
+def test_a_symbol_defined_by_a_prose_clause():
+    """US11752149: `A = IC50 of less than 10 nM` — words, not an operator.
+
+    Form 1 needs a comparison symbol or a bare number straight after the
+    separator and finds neither, so the whole key parsed as {} and all 47 of
+    the patent's graded records came back with no value.
+    """
+    from patentdb.sources.bin_legend import parse_bin_key
+    k = parse_bin_key(
+        "A = IC 50 of less than 10 nM; B = IC 50 less than 100 nM but greater "
+        "than or equal to 10 nM; C = IC 50 less than 1 μM (1,000 nM) but "
+        "greater than or equal to 100 nM")
+    assert (k["A"].lo, k["A"].hi) == (None, 10.0)
+    assert (k["B"].lo, k["B"].hi) == (10.0, 100.0)
+    # C states its bounds in DIFFERENT units. Applying the first unit to both
+    # returned lo=100, hi=1 — an interval inverted and 1,000x wrong.
+    assert (k["C"].lo, k["C"].hi, k["C"].unit) == (100.0, 1000.0, "nM")
+
+
+def test_the_other_less_than_or_equal_glyphs():
+    """US9670210 uses U+2266 `≦` throughout and never U+2264 `≤`.
+
+    Its `+` grade resolved to nothing and `++` to "anything above 100 nM"
+    when the patent bounds it at 500 — a silent widening decided by which
+    glyph a typesetter picked.
+    """
+    from patentdb.sources.bin_legend import parse_bin_key
+    k = parse_bin_key("(+ refers to IC 50 ≦100 nM; ++ refers to IC 50 >100 nM "
+                      "and ≦500 nM)")
+    assert (k["+"].lo, k["+"].hi) == (None, 100.0)
+    assert (k["++"].lo, k["++"].hi) == (100.0, 500.0)
+
+
+def test_a_prose_clause_may_only_tighten_a_bin_never_widen_it():
+    """The prose reader runs after Form 1 and can refine it — one direction.
+
+    Its body is also barred from crossing into the next symbol's clause: with
+    no semicolons, `+ refers to ≤10 nM ++ refers to >10 nM to 50 nM` gave `+`
+    a body running through `++`'s definition and `+` came out as 10..10.
+    """
+    from patentdb.sources.bin_legend import parse_bin_key
+    k = parse_bin_key("+ refers to ≤10 nM ++ refers to >10 nM to 50 nM "
+                      "+++ refers to >50 nM to 200 nM")
+    assert (k["+"].lo, k["+"].hi) == (None, 10.0)
+    assert (k["++"].lo, k["++"].hi) == (10.0, 50.0)
+    assert (k["+++"].lo, k["+++"].hi) == (50.0, 200.0)
+    # ...and a scale Form 1 already read correctly is left alone.
+    a = parse_bin_key("++++: IC50 >= 1 uM   +++: 1 uM > IC50 >= 0.1 uM")
+    assert (a["++++"].lo, a["++++"].hi) == (1.0, None)
