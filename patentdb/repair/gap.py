@@ -117,6 +117,66 @@ def raw_block(xml: str, table_id: str) -> str:
     return m.group(0) if m else ""
 
 
+def _id_shape(text: str) -> str:
+    """`48-1` and `52-4` → `99-9`. Digits and letters erased, punctuation kept."""
+    return re.sub(r"[A-Za-z]", "A", re.sub(r"\d", "9", text.strip()))
+
+
+def coherent_unread_ids(table: Table) -> list[str]:
+    """Rows whose identifier we could not read, when they all look the SAME.
+
+    The read-fraction gate below assumes the rows a mostly-read table leaves
+    behind are blanks and malformed junk. That holds for scattered leftovers
+    and fails completely for a systematic one: US20240335431 numbers some of
+    its examples `48-1`, `48-2`, `52-4`, and `_CID_PAT` allows a trailing
+    LETTER pair (`100AA`) but no trailing digit group. 24 of 80 rows dropped
+    from one table, 32 reference compounds across two patents — and every
+    table stayed above the 0.5 line, so the detector never asked about any of
+    them.
+
+    A remainder is noise; a category is a grammar we do not know. The
+    discriminator is homogeneity, not size: three or more unreadable ids
+    collapsing to one or two shapes is a second identifier convention, and it
+    is worth a question no matter how much of the table already parsed.
+
+    This is the RCA's outstanding recommendation — a check rejecting ~100% of
+    a homogeneous set should suspect itself — applied to the detector.
+
+    Scoped to the column already classified as the identifier, and only in a
+    table that also has an assay column. The looser version of this — any short
+    digit-bearing cell in the leading columns — fired on 50+ blocks corpus-wide:
+    m/z values, `CDCl3`, `C(10)`, `0.05`, `(R132H)`, primer sequences. Every one
+    of those would have been a paid question about a characterisation table.
+    The signal is not "a cell we cannot read exists"; it is "the id column
+    itself holds a second convention", and only the id column can say that.
+    """
+    from ..sources.uspto_assays import build_columns
+    cols = build_columns(table)
+    kinds = [c.kind for c in cols]
+    if ASSAY not in kinds or CID not in kinds:
+        return []
+    idx = kinds.index(CID)
+    _, data = _header_rows_of(table)
+    unread, read = [], 0
+    for r in data:
+        if len(r) <= idx:
+            continue
+        txt = r[idx].text.strip()
+        if not txt or txt in _NULLISH:
+            continue
+        if _CID_PAT.fullmatch(txt):
+            read += 1
+        elif len(txt) <= 14:
+            unread.append(txt)
+    # Needs a working majority to compare against: a column we read NOTHING of
+    # is a different failure, already reported by the reason-derived gaps.
+    if len(unread) < 3 or read < len(unread):
+        return []
+    shapes = Counter(_id_shape(u) for u in unread)
+    dominant = sum(n for _, n in shapes.most_common(2))
+    return unread if dominant >= len(unread) * 0.8 else []
+
+
 def _sample_of(table: Table, headers: list[str], max_rows: int = 4,
                *, expand: bool = False) -> str:
     """A compact, readable rendering of the table's shape.
@@ -230,8 +290,19 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
     gaps: list[Gap] = []
     seen_blocks: set[str] = set()
     judged_blocks: set[str] = set()
+    # Distinct compounds per block, which is what the read-fraction gate below
+    # actually wants. `extracted_by_table` counts RECORDS, and a table with
+    # three assay columns yields ~3 per row — so a block can score over 1.0
+    # while most of its rows were never read. Measured on this corpus:
+    # US11613531 TABLE-US-00001 scores 446/691 = 0.65 and is skipped as
+    # mostly-parsed, while covering 219 of its 691 rows (0.32).
+    cids_per_block: dict[str, set[str]] = {}
+    homogeneous_blocks: set[str] = set()
     if not isinstance(extracted_by_table, dict):
         records = list(extracted_by_table)
+        for _r in records:
+            if _r.cid:
+                cids_per_block.setdefault(_r.table_id, set()).add(_r.cid)
         extracted_by_table = Counter(r.table_id for r in records)
         by_id = {t.table_id: t for t in tables}
         for tid, d in usable_yield(tables, records).items():
@@ -386,7 +457,10 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
         # anti-deletion guard. Paying for a proposal that cannot win is waste,
         # and the leftover rows in a mostly-read table are usually blank or
         # malformed rather than a layout we failed to understand.
-        if got and got / max(block_rows, 1) > max_read_fraction:
+        # Rows read, not records produced — see `cids_per_block`. Falls back to
+        # the record count when a caller passed a bare tally and cannot say.
+        rows_read = len(cids_per_block.get(t.table_id, ())) or got
+        if got and rows_read / max(block_rows, 1) > max_read_fraction:
             seen_blocks.add(t.table_id)
             continue
 
@@ -423,6 +497,43 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
             headers=headers,
             column_kinds=kinds,
         ))
+    # Gated by NOTHING above — deliberately its own pass, and it does not
+    # consult `seen_blocks`.
+    #
+    # Every other check scores a block against what the parser managed to find
+    # in it, so a block can pass all of them while dropping a whole class of
+    # rows. US20240335431 TABLE-US-00001 scores `yield: 1.0` — 55 shaped cells,
+    # 55 records, 55 usable — and 24 further rows are simply absent from the
+    # denominator, because the rows whose id we could not read never became
+    # cells to count. Perfect marks on the half of the table we can see.
+    #
+    # A block may therefore raise this AND another gap: "I cannot read these
+    # ids" and "these values have no unit" are different failures and both are
+    # worth asking about.
+    for t in tables:
+        if t.table_id in homogeneous_blocks:
+            continue
+        odd = coherent_unread_ids(t)
+        if not odd:
+            continue
+        homogeneous_blocks.add(t.table_id)
+        heads = merge_header(t)
+        shapes = sorted({_id_shape(o) for o in odd})
+        gaps.append(Gap(
+            patent_id=patent_id, table_id=t.table_id, n_cols=t.n_cols,
+            n_data_rows=rows_per_block.get(t.table_id, len(t.body_rows)),
+            n_extracted=len(cids_per_block.get(t.table_id, ())),
+            fingerprint=layout_fingerprint(t, heads),
+            reason=(f"{len(odd)} rows carry an identifier we cannot read, and they "
+                    f"are all the same shape ({'/'.join(shapes[:2])}) — e.g. "
+                    f"{', '.join(odd[:4])}. The rest of the table parsed cleanly, "
+                    f"so this is a second identifier convention rather than "
+                    f"damaged rows"),
+            sample=_sample_of(t, heads), headers=heads,
+            expanded_sample=_sample_of(t, heads, 24, expand=True),
+            unparsed_examples=odd[:8],
+        ))
+
     # Attached HERE, once, and never in a `Gap(...)` call. It was a keyword on
     # one of three construction sites and absent from the other two, so the
     # model's `request_more_context("raw_source")` returned nothing for two

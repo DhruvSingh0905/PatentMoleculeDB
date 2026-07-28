@@ -410,3 +410,14 @@ def test_a_bin_range_carries_the_key_s_unit_not_the_column_s():
     key = parse_bin_key("Key: A=<100 nM; B=>100 nM-<500 nM; and C=>500 nM.")
     assert key["A"].unit == "nM"
     assert (key["B"].lo, key["B"].hi) == (100.0, 500.0)
+
+
+def test_a_hyphenated_sub_index_is_an_identifier():
+    """`48-1` is the first separated atropisomer of example 48, not a range."""
+    assert A._CID_PAT.fullmatch("48-1")
+    assert A._CID_PAT.fullmatch("323-2")
+    assert A.normalize_cid("48-1") == "48-1"
+    # Still an identifier, still two trailing letters, still not a measurement.
+    assert A._CID_PAT.fullmatch("100AA")
+    assert not A._CID_PAT.fullmatch("0.5-1.0")
+    assert not A._CID_PAT.fullmatch("100-200 nM")

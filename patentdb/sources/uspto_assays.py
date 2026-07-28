@@ -110,7 +110,12 @@ _CID_LABEL = re.compile(
 # matched none of the four and cost every one of them: measured against
 # BindingDB, which uses the patent's own labels, it was 131 of the 171 compounds
 # we were missing across the whole reference corpus.
-_CID_CORE = r"(?:[A-Za-z]{1,3}[-–]?)?\d{1,5}(?:[-–]?[a-zA-Z]{1,2})?"
+# The trailing `-N` is a SUB-INDEX, not a range: US20240335431 numbers the two
+# separated atropisomers of example 48 as `48-1` and `48-2`, US10376513 writes
+# `323-2`. Capped at two digits and only after a bare number, so a value column
+# of ranges (`0.5-1.0`, `100-200 nM`) cannot be mistaken for identifiers — the
+# decimal point and the unit both fall outside the pattern.
+_CID_CORE = r"(?:[A-Za-z]{1,3}[-–]?)?\d{1,5}(?:[-–]?[a-zA-Z]{1,2})?(?:[-–]\d{1,2})?"
 _CID_PAT = re.compile(rf"^\s*(?:{_CID_LABEL.pattern[2:]})?{_CID_CORE}\s*$", re.I)
 
 

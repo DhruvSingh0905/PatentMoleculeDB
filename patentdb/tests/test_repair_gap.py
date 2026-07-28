@@ -296,3 +296,58 @@ def test_every_gap_carries_the_raw_source_when_the_xml_is_available():
     for g in gaps:
         assert g.raw_source, f"{g.reason!r} produced a gap with no raw_source"
         assert "<colspec" in g.raw_source
+
+
+def test_the_read_fraction_gate_counts_rows_not_records():
+    """`got` was a RECORD count against a ROW count. A three-assay table
+    yields ~3 records per row, so it can score over 1.0 with most of its rows
+    unread. Measured live: US11613531 TABLE-US-00001 scored 446/691 = 0.65 and
+    was skipped as mostly-parsed while covering 219 of 691 rows (0.32).
+    """
+    from patentdb.repair.gap import find_gaps
+    from patentdb.sources.uspto_assays import AssayRecord
+    from patentdb.sources.uspto_xml import Cell, Table
+
+    hdr = [[Cell("Ex"), Cell("IC50 (nM)"), Cell("Ki (nM)"), Cell("EC50 (nM)")]]
+    body = [[Cell(str(i)), Cell("10"), Cell("20"), Cell("30")] for i in range(1, 41)]
+    t = Table(table_id="T1", n_cols=4, header_rows=hdr, body_rows=body)
+    # 10 rows read, three assays each = 30 records against 40 rows = 0.75,
+    # which the old gate read as "mostly parsed". Row coverage is 0.25.
+    recs = [AssayRecord(cid=str(i), assay_name=n, value_numeric=1.0, unit="nM",
+                        table_id="T1")
+            for i in range(1, 11) for n in ("IC50", "Ki", "EC50")]
+    assert find_gaps("USTEST", [t], recs), \
+        "a table with 25% of its rows read must not be skipped as mostly-parsed"
+
+
+def test_a_homogeneous_set_of_unreadable_ids_is_a_gap():
+    """24 of 80 rows dropped, all one shape — a convention, not a remainder.
+
+    The live instance was `48-1`, and `_CID_PAT` now reads that, so the fixture
+    uses a sub-index notation still unknown to it. That is the point of the
+    detector: it is not a list of the shapes we have met, it fires on ANY
+    coherent set the id pattern rejects, including the next one.
+    """
+    from patentdb.repair.gap import coherent_unread_ids
+    from patentdb.sources.uspto_xml import Cell, Table
+
+    hdr = [[Cell("Example"), Cell("IC50 (nM)")]]
+    body = ([[Cell(str(i)), Cell("10")] for i in range(1, 21)]
+            + [[Cell(f"{i}(1)"), Cell("20")] for i in range(21, 29)])
+    t = Table(table_id="T1", n_cols=2, header_rows=hdr, body_rows=body)
+    odd = coherent_unread_ids(t)
+    assert len(odd) == 8 and odd[0] == "21(1)"
+
+
+def test_scattered_junk_in_an_id_column_is_not_a_gap():
+    """The signal is homogeneity. Three unlike strays are the remainder the
+    read-fraction gate was built to ignore, and asking about them is the waste
+    it was built to prevent."""
+    from patentdb.repair.gap import coherent_unread_ids
+    from patentdb.sources.uspto_xml import Cell, Table
+
+    hdr = [[Cell("Example"), Cell("IC50 (nM)")]]
+    body = ([[Cell(str(i)), Cell("10")] for i in range(1, 21)]
+            + [[Cell(x), Cell("20")] for x in ("Vehicle", "(R132H)", "CDCl3")])
+    t = Table(table_id="T1", n_cols=2, header_rows=hdr, body_rows=body)
+    assert coherent_unread_ids(t) == []
