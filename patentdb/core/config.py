@@ -98,11 +98,20 @@ SUBSTITUENT_LLM_MAX_CHUNKS = int(os.environ.get("SUBSTITUENT_LLM_MAX_CHUNKS", "2
 # burst it is intended to replace. Disable with REPAIR=0.
 REPAIR_ENABLED = os.environ.get("REPAIR", "1") == "1"
 REPAIR_MAX_CALLS_PER_PATENT = int(os.environ.get("REPAIR_MAX_CALLS", "4"))
-# Let a VERIFIED parser patch write itself into the tree. Off by default: a
-# reader change is global, so the blast radius of a wrong one is every patent,
-# past and future. `parser_repair.verify_patch` must pass first either way —
-# this only decides whether the accepted patch is applied or handed back.
-PARSER_REPAIR_APPLY = os.environ.get("PARSER_REPAIR_APPLY", "0") == "1"
+# A verified parser patch writes itself into the tree. ON by default.
+#
+# It used to be off, so a human had to flip a switch before anything healed —
+# which is not self-healing, it is a queue with extra steps. The safety story is
+# reversibility, not permission: every patch, applied or declined, is journaled
+# with its full before/after source and its per-patent coverage delta, so any
+# state is recoverable with `parser_health --revert`. See repair/parser_repair.
+#
+# Set 0 for a dry run that journals the proposal without touching the tree.
+PARSER_REPAIR_APPLY = os.environ.get("PARSER_REPAIR_APPLY", "1") == "1"
+
+# Where the audit trail lives. Not in the package — it is produced, not needed
+# to run — but it IS the revert mechanism, so it is never cleared as a cache.
+PARSER_REPAIR_JOURNAL = OUTPUT_DIR / "parser_repair_journal.jsonl"
 
 # Cost — global budget across all patents
 COST_THRESHOLDS = [50, 100, 150, 200]

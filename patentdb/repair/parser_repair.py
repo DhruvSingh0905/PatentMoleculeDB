@@ -435,16 +435,29 @@ def propose_patch(defect: Defect, func_name: str, module: Path,
 
 def repair_reader(func_name: str = "_parse_row", *, apply: bool | None = None,
                   limit: int | None = None) -> dict:
-    """Find reader defects corpus-wide, buy one patch each, verify, optionally apply.
+    """Find reader defects corpus-wide, buy one patch each, verify, APPLY.
 
-    Returns a report. Writes to the working tree only when `apply` is true
-    (default: `PARSER_REPAIR_APPLY`, off), and only for a patch that passed
-    every check in `verify_patch`.
+    The loop acts on its own conclusion. It does not hand back a diff and wait
+    for someone to agree — a fix that needs a human to flip a switch is a queue,
+    not self-healing, and the defect it found is corrupting every patent while
+    the switch sits unflipped.
+
+    What replaces the permission gate is the record. Every proposal, applied or
+    declined, is journaled with its complete before/after source and the
+    per-patent coverage it moved, so `revert(id)` restores any earlier state
+    exactly and `apply_journaled(id)` can overrule a declined one. Nothing is
+    refused permanently and nothing changes without a trace.
+
+    `verify_patch` still runs, and a patch that fails it is not written. That is
+    the agent checking its own work, not a gate on the agent: it would be
+    reckless to install a reader change that fails the corpus it was measured
+    on. The verdict is journaled either way, because that check has already been
+    wrong once.
     """
     module = Path(__file__).resolve().parent.parent / "sources" / "uspto_xml.py"
     apply = config.PARSER_REPAIR_APPLY if apply is None else apply
     defects = corpus_defects(limit=limit)
-    report = {"defects": len(defects), "applied": 0, "rejected": 0, "results": []}
+    report = {"defects": len(defects), "applied": 0, "declined": 0, "results": []}
     if not defects:
         return report
 
@@ -453,28 +466,169 @@ def repair_reader(func_name: str = "_parse_row", *, apply: bool | None = None,
         proposal = propose_patch(d, func_name, module)
         if not proposal:
             report["results"].append({"signature": d.signature, "ok": False,
-                                      "why": "no proposal"})
+                                      "why": "model returned no proposal"})
             continue
-        patched = module.read_text().replace(proposal["_current"],
-                                             proposal["function_source"].rstrip())
+        before = proposal["_current"]
+        after = proposal["function_source"].rstrip()
+        patched = module.read_text().replace(before, after)
         if patched == module.read_text():
             report["results"].append({"signature": d.signature, "ok": False,
                                       "why": "patch did not apply cleanly"})
-            report["rejected"] += 1
+            report["declined"] += 1
             continue
+
         verdict = verify_patch(module, patched, baseline=base)
         verdict.update(signature=d.signature, blast_radius=d.blast_radius,
                        diagnosis=proposal.get("diagnosis", ""))
+
+        # Coverage delta per patent — the thing worth keeping. A total can hide
+        # a patent going to zero, which is exactly what happened the first time
+        # this ran.
+        after_counts = verdict.get("per_patent", {})
+        moved = {k: [base[k], after_counts.get(k, 0)]
+                 for k in base if k != "_clean"
+                 and after_counts.get(k, 0) != base[k]}
+
+        will_apply = bool(verdict.get("ok")) and apply
+        entry_id = journal_append({
+            "action": "patch", "module": str(module), "function": func_name,
+            "signature": d.signature, "blast_radius": d.blast_radius,
+            "diagnosis": proposal.get("diagnosis", ""),
+            "before_source": before, "after_source": after,
+            "verified": bool(verdict.get("ok")), "why": verdict.get("why"),
+            "tests_pass": verdict.get("tests_pass"),
+            "discrepant_blocks_after": verdict.get("discrepant_blocks"),
+            "total_usable_before": sum(v for k, v in base.items() if k != "_clean"),
+            "total_usable_after": verdict.get("total_usable"),
+            "coverage_moved": moved,
+            "applied": will_apply,
+        })
+        verdict["journal_id"] = entry_id
+        verdict["coverage_moved"] = moved
         report["results"].append(verdict)
+
         if not verdict.get("ok"):
-            report["rejected"] += 1
-            logger.warning("parser_repair: patch rejected — %s", verdict.get("why"))
+            report["declined"] += 1
+            logger.warning("parser_repair: %s declined — %s (journaled; "
+                           "`parser_health --force %s` applies it anyway)",
+                           entry_id, verdict.get("why"), entry_id.split("-")[0])
             continue
-        if apply:
+        if will_apply:
             module.write_text(patched)
             report["applied"] += 1
-            logger.info("parser_repair: APPLIED patch for %s (%s)",
-                        d.signature, d.blast_radius)
+            logger.info("parser_repair: %s APPLIED for %s (%s) — revert with "
+                        "`parser_health --revert %s`",
+                        entry_id, d.signature, d.blast_radius, entry_id.split("-")[0])
         else:
-            verdict["patch"] = proposal["function_source"]
+            verdict["patch"] = after
     return report
+
+
+# ── the journal ───────────────────────────────────────────────────
+#
+# Authority without an audit trail is recklessness; an audit trail without
+# authority is a queue. This is the second half of letting the loop patch its
+# own reader: every proposal, applied or declined, is appended here with the
+# COMPLETE before and after source and the per-patent coverage it moved.
+#
+# Revert is therefore self-contained — it does not need git, a clean tree, or
+# the patch to still be the newest thing in the file. It restores the exact
+# text that was there before, from the record written when it changed.
+#
+# Declined patches are journaled too, and that is not bookkeeping. The
+# acceptance test has already been wrong once: it rejected a patch equivalent to
+# the correct fix because the baseline it compared against had been measured
+# with the broken reader. A rejection that leaves no trace is a decision nobody
+# can review, so `--force` can apply any journaled proposal after the fact.
+
+def _journal_path() -> Path:
+    return config.PARSER_REPAIR_JOURNAL
+
+
+def journal_append(entry: dict) -> str:
+    """Record one proposal. Returns its id."""
+    import hashlib
+    import json
+
+    path = _journal_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    n = len(journal_read()) + 1
+    entry = dict(entry)
+    entry["id"] = f"{n:04d}-" + hashlib.sha256(
+        (entry.get("after_source", "") + entry.get("signature", "")).encode()
+    ).hexdigest()[:8]
+    with path.open("a") as fh:
+        fh.write(json.dumps(entry, default=str) + "\n")
+    return entry["id"]
+
+
+def journal_read() -> list[dict]:
+    import json
+
+    path = _journal_path()
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def journal_find(entry_id: str) -> dict | None:
+    """Match on the full id or its numeric prefix — `0003` is enough to type."""
+    for e in journal_read():
+        if e.get("id") == entry_id or e.get("id", "").startswith(f"{entry_id}-"):
+            return e
+    return None
+
+
+def revert(entry_id: str) -> dict:
+    """Put back exactly what was there before that entry was applied."""
+    entry = journal_find(entry_id)
+    if entry is None:
+        return {"ok": False, "why": f"no journal entry {entry_id!r}"}
+    if not entry.get("applied"):
+        return {"ok": False, "why": f"{entry['id']} was never applied"}
+    module = Path(entry["module"])
+    source = module.read_text()
+    if entry["after_source"] not in source:
+        return {"ok": False, "why": (f"{module.name} no longer contains the text "
+                                     f"{entry['id']} wrote — it has been edited "
+                                     f"since; revert by hand")}
+    module.write_text(source.replace(entry["after_source"], entry["before_source"], 1))
+    journal_append({
+        "action": "revert", "reverted": entry["id"], "module": str(module),
+        "signature": entry.get("signature", ""),
+        "before_source": entry["after_source"],
+        "after_source": entry["before_source"],
+        "applied": True,
+    })
+    return {"ok": True, "reverted": entry["id"], "module": str(module)}
+
+
+def apply_journaled(entry_id: str) -> dict:
+    """Apply a proposal the acceptance test declined. Nothing is refused forever."""
+    entry = journal_find(entry_id)
+    if entry is None:
+        return {"ok": False, "why": f"no journal entry {entry_id!r}"}
+    module = Path(entry["module"])
+    source = module.read_text()
+    if entry["before_source"] not in source:
+        return {"ok": False, "why": f"{module.name} no longer matches the "
+                                    f"pre-image {entry['id']} was written against"}
+    module.write_text(source.replace(entry["before_source"], entry["after_source"], 1))
+    journal_append({
+        "action": "force-apply", "forced": entry["id"], "module": str(module),
+        "signature": entry.get("signature", ""),
+        "before_source": entry["before_source"],
+        "after_source": entry["after_source"],
+        "verdict_when_proposed": entry.get("why"),
+        "applied": True,
+    })
+    return {"ok": True, "applied": entry["id"]}

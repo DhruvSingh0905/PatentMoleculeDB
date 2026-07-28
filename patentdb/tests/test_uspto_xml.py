@@ -289,3 +289,56 @@ def test_a_reader_defect_reduces_to_one_repro_for_the_whole_corpus():
 
     # A healthy reader has nothing to reduce.
     assert _reduce(row) == row
+
+
+def test_a_patch_can_be_reverted_from_its_journal_entry_alone(tmp_path, monkeypatch):
+    """Authority to heal is only safe if every state is recoverable.
+
+    The loop applies reader patches without asking, so the record IS the safety
+    mechanism. Revert must work from the journal alone — no git, no clean tree,
+    no requirement that the patch is still the newest thing in the file.
+    """
+    from patentdb.core import config
+    from patentdb.repair import parser_repair as P
+
+    monkeypatch.setattr(config, "PARSER_REPAIR_JOURNAL", tmp_path / "j.jsonl")
+    module = tmp_path / "reader.py"
+    module.write_text("def read():\n    return 'old'\n")
+
+    entry_id = P.journal_append({
+        "action": "patch", "module": str(module), "signature": "eE",
+        "before_source": "    return 'old'", "after_source": "    return 'new'",
+        "applied": True, "coverage_moved": {"US1": [6, 446]},
+    })
+    module.write_text(module.read_text().replace("    return 'old'",
+                                                 "    return 'new'"))
+    assert "new" in module.read_text()
+
+    # Revert by the short numeric prefix — what a human actually types.
+    assert P.revert("0001")["ok"], "revert must accept the id prefix"
+    assert module.read_text() == "def read():\n    return 'old'\n"
+
+    # The revert is itself journaled, so history is append-only and auditable.
+    hist = P.journal_read()
+    assert len(hist) == 2 and hist[1]["action"] == "revert"
+    assert hist[1]["reverted"] == entry_id
+
+    # And a declined patch is never refused forever.
+    assert P.apply_journaled("0001")["ok"]
+    assert "new" in module.read_text()
+
+
+def test_revert_refuses_when_the_file_has_moved_on(tmp_path, monkeypatch):
+    """Silently mangling a hand-edited file would be worse than refusing."""
+    from patentdb.core import config
+    from patentdb.repair import parser_repair as P
+
+    monkeypatch.setattr(config, "PARSER_REPAIR_JOURNAL", tmp_path / "j.jsonl")
+    module = tmp_path / "reader.py"
+    module.write_text("def read():\n    return 'new'\n")
+    P.journal_append({"action": "patch", "module": str(module), "signature": "x",
+                      "before_source": "    return 'old'",
+                      "after_source": "    return 'new'", "applied": True})
+    module.write_text("def read():\n    return 'hand edited'\n")
+    r = P.revert("0001")
+    assert not r["ok"] and "edited" in r["why"]
