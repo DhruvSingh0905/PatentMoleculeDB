@@ -234,3 +234,68 @@ def test_a_proposed_name_may_regroup_the_patents_words_but_not_add_new_ones():
         "cid": 0, "assays": [{"index": 1, "name": "CYP3A4 % inhibition"}]})
     with pytest.raises(Rejected, match="cyp3a4"):
         validate(invented, t, baseline_rows=0)
+
+
+def _tbl(n_cols, header, body, table_id="T"):
+    from patentdb.sources.uspto_xml import Cell, Table
+    mk = lambda rows: [[c if isinstance(c, Cell) else Cell(str(c)) for c in r] for r in rows]
+    return Table(table_id=table_id, n_cols=n_cols,
+                 header_rows=mk(header), body_rows=mk(body))
+
+
+def test_a_compound_named_rather_than_numbered_is_still_an_identifier():
+    """US9233167 identifies compounds by NAME, and we rejected the right answer.
+
+    Haiku returned a correct column_map for TABLE-US-00013 — `cid: 0` over the
+    COMPOUND column, EC50 and % max effect columns named and united. Validation
+    scored it 0/23 held-out rows and escalated with "it describes the sample,
+    not the layout", blaming the model.
+
+    Nothing was wrong with the model. `_CID_PAT` matches `12`, `I-2300`, `Z1` —
+    and rejects `α-6-mPEG1-O-Morphine`, so every row counted as a malformed id.
+    A patent that names its compounds instead of numbering them could never be
+    repaired, and the loop would keep paying to rediscover that.
+    """
+    from patentdb.repair.rules import COLUMN_MAP, Rule, validate
+
+    t = _tbl(3, [["COMPOUND", "EC50, nM", "% max effect"]],
+             [[f"α-6-mPEG{i}-O-Morphine", f"{80 + i}.0", f"{90 + i}"]
+              for i in range(1, 14)])
+    rule = Rule(fingerprint="f", kind=COLUMN_MAP, payload={
+        "cid": 0, "assays": [{"index": 1, "name": "EC50", "unit": "nM"}]})
+    ev = validate(rule, t, baseline_rows=0)
+    assert ev["coverage"] > 0.9, ev
+    assert ev.get("id_style") == "name"
+
+
+def test_a_prose_column_is_not_accepted_as_an_identifier():
+    """The reason `_CID_PAT` was strict: any text column would otherwise do.
+
+    An identifier is distinct per row and is not a measurement or a sentence.
+    NMR text repeats structure, runs long, and is exactly what must never be
+    keyed on.
+    """
+    from patentdb.repair.rules import COLUMN_MAP, Rejected, Rule, validate
+
+    nmr = ("1H NMR (400 MHz, DMSO-d6) delta 7.35 (d, J = 8.4 Hz, 2H), 7.10 "
+           "(m, 3H), 3.81 (s, 3H), 2.44 (s, 3H), 1.29 (t, 6H)")
+    t = _tbl(3, [["NMR", "EC50, nM", "n"]],
+             [[nmr, f"{80 + i}.0", "3"] for i in range(13)])
+    rule = Rule(fingerprint="f", kind=COLUMN_MAP, payload={
+        "cid": 0, "assays": [{"index": 1, "name": "EC50", "unit": "nM"}]})
+    with pytest.raises(Rejected):
+        validate(rule, t, baseline_rows=0)
+
+
+def test_an_unusable_id_column_says_WHY_not_that_the_model_guessed():
+    """The escalation queue exists to name a missing capability, not to scold."""
+    from patentdb.repair.rules import COLUMN_MAP, Rejected, Rule, validate
+
+    t = _tbl(3, [["Value", "EC50, nM", "n"]],
+             [["12.5", f"{80 + i}.0", "3"] for i in range(13)])
+    rule = Rule(fingerprint="f", kind=COLUMN_MAP, payload={
+        "cid": 0, "assays": [{"index": 1, "name": "EC50", "unit": "nM"}]})
+    with pytest.raises(Rejected) as e:
+        validate(rule, t, baseline_rows=0)
+    msg = str(e.value)
+    assert "id" in msg.lower() and "12.5" in msg, msg

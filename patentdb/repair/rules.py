@@ -60,7 +60,7 @@ _LIBRARY = config.PACKAGE_ROOT / "data" / "layout_rules.json"
 # frozen at a stale `escalate` through every subsequent improvement. `lib.get()`
 # short-circuits before the model is called, so a persisted escalation pins the
 # layout to the capability we had the day it was written.
-SYNTH_EPOCH = "v16-grounded-names"
+SYNTH_EPOCH = "v17-name-identifiers"
 
 # Regex constructs that make catastrophic backtracking possible. A synthesized
 # pattern runs over thousands of rows, so a quadratic blowup is a hang, and the
@@ -240,6 +240,43 @@ ADVERSARIAL_ROWS = [
     "4 | RT 1.24 min | purity 98.7%",
     "5 | LCMS: 523.2 (M + H), method QC-ACN-AA-XB",
 ]
+
+
+def _id_style(values: list[str]) -> str:
+    """`code`, `name`, or `""` — how (or whether) this column identifies rows.
+
+    `_CID_PAT` matches `12`, `I-2300`, `Z1`, `5a` and is deliberately strict,
+    because without a shape test any text column could be claimed as the id and
+    a molecular-weight table would key on nothing. The cost of that strictness
+    was invisible until US9233167: it names its compounds
+    (`α-6-mPEG1-O-Morphine`) rather than numbering them, so a CORRECT
+    column_map scored 0/23 rows and escalated as "it describes the sample, not
+    the layout" — blaming the model for a limit in our own gate. A patent that
+    names its compounds could never be repaired.
+
+    A name is a perfectly good identifier; it just is not a code. What actually
+    matters is that the column identifies: distinct per row, not a measurement,
+    not prose. Those are checkable, so check them instead of the shape.
+    """
+    from ..sources.uspto_assays import _CID_PAT, _VALUE_PAT
+
+    vals = [v.strip() for v in values if v and v.strip()]
+    if len(vals) < 3:
+        return ""
+    if sum(bool(_CID_PAT.match(v)) for v in vals) >= 0.6 * len(vals):
+        return "code"
+    # An identifier is UNIQUE. NMR text repeats its structure row to row and is
+    # the thing that must never be keyed on.
+    if len({v.lower() for v in vals}) < 0.8 * len(vals):
+        return ""
+    # ...is not a measurement (a column of numbers is data, not a key)...
+    if any(_VALUE_PAT.match(v) for v in vals):
+        return ""
+    # ...carries letters, and is short enough to be a name rather than a
+    # sentence. Chemical names run long; NMR blocks and prose run longer.
+    if not all(re.search(r"[A-Za-z]", v) and 2 <= len(v) <= 90 for v in vals):
+        return ""
+    return "name"
 
 
 def _validate_bin_key(rule: Rule, table) -> dict:
@@ -530,13 +567,24 @@ def validate(rule: Rule, table, *, min_yield: float = 0.5,
                 raise Rejected(
                     f"columns {unlabelled} have no header and no assay language in "
                     f"the caption or legend — cannot confirm they are measurements")
+        # Decide ONCE what kind of identifier this column holds, from the whole
+        # column, rather than testing each cell against one hard-coded shape.
+        style = _id_style([r[cid_i].text for r in rows if len(r) > cid_i])
+        if not style:
+            sample = next((r[cid_i].text.strip() for r in rows
+                           if len(r) > cid_i and r[cid_i].text.strip()), "")
+            raise Rejected(
+                f"column {cid_i} cannot identify rows — its values are not "
+                f"distinct non-measurement labels (e.g. {sample[:60]!r}). Name "
+                f"the column that holds the compound id, or escalate: this "
+                f"layout may identify compounds in a way we cannot key on")
         for r in rows:
             if len(r) <= cid_i:
                 continue
             cid = r[cid_i].text.strip()
             if not cid:
                 continue
-            if not _CID_PAT.match(cid):
+            if style == "code" and not _CID_PAT.match(cid):
                 bad_cid += 1
                 continue
             got = False
@@ -601,6 +649,7 @@ def validate(rule: Rule, table, *, min_yield: float = 0.5,
             f"{baseline_rows} — a repair must increase coverage, not reduce it")
 
     return {
+        "id_style": locals().get("style", "code"),
         "rows_total": len(rows), "rows_matched": hits,
         "coverage": round(coverage, 3),
         "rejected_ids": bad_cid, "rejected_values": bad_val,
