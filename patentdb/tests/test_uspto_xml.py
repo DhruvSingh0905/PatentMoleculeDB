@@ -342,3 +342,31 @@ def test_revert_refuses_when_the_file_has_moved_on(tmp_path, monkeypatch):
     module.write_text("def read():\n    return 'hand edited'\n")
     r = P.revert("0001")
     assert not r["ok"] and "edited" in r["why"]
+
+
+def test_tgroups_of_different_widths_align_by_declared_colwidth():
+    """US10376513: a 3-column thead over a 4-column tbody. The source says how.
+
+    49pt = 14pt + 35pt, so "Example #" covers body columns 1 and 2. Read as a
+    uniform shift instead, the id column lands on the atropisomer annotation.
+    """
+    from patentdb.sources.uspto_xml import _cols_by_width
+    assert _cols_by_width([42.0, 49.0, 126.0], [42.0, 14.0, 35.0, 126.0]) == [0, 1, 3]
+    assert _cols_by_width([28.0, 49.0, 140.0], [28.0, 14.0, 35.0, 140.0]) == [0, 1, 3]
+    # Same count, same widths: identity, and no reason to rewrite anything.
+    assert _cols_by_width([10.0, 20.0], [10.0, 20.0]) == [0, 1]
+    # Arithmetic that does not close falls back to the offset search.
+    assert _cols_by_width([10.0, 20.0], [10.0, 5.0, 20.0]) is None
+    assert _cols_by_width([], [10.0]) is None
+
+
+def test_a_greek_letter_in_a_target_name_is_not_an_nmr_shift():
+    """"PI3Kδ SPA IC50 (nM)*" is a column name; `δ 8.11 (s, 1H)` is prose.
+
+    Treating the bare character as prose cost the header of a 373-row table:
+    364 records went out with no assay name, so none of them was usable.
+    """
+    from patentdb.sources.uspto_xml import _PROSE_CELL
+    assert not _PROSE_CELL.search("PI3Kδ SPA IC50 (nM)*")
+    assert not _PROSE_CELL.search("PKCδ IC50")
+    assert _PROSE_CELL.search("δ 8.11 (s, 1H), 7.48 (s, 1H)")

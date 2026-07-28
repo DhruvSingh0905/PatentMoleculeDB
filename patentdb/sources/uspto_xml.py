@@ -95,6 +95,14 @@ class Table:
     n_cols: int
     header_rows: list[list[Cell]] = field(default_factory=list)
     body_rows: list[list[Cell]] = field(default_factory=list)
+    # `colwidth` per colspec, in points, in declared order. A block's tgroups
+    # routinely disagree on column count — a 3-column header over a 4-column
+    # body — and the widths are how the source states which body columns each
+    # header column covers. Measured on this corpus: every one of 3,286 tgroups
+    # declares a width for every colspec, and in all 288 blocks whose tgroups
+    # disagree on count the totals match exactly. So the mapping is arithmetic,
+    # never a guess. Empty only if a document omits colspec entirely.
+    col_widths: list[float] = field(default_factory=list)
     # Text immediately preceding the table. Assay names usually live here or in
     # the header, so the caller needs it to label columns.
     caption: str = ""
@@ -322,6 +330,10 @@ def parse_tables(xml: str) -> list[Table]:
             attrs, body = tg.group(1), tg.group(2)
             m = re.search(r'cols="(\d+)"', attrs)
             n_cols = int(m.group(1)) if m else 1
+            col_widths = [float(w) for w in
+                          re.findall(r'<colspec\b[^>]*colwidth="([0-9.]+)pt"', body)]
+            if len(col_widths) != n_cols:
+                col_widths = []
             head = re.search(r"<thead\b[^>]*>(.*?)</thead>", body, re.S)
             tbody = re.search(r"<tbody\b[^>]*>(.*?)</tbody>", body, re.S)
             header_rows = [
@@ -333,7 +345,7 @@ def parse_tables(xml: str) -> list[Table]:
                 re.findall(r"<row>(.*?)</row>", tbody.group(1) if tbody else body, re.S)
             ]
             out.append(Table(
-                table_id=table_id, n_cols=n_cols,
+                table_id=table_id, n_cols=n_cols, col_widths=col_widths,
                 header_rows=header_rows, body_rows=body_rows,
                 caption=caption, preceding=preceding, following=following,
             ))
@@ -346,7 +358,11 @@ def parse_tables(xml: str) -> list[Table]:
 # enough that a naive "first header we see" picks one up.
 _PROSE_CELL = re.compile(
     r"\(m,|\(d,|\(dd,|\(s,|\(t,|\bJ\s*=|\bppm\b|\bMS\s*:|\bM\s*\+\s*H|"
-    r"\bRt\b|\bHPLC\b|\bChiral(?:cel|pak)\b|δ", re.I)
+    r"\bRt\b|\bHPLC\b|\bChiral(?:cel|pak)\b|δ\s*\d", re.I)
+# `δ` alone marked the header "PI3Kδ SPA IC50 (nM)*" as an NMR shift list, so
+# the column lost its name and 364 records went out unnamed and unusable. A
+# chemical shift always cites a number (`δ 8.11 (s, 1H)`); a Greek letter in a
+# target name never does, and targets are full of them — PI3Kδ, PKCδ, PI3Kγ.
 
 
 # A compound-identifier cell: "1", "12a", "A-7", "Ex. 203". Deliberately tight —
@@ -395,6 +411,43 @@ def _is_namelike(cells: list["Cell"], *, declared: bool = False) -> bool:
                     return False
     # All-numeric rows are data, not headers.
     return not all(re.fullmatch(r"[\d.,;:<>=~\s-]+", t) for t in texts)
+
+
+def _cols_by_width(src_widths: list[float], dst_widths: list[float]) -> list[int] | None:
+    """Which destination column does each source column begin at?
+
+    A block's header tgroup and its data tgroup often declare different column
+    counts, and the source says outright how they line up — in `colwidth`.
+    US10376513 TABLE-US-00020 heads a 4-column body with a 3-column thead:
+
+        thead  cols=3   offset 42pt |  1 = 49pt        | 2 = 126pt
+        tbody  cols=4   offset 42pt |  1 = 14pt  2 = 35pt | 3 = 126pt
+
+    49 = 14 + 35, so "Example #" covers body columns 1 AND 2 — the example
+    number and its atropisomer annotation are one field, not two, and there is
+    no unnamed column to reason about. Read as a uniform shift instead, the id
+    column lands on "(1st peak)" and the table yields nothing; all 348 of its
+    reference compounds were lost that way.
+
+    Returns None whenever the arithmetic does not close, so a document with
+    missing or inconsistent colspecs falls back to the offset search.
+    """
+    if not src_widths or not dst_widths:
+        return None
+    if abs(sum(src_widths) - sum(dst_widths)) > 1.0:
+        return None
+    edges, x = [], 0.0
+    for w in dst_widths:
+        edges.append(x)
+        x += w
+    out, x = [], 0.0
+    for w in src_widths:
+        j = min(range(len(edges)), key=lambda k: abs(edges[k] - x))
+        if abs(edges[j] - x) > 1.0:
+            return None
+        out.append(j)
+        x += w
+    return out
 
 
 def assemble_block(tables: list["Table"], table_id: str) -> "Table | None":
@@ -478,7 +531,15 @@ def assemble_block(tables: list["Table"], table_id: str) -> "Table | None":
     # continuation rows carrying the units — inside a 5-column block. Row width
     # is not column position, and `_choose_offsets` already aligns partial
     # header rows against the data; feeding it fewer rows is what loses columns.
+    # The grid every harvested header row must be expressed in.
+    dst_widths = next((t.col_widths for t in kin
+                       if t.n_cols == width and t.col_widths), [])
     for t in same:
+        # A sibling declaring a different column count is not misaligned — it is
+        # stated in a different grid. Translate it before the offset search sees
+        # it, rather than letting the search guess a shift.
+        remap = (_cols_by_width(t.col_widths, dst_widths)
+                 if t.n_cols != width else None)
         rows = [(r, True) for r in t.header_rows]
         if id(t) not in data_ids:
             # a header fragment's "body" is header — but only by inference, so
@@ -487,6 +548,12 @@ def assemble_block(tables: list["Table"], table_id: str) -> "Table | None":
         for r, declared in rows:
             if not _is_namelike(r, declared=declared):
                 continue
+            if remap and len(r) == len(remap):
+                r = [Cell(c.text,
+                          (remap[i + 1] - remap[i]) if i + 1 < len(remap)
+                          else max(1, width - remap[i]),
+                          remap[i])
+                     for i, c in enumerate(r)]
             k = _row_key(r)
             if k not in seen_hdr:
                 seen_hdr.add(k)
