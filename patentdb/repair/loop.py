@@ -21,6 +21,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from ..core import config
 from ..sources.uspto_xml import (
     Table, assemble_blocks, parse_fidelity, parse_tables,
 )
@@ -43,6 +44,8 @@ class RepairReport:
     rejected: int = 0
     escalated: int = 0
     rows_recovered: int = 0
+    # Proposals the suspended gate objected to and we took anyway.
+    adopted_over_objection: int = 0
     escalations: list[dict] = field(default_factory=list)
     rejections: list[dict] = field(default_factory=list)
 
@@ -50,7 +53,9 @@ class RepairReport:
         return (f"{self.patent_id}: {self.gaps_found} gaps "
                 f"({self.already_known} known) → {self.proposed} asked, "
                 f"{self.adopted} adopted, {self.rejected} rejected, "
-                f"{self.escalated} escalated, +{self.rows_recovered} rows")
+                f"{self.escalated} escalated, "
+                f"{self.adopted_over_objection} over-objection, "
+                f"+{self.rows_recovered} rows")
 
 
 # Regex syntax, removed to leave the literal words a pattern is really looking
@@ -342,22 +347,42 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
 
             table = by_id.get(gap.table_id)
             if rule.kind in (COLUMN_MAP, ROW_REGEX, VALUE_PATTERN, BIN_KEY) and table is not None:
+                # The gate is SUSPENDED by default. `validate()` still runs and
+                # its verdict is still recorded — it is evidence, not authority.
+                #
+                # No fixed validator anticipates the layouts patents actually
+                # use, and this one has been wrong at least as often as right:
+                # 0/23 on a correct column_map because `_CID_PAT` had never seen
+                # a chemical-name id; a 49% floor on a rule whose real problem
+                # was a regex in the reader; an anti-deletion baseline measured
+                # with a broken parser. Every one of those cost records and
+                # named the input as the fault.
+                #
+                # So adoption is made REVERSIBLE rather than prevented: the
+                # proposal is journaled with the coverage it moves, which is
+                # observable and revocable. A veto is neither.
                 try:
                     rule.validated_on = validate(
                         rule, table, baseline_rows=per_table.get(gap.table_id, 0))
                 except Rejected as e:
-                    # A failed proposal becomes a visible escalation, not a
-                    # silent drop — the reason is what a human needs to see.
-                    report.rejected += 1
                     report.rejections.append({
                         "fingerprint": gap.fingerprint, "patent": patent_id,
                         "table": gap.table_id, "proposed": rule.kind,
                         "why_rejected": str(e), "sample": gap.sample[:400],
+                        "enforced": config.RULE_GATES_ENFORCE,
                     })
-                    rule = Rule(fingerprint=gap.fingerprint, kind=ESCALATE,
-                                payload={"capability": "rejected proposal",
-                                         "note": str(e)},
-                                source="llm", model=rule.model)
+                    if config.RULE_GATES_ENFORCE:
+                        report.rejected += 1
+                        rule = Rule(fingerprint=gap.fingerprint, kind=ESCALATE,
+                                    payload={"capability": "rejected proposal",
+                                             "note": str(e)},
+                                    source="llm", model=rule.model)
+                    else:
+                        report.adopted_over_objection += 1
+                        rule.validated_on = {"gate": "suspended",
+                                             "objection": str(e)}
+                        logger.info("repair: %s adopted over objection — %s",
+                                    gap.fingerprint, str(e)[:140])
             lib.add(rule)
 
         if rule.kind == ESCALATE:
@@ -386,6 +411,7 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
             report.rows_recovered += len(got)
             recovered.extend(got)
             lib.record_use(gap.fingerprint, len(got))
+            _journal_rule(patent_id, gap, rule, got)
         else:
             # A rule that passed validation and then produced nothing used to
             # vanish here: not adopted, not rejected, not escalated, no trace.
@@ -408,3 +434,73 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
     if not dry_run:
         lib.save()
     return recovered, report
+
+
+def _journal_rule(patent_id: str, gap, rule: Rule, produced: list) -> None:
+    """Record what a rule actually did, so a bad one can be found and revoked.
+
+    This is what replaces the veto. A gate says "no" using assumptions that have
+    been wrong repeatedly; a record says "here is exactly what changed", which is
+    checkable after the fact and undoable. `revoke_rule()` drops the rule from
+    the library and the next run re-asks.
+
+    Usable-vs-total matters more than the count: a rule that adds 500 records of
+    which 0 are usable has produced nothing but noise, and that is visible here
+    without anyone having to predict it in advance.
+    """
+    import json
+    from collections import Counter
+
+    usable = sum(1 for r in produced if r.is_usable)
+    entry = {
+        "patent": patent_id, "table": gap.table_id,
+        "fingerprint": gap.fingerprint, "kind": rule.kind,
+        "records": len(produced), "usable": usable,
+        "assay_names": [n for n, _ in Counter(
+            r.assay_name for r in produced if r.assay_name).most_common(6)],
+        "sample_values": [
+            {"cid": r.cid, "assay": r.assay_name, "value": r.value_numeric,
+             "lo": r.range_lo, "hi": r.range_hi, "unit": r.unit}
+            for r in produced[:3]],
+        "gate": (rule.validated_on or {}).get("gate", "passed"),
+        "objection": (rule.validated_on or {}).get("objection"),
+        "payload": rule.payload,
+    }
+    try:
+        config.RULE_JOURNAL.parent.mkdir(parents=True, exist_ok=True)
+        with config.RULE_JOURNAL.open("a") as fh:
+            fh.write(json.dumps(entry, default=str) + "\n")
+    except OSError as e:                       # journalling must never break a run
+        logger.warning("repair: could not journal rule use: %r", e)
+
+
+def rule_journal() -> list[dict]:
+    import json
+
+    path = config.RULE_JOURNAL
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text().splitlines():
+        if line.strip():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+    return out
+
+
+def revoke_rule(fingerprint: str, *, library: RuleLibrary | None = None) -> dict:
+    """Drop a rule from the library. The next run re-asks about that layout.
+
+    The counterpart to a suspended gate: nothing is prevented, everything is
+    undoable. Kept deliberately blunt — deleting the answer is enough, because
+    the loop rebuilds it from the question.
+    """
+    lib = library or RuleLibrary()
+    rule = lib._rules.pop(fingerprint, None)
+    if rule is None:
+        return {"ok": False, "why": f"no rule for fingerprint {fingerprint!r}"}
+    lib.save()
+    return {"ok": True, "revoked": fingerprint, "kind": rule.kind,
+            "rows_yielded": rule.rows_yielded}

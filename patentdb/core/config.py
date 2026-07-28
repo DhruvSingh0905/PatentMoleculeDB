@@ -113,6 +113,24 @@ PARSER_REPAIR_APPLY = os.environ.get("PARSER_REPAIR_APPLY", "1") == "1"
 # to run — but it IS the revert mechanism, so it is never cleared as a cache.
 PARSER_REPAIR_JOURNAL = OUTPUT_DIR / "parser_repair_journal.jsonl"
 
+# Does `rules.validate()` VETO a proposal, or merely describe it?
+#
+# Suspended by default. No fixed validator can anticipate the layouts patents
+# actually use, and this one has been wrong at least as often as it has been
+# right: it scored a correct column_map 0/23 because `_CID_PAT` did not know
+# chemical-name ids, rejected a parser patch identical to the correct fix on a
+# baseline measured with the broken reader, and floored a working rule at 49%.
+# Each of those cost real records and reported the input as the problem.
+#
+# The verdict still RUNS and is still recorded — it is useful evidence, just not
+# authority. Adoption is instead made reversible: every rule is journaled with
+# the coverage it moved, so a bad one is visible and revocable rather than
+# prevented. Same trade the parser-repair tier already makes.
+#
+# Set 1 to restore vetoes.
+RULE_GATES_ENFORCE = os.environ.get("RULE_GATES_ENFORCE", "0") == "1"
+RULE_JOURNAL = OUTPUT_DIR / "rule_adoption_journal.jsonl"
+
 # Cost — global budget across all patents
 COST_THRESHOLDS = [50, 100, 150, 200]
 COST_CEILING = 200

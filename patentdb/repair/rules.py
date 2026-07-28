@@ -60,7 +60,7 @@ _LIBRARY = config.PACKAGE_ROOT / "data" / "layout_rules.json"
 # frozen at a stale `escalate` through every subsequent improvement. `lib.get()`
 # short-circuits before the model is called, so a persisted escalation pins the
 # layout to the capability we had the day it was written.
-SYNTH_EPOCH = "v17-name-identifiers"
+SYNTH_EPOCH = "v18-gates-suspended"
 
 # Regex constructs that make catastrophic backtracking possible. A synthesized
 # pattern runs over thousands of rows, so a quadratic blowup is a hang, and the
@@ -643,6 +643,13 @@ def validate(rule: Rule, table, *, min_yield: float = 0.5,
     # analogue is a rule that resolves a gap by quietly parsing FEWER rows than
     # the parser already manages. A repair must add coverage, not merely stop
     # complaining, so it has to beat the baseline it claims to fix.
+    # UNIT MISMATCH, left in place and now inert because the gate is suspended.
+    # `hits` counts ROWS the rule fired on; `baseline_rows` is passed as the
+    # RECORD count for the table (`Counter(r.table_id for r in baseline)` in
+    # loop.py). A table with three assay columns yields ~3 records per row, so
+    # baseline_rows is ~3x hits and this rejects almost any correct rule on a
+    # multi-assay table. It accounted for most of the 630 records the suspended
+    # gate objected to, 560 of them usable. Fix the units before re-enforcing.
     if baseline_rows and hits <= baseline_rows:
         raise Rejected(
             f"rule yields {hits} rows but the existing parser already gets "
