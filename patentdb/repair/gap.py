@@ -260,7 +260,6 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
                 expanded_sample=_sample_of(t, hdrs, 24, expand=True),
                 column_kinds=[c.kind for c in build_columns(t)],
                 legend_candidates=legends,
-                raw_source=raw_block(_source_xml or '', tid),
             ))
             seen_blocks.add(tid)
     for t in tables:
@@ -358,7 +357,6 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
                     sample=_sample_of(t, headers), headers=headers,
                     expanded_sample=_sample_of(t, headers, 24, expand=True),
                     column_kinds=kinds, unparsed_examples=unparsed,
-                    raw_source=raw_block(_source_xml or "", t.table_id),
                 ))
                 seen_blocks.add(t.table_id)
                 continue
@@ -424,8 +422,15 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
             expanded_sample=_sample_of(t, headers, 24, expand=True),
             headers=headers,
             column_kinds=kinds,
-            raw_source=raw_block(_source_xml or "", t.table_id),
         ))
+    # Attached HERE, once, and never in a `Gap(...)` call. It was a keyword on
+    # one of three construction sites and absent from the other two, so the
+    # model's `request_more_context("raw_source")` returned nothing for two
+    # thirds of gaps — a capability that reads as present everywhere except
+    # where it runs. A fourth site would have inherited the same bug; a loop
+    # over the finished list cannot.
+    for g in gaps:
+        g.raw_source = raw_block(_source_xml or "", g.table_id)
     gaps.sort(key=lambda g: -g.severity)
     return gaps
 

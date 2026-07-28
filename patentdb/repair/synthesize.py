@@ -522,13 +522,26 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "") -> Rule 
 def _more_context(gap: Gap, what: str) -> str:
     """Serve the wider view of the gap the model just asked for."""
     parts: list[str] = []
-    if what in ("raw_source", "everything") and gap.raw_source:
-        # Truncated from the FRONT of the block: the thead is what disagreements
-        # are usually about, and it is the part our merge most often damages.
+    if what in ("raw_source", "everything"):
+        # No truthiness guard. `raw_block` is a lookup for the very `<tables>`
+        # element the Table was parsed out of, so in production it is never
+        # legitimately empty — there is always something to hand back. Guarding
+        # on it turned a wiring bug into a silent no-op: the model asked for the
+        # source, got a reply with no source in it, and had no way to tell that
+        # from a table with nothing more to say. If it is empty now, that is a
+        # defect and it says so, out loud, where the model can report it.
         parts.append(
             "ORIGINAL CALS XML FOR THIS TABLE (the source of truth — everything "
             "else you were shown is derived from this):\n"
-            + gap.raw_source[:6000])
+            + (gap.raw_source[:6000] if gap.raw_source else
+               "!! UNAVAILABLE — this is a bug in the caller, not a property of "
+               "the patent. Say so in `escalate`: the source could not be shown.")
+            # Truncated from the FRONT of the block: the thead is what
+            # disagreements are usually about, and it is the part our merge most
+            # often damages. `colspec`/`colwidth` sit there too, and they state
+            # outright how a header tgroup maps onto a body tgroup of a
+            # different width — which is what US10376513 turned on.
+        )
     if what in ("full_legend", "everything") and gap.legend_candidates:
         parts.append("LEGEND TEXT FOUND ELSEWHERE IN THIS PATENT (untruncated):\n  "
                      + "\n  ".join(c for c in gap.legend_candidates))
