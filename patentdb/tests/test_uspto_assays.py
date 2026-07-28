@@ -354,3 +354,59 @@ def test_four_separated_stereoisomers_are_four_distinct_compounds():
         assert A._CID_PAT.match(cid), cid
     # ...and a three-letter tail is a word, not a stereo label.
     assert not A._CID_PAT.match("12abc")
+
+
+# ── vocabulary widenings found on 10 unseen patents (2026-07-28) ──
+
+def test_a_bin_key_may_define_its_symbols_with_a_verb():
+    """US10376513 writes "+ refers to <=10 nM", never "+:". 348 compounds."""
+    from patentdb.sources.bin_legend import looks_like_key, parse_bin_key
+    key = ("*column symbols: + refers to ≤10 nM ++ refers to >10 nM to 50 nM "
+           "+++ refers to >50 nM to 200 nM +++++ refers to >500 nM")
+    assert looks_like_key(key)
+    k = parse_bin_key(key)
+    assert (k["+"].lo, k["+"].hi) == (None, 10.0)
+    # The upper bound must survive: ">10 nM to 50 nM" is a bounded bin, and
+    # reading it as ">10 nM" silently widens every record it labels.
+    assert (k["++"].lo, k["++"].hi) == (10.0, 50.0)
+    assert (k["+++++"].lo, k["+++++"].hi) == (500.0, None)
+    assert {b.unit for b in k.values()} == {"nM"}
+
+
+def test_a_minus_sign_separates_the_bounds_of_a_bin():
+    """US10626094: "A: IC 50 >200 nM−<800 nM" — U+2212, not a hyphen."""
+    from patentdb.sources.bin_legend import parse_bin_key
+    k = parse_bin_key("A: IC 50 >200 nM−<800 nM B: IC 50 >801 nM−<5000 nM "
+                      "C: IC 50 >5001 nM")
+    assert (k["A"].lo, k["A"].hi) == (200.0, 800.0)
+    assert (k["B"].lo, k["B"].hi) == (801.0, 5000.0)
+    assert (k["C"].lo, k["C"].hi) == (5001.0, None)
+
+
+def test_the_older_compact_key_forms_still_parse_the_same():
+    """The two incompatible `++++` scales this corpus contains, unchanged."""
+    from patentdb.sources.bin_legend import parse_bin_key
+    a = parse_bin_key("++++: IC50 >= 1 uM   +++: 1 uM > IC50 >= 0.1 uM")
+    assert (a["++++"].lo, a["++++"].hi) == (1.0, None)
+    assert (a["+++"].lo, a["+++"].hi) == (0.1, 1.0)
+    b = parse_bin_key("+++++: IC50 >= 10 uM  ++++: 10 uM > IC50 >= 1 uM")
+    assert (b["++++"].lo, b["++++"].hi) == (1.0, 10.0)
+
+
+def test_a_potency_metric_with_a_unit_outranks_the_lcms_exclusion():
+    """US10329273 heads its only assay column "h-MGAT LCMS IC50 (nM)"."""
+    c = A.classify_column("h-MGAT LCMS IC50 (nM)", ["27", "5", "340"])
+    assert c.kind == A.ASSAY and c.unit == "nM"
+
+
+def test_a_metric_named_without_a_unit_is_still_excluded():
+    """Both conditions are required: "LCMS IC50 method" names no scale."""
+    assert A.classify_column("LCMS IC50 method", ["A", "B"]).kind != A.ASSAY
+
+
+def test_a_bin_range_carries_the_key_s_unit_not_the_column_s():
+    """US11485738 defines "A=<100 nM"; its column resolved to mM — 10^6 out."""
+    from patentdb.sources.bin_legend import parse_bin_key
+    key = parse_bin_key("Key: A=<100 nM; B=>100 nM-<500 nM; and C=>500 nM.")
+    assert key["A"].unit == "nM"
+    assert (key["B"].lo, key["B"].hi) == (100.0, 500.0)

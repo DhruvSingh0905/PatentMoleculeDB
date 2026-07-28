@@ -149,6 +149,14 @@ _HEADER_ASSAY = re.compile(
     r"emax|hill|selectivity|ratio|"
     r"cyp|herg|ppb|auc|cmax)\b", re.I)
 
+# The named potency METRICS only — no loose words like "activity" or "binding".
+# A header carrying one of these AND a concentration unit is a measurement, and
+# outranks the MS/RT exclusions below; see `classify_column`.
+_HEADER_POTENCY = re.compile(
+    r"\b(ic\s*50|ec\s*50|ed\s*50|gi\s*50|cc\s*50|lc\s*50|ki\b|kd\b|kb\b|"
+    r"pic\s*50|pec\s*50|pki|pkd|mic\b|mec\b)", re.I)
+_CONC_UNIT = {"nM", "uM", "pM", "mM", "M", "ng/mL", "ug/mL", "mg/mL", "nm", "um"}
+
 
 # Words that mark surrounding prose as describing a bioassay. Used only to
 # decide whether an unlabelled table is assay data at all — never to name a
@@ -670,9 +678,22 @@ def classify_column(header: str, samples: list[str]) -> Column:
     MW, RT, structure) are checked BEFORE the assay test, because headers like
     "LCMS IC50 method" would otherwise read as an assay. Anything unrecognised
     becomes UNKNOWN and is skipped rather than guessed.
+
+    One case outranks the exclusions, because it is not ambiguous: a header
+    that names a potency METRIC *and* carries a concentration unit is a
+    measurement whatever platform word sits beside it. US10329273 heads its
+    only assay column "h-MGAT LCMS IC50 (nM)" over values 27, 5, 340 — the
+    `lc-?ms` exclusion swallowed the entire patent, all 22 reference compounds.
+    Both conditions are required, so "LCMS IC50 method" — a metric name with no
+    concentration unit — still falls through to the exclusion as before.
     """
     h = (header or "").strip()
     low = h.lower()
+
+    if _HEADER_POTENCY.search(low):
+        u = _unit_from(h)
+        if u and u in _CONC_UNIT:
+            return Column(-1, h, ASSAY, unit=u, assay_name=h)
 
     if _HEADER_NMR.search(low):
         return Column(-1, h, NMR)
@@ -1046,7 +1067,15 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
                     and r.range_hi is None and r.letter_grade in key:
                 br = key[r.letter_grade]
                 r.range_lo, r.range_hi = br.lo, br.hi
-                r.unit = r.unit or br.unit
+                # The bounds come from the key, so the unit must come from the
+                # key too. Letting a column-derived unit stand over a key-
+                # derived range pairs a number with a scale from a different
+                # statement: US11485738 defines "A=<100 nM" and had 233 records
+                # reading 0-100 mM — the right interval on a scale 10^6 out.
+                if br.unit:
+                    r.unit, r.unit_source = br.unit, "bin_key"
+                elif not r.unit:
+                    r.unit = br.unit
 
     unitless = sorted({r.assay_name for r in records if not r.unit})
     if unitless:

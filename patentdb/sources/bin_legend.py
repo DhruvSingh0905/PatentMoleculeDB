@@ -36,12 +36,25 @@ _SYMBOL = r"(?:\++|[A-E])"
 
 _NUM = r"\d+(?:\.\d+)?"
 
+# What separates a symbol from its definition. `:` and `=` are the common
+# forms; US10376513 writes "+ refers to ≤10 nM" and states the key for all 348
+# of its compounds that way, so the verb forms are equally a separator.
+_DEFINES = r"(?:\s*[:=]\s*|\s+(?:refers?\s+to|means|indicates?|represents?|denotes?)\s+)"
+
 # Form 1 — compact key:  "++++: IC50 ≥ 1 uM"  /  "+++: 1 uM > IC50 ≥ 0.1 uM"
+#                        "++ refers to >10 nM to 50 nM"
+# The trailing upper bound matters: without it "++ refers to >10 nM to 50 nM"
+# parses as lo=10 with NO upper bound, turning a 10-50 nM bin into "anything
+# above 10 nM". That is the same class of silent widening that a shared bin key
+# causes, so the tail is captured rather than tolerated. US10626094 writes the
+# same range as "A: IC 50 >200 nM−<800 nM" with a U+2212 MINUS between the
+# bounds, and read every one of its bins as unbounded above until this landed.
 _KEY_COMPACT = re.compile(
-    rf"({_SYMBOL})\s*[:=]\s*"
+    rf"({_SYMBOL}){_DEFINES}"
     rf"(?:(?P<hi>{_NUM})\s*(?P<hiu>{_UNIT})?\s*(?P<hiop>>=|>|≥|≤|<=|<)\s*)?"
     rf"(?:IC\s*50|EC\s*50|Ki|Kd|value)?\s*"
-    rf"(?P<loop>>=|>|≥|≤|<=|<)?\s*(?P<lo>{_NUM})\s*(?P<lou>{_UNIT})?",
+    rf"(?P<loop>>=|>|≥|≤|<=|<)?\s*(?P<lo>{_NUM})\s*(?P<lou>{_UNIT})?"
+    rf"(?:\s*(?:to|[-–—−])\s*[<>≤≥]?\s*(?P<hi2>{_NUM})\s*(?P<hi2u>{_UNIT})?)?",
     re.I)
 
 # Form 2 — prose:  "a value greater than 0.01 μM and less than or equal to
@@ -151,7 +164,7 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
         if sym in out:
             continue
         lo = hi = None
-        unit = _canon_unit(m.group("lou") or m.group("hiu"))
+        unit = _canon_unit(m.group("lou") or m.group("hiu") or m.group("hi2u"))
         lo_op, lo_val = m.group("loop"), m.group("lo")
         if lo_val is not None:
             v = float(lo_val)
@@ -166,6 +179,8 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
                 hi = v
             else:
                 lo = v
+        if m.group("hi2") is not None and hi is None:
+            hi = float(m.group("hi2"))
         if lo is not None or hi is not None:
             out[sym] = BinRange(sym, lo, hi, unit)
 
@@ -185,4 +200,5 @@ def looks_like_key(text: str) -> bool:
     if not text:
         return False
     return bool(re.search(r"is\s+marked|\bkey\s*:|\*\s*key", text, re.I)) or \
-        bool(re.search(rf"{_SYMBOL}\s*[:=]\s*(?:IC\s*50|EC\s*50|{_NUM})", text))
+        bool(re.search(rf"{_SYMBOL}{_DEFINES}(?:IC\s*50|EC\s*50|{_NUM}|[<>≤≥])",
+                       text, re.I))
