@@ -702,6 +702,14 @@ def classify_column(header: str, samples: list[str]) -> Column:
     like an assay name (or the data cells are comma-separated value lists), the
     column is classified as ASSAY with `assay_name` set to the full header so
     that `extract_from_tables` can split it later.
+
+    Plus/letter-bin promotion: when a column has a non-empty header that is not
+    otherwise recognised (not an exclusion, not a known assay lemma) but the
+    data cells are predominantly plus-bins (+/++/+++) or letter-grade bins
+    (A/B/C/D), the column is promoted to ASSAY using the header as the assay
+    name. This handles short assay abbreviations like "FP" that don't appear
+    in any vocabulary list. US11286268 has header "FP" over 1258 rows of
+    +/++/+++ values that were lost without this.
     """
     h = (header or "").strip()
     low = h.lower()
@@ -764,13 +772,23 @@ def classify_column(header: str, samples: list[str]) -> Column:
                 return Column(-1, h, ASSAY, unit=unit, assay_name=h)
 
     # Headerless continuation columns: fall back to the shape of the data.
-    if not h:
+    # Also applies to columns with a short non-empty header that was not
+    # recognised by any rule above — a header like "FP" is an assay
+    # abbreviation the vocabulary doesn't know, but the data shape (all
+    # plus-bins or letter-grades) is unambiguous.
+    if True:  # was: `if not h:` — now also fires for unrecognised short headers
         vals = [s for s in samples if s]
         if vals:
             if sum(bool(_NRUNS_ONLY.match(v)) for v in vals) > len(vals) * 0.6:
-                return Column(-1, h, NRUNS)
-            if sum(bool(_LETTER_BIN.match(v)) for v in vals) > len(vals) * 0.6:
-                return Column(-1, h, ASSAY, assay_name="unnamed assay (letter bin)")
+                # Only promote to NRUNS when the header is empty; a named
+                # column of parenthesised numbers is unlikely.
+                if not h:
+                    return Column(-1, h, NRUNS)
+            plus_or_letter = sum(
+                bool(_LETTER_BIN.match(v) or _PLUS_BIN.match(v)) for v in vals
+            )
+            if plus_or_letter > len(vals) * 0.6:
+                return Column(-1, h, ASSAY, assay_name=h if h else "unnamed assay (letter bin)")
     return Column(-1, h, UNKNOWN)
 
 

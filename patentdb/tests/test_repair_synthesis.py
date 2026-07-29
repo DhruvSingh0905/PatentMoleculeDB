@@ -349,3 +349,25 @@ def test_a_capability_patch_must_fix_the_gap_it_was_bought_for():
     # Cheapest-first is wrong for this tier: every attempt costs a full corpus
     # re-extraction plus the suite, which dwarfs the token difference.
     assert capability.MODEL_LADDER[0] != capability.config.MODEL_HAIKU
+
+
+def test_the_inert_check_measures_the_repaired_path_not_the_parse():
+    """The two repair tiers cooperate, and judging one by the other's output
+    rejects correct patches.
+
+    Opus's `classify_column` patch for US11286268 promoted 1,239 rows of
+    `+`/`++` to a named assay column carrying a grade and no number.
+    `extract_from_patent` scores that as 0 usable, because the bin_key rule
+    that turns each grade into a range lives in the repair loop. Measured on
+    the parse alone the patch read as inert and was declined; measured through
+    `repair_patent` it recovers 1,238 rows.
+    """
+    import inspect
+
+    from patentdb.repair import capability, parser_repair
+
+    assert "repair_pid" in inspect.signature(parser_repair.verify_patch).parameters
+    assert "repaired_usable" in parser_repair._PROBE
+    src = inspect.getsource(capability._try_one)
+    assert 'repair_pid=g["patent"]' in src
+    assert 'verdict.get("repaired_usable")' in src

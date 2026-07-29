@@ -389,7 +389,8 @@ def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
     also = {m: t for m, t in edited.items() if m != module}
     targets = ", ".join(p["target"] for p in parts)
 
-    verdict = verify_patch(module, patched, baseline=base, also=also)
+    verdict = verify_patch(module, patched, baseline=base, also=also,
+                           repair_pid=g["patent"])
 
     # ...and it must FIX THE GAP IT WAS BOUGHT FOR.
     #
@@ -400,9 +401,17 @@ def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
     # 30 records with the gap still open. That is the same defect this module
     # exists to fix, one tier up: an answer that does nothing being recorded as
     # an answer.
+    # Measured through the FULL path — parse plus cached rules — because the
+    # two tiers cooperate. Opus's `classify_column` patch for US11286268
+    # promoted 1,239 rows of `+`/`++` to a named assay column with no number,
+    # which `extract_from_patent` scores as 0 usable; the bin_key rule already
+    # in the library then turns each grade into a range. Judged on the parse
+    # alone the patch read as inert and was declined. It recovers 1,238 rows.
     if verdict.get("ok"):
         before = base.get(g["patent"], 0)
-        after = verdict.get("per_patent", {}).get(g["patent"], 0)
+        after = verdict.get("repaired_usable")
+        if after is None or after < 0:
+            after = verdict.get("per_patent", {}).get(g["patent"], 0)
         if after <= before:
             verdict["ok"] = False
             verdict["why"] = (

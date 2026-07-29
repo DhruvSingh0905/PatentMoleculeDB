@@ -190,7 +190,8 @@ def corpus_defects(xml_dir: Path | None = None, limit: int | None = None) -> lis
 
 def verify_patch(module: Path, new_source: str, *, xml_dir: Path | None = None,
                  baseline: dict | None = None,
-                 also: dict[Path, str] | None = None) -> dict:
+                 also: dict[Path, str] | None = None,
+                 repair_pid: str | None = None) -> dict:
     """Run a candidate patch against the whole corpus in a scratch copy.
 
     Never touches the working tree. Four conditions, all mandatory:
@@ -241,7 +242,16 @@ def verify_patch(module: Path, new_source: str, *, xml_dir: Path | None = None,
                 return {"ok": False, "why": f"{mod} is not a tracked file"}
             target.write_text(src_text)
 
-        probe = _PROBE.replace("__XML_DIR__", str(xml_dir.resolve()))
+        # `repair_pid` asks the probe for the count one patent reaches through
+        # the FULL path — deterministic parse plus the cached rules. A
+        # capability patch is often only half a fix on its own: promoting a
+        # column of `+`/`++` to ASSAY produces records with a grade and no
+        # number, which `extract_from_patent` scores as zero usable, and the
+        # bin_key rule that turns the grade into a range lives in the repair
+        # loop. Measured on `extract_from_patent` alone such a patch looks
+        # inert; measured through `repair_patent` it recovers 1,238 rows.
+        probe = (_PROBE.replace("__XML_DIR__", str(xml_dir.resolve()))
+                       .replace("__REPAIR_PID__", repair_pid or ""))
         (sandbox / "_probe.py").write_text(probe)
         run = subprocess.run([sys.executable, "_probe.py"], cwd=sandbox,
                              capture_output=True, text=True, timeout=900)
@@ -303,7 +313,19 @@ for p in sorted(pathlib.Path("__XML_DIR__").glob("*.xml")):
         per_patent[p.stem] = sum(1 for r in extract_from_patent(xml) if r.is_usable)
     except Exception:
         per_patent[p.stem] = -1
+repaired = None
+pid = "__REPAIR_PID__"
+if pid:
+    try:
+        from patentdb.repair.loop import repair_patent
+        xml = (pathlib.Path("__XML_DIR__") / (pid + ".xml")).read_text()
+        base = [r for r in extract_from_patent(xml) if r.is_usable]
+        extra, _ = repair_patent(pid, xml, max_calls=0)
+        repaired = len(base) + sum(1 for r in extra if r.is_usable)
+    except Exception:
+        repaired = -1
 print(json.dumps({"discrepant_blocks": discrepant, "per_patent": per_patent,
+                  "repaired_usable": repaired,
                   "total_usable": sum(v for v in per_patent.values() if v > 0)}))
 '''
 
