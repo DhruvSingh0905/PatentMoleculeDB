@@ -73,7 +73,7 @@ def main() -> int:
         print("capability: nothing to repair")
         return 0
     for r in report["results"]:
-        state = "APPLIED" if r.get("ok") else "DECLINED"
+        state = "APPLIED" if r.get("ok") else "DECLINED (reads less)"
         print(f"\n  {r.get('journal_id', '—')} {state}: {r.get('fingerprint')} "
               f"→ {r.get('target', '?')}  ({r.get('rows_at_stake')} rows)")
         if r.get("diagnosis"):
@@ -81,8 +81,10 @@ def main() -> int:
         if not r.get("ok"):
             print(f"    why      : {r.get('why')}")
             continue
-        print(f"    verified : corpus clean, tests pass, {r.get('total_usable')} usable")
+        print(f"    corpus   : {r.get('total_usable')} usable, no compounds lost")
         print(f"    RECOVERED: +{r.get('gap_rows_recovered')} records on the gap's own patent")
+        for o in (r.get("objections") or []):
+            print(f"    objection: {o[:150]}   (recorded, not blocking)")
         moved = r.get("coverage_moved") or {}
         if moved:
             shown = list(moved.items())[:6]

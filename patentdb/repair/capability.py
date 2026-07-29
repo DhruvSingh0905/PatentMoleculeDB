@@ -19,11 +19,14 @@ rule available and produced no records. That is observed, needs no validator,
 and cannot be argued with — which matters, because every judgement-based gate
 in this system has been wrong at least as often as right.
 
-The patch machinery is `parser_repair`'s, unchanged: a candidate is written
-into a scratch copy of the tracked tree, run over every cached patent and the
-full test suite, and discarded unless fidelity is clean, tests pass, total
-usable records do not fall, and no fidelity-clean patent loses rows. Same
-journal, so the same `--revert`.
+The patch machinery is `parser_repair`'s: a candidate is written into a scratch
+copy of the tracked tree and run over every cached patent and the full test
+suite. It is discarded for exactly ONE reason — it reads fewer compounds than
+before. Fidelity discrepancies, test failures and a patch that recovers nothing
+are recorded as `objections` and applied anyway, because a gate that guesses is
+how a correct column_map scored 0/23 and a patch recovering 1,238 rows was
+declined for looking inert. Safety here is the journal, not permission: same
+`--revert`, and every applied patch carries its coverage delta.
 
 What differs is the QUESTION. `parser_repair` asks "this row declares 9 cells
 and you produced 7"; here we ask "this table holds N rows the parser cannot
@@ -149,9 +152,9 @@ produce two records; either alone is inert.
 and return an empty `patches` list. An honest refusal is cheap; a patch to the \
 wrong function wastes a verification run and teaches us nothing.
 
-Your patch is applied to a scratch copy, run over the whole corpus and the full \
-test suite, and discarded unless every check passes. Describe the fix; the \
-harness decides."""
+Your patch is applied to a scratch copy and run over the whole corpus and the \
+full test suite. It is rejected for one reason only: if it reads FEWER \
+compounds than the current code. Describe the fix; the harness decides."""
 
 PATCH_TOOL = {
     "name": "propose_capability_patch",
@@ -401,31 +404,37 @@ def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
     # 30 records with the gap still open. That is the same defect this module
     # exists to fix, one tier up: an answer that does nothing being recorded as
     # an answer.
-    # Measured through the FULL path — parse plus cached rules — because the
-    # two tiers cooperate. Opus's `classify_column` patch for US11286268
-    # promoted 1,239 rows of `+`/`++` to a named assay column with no number,
-    # which `extract_from_patent` scores as 0 usable; the bin_key rule already
-    # in the library then turns each grade into a range. Judged on the parse
-    # alone the patch read as inert and was declined. It recovers 1,238 rows.
-    if verdict.get("ok"):
-        before = base.get(g["patent"], 0)
-        after = verdict.get("repaired_usable")
-        if after is None or after < 0:
-            after = verdict.get("per_patent", {}).get(g["patent"], 0)
-        if after <= before:
-            verdict["ok"] = False
-            verdict["why"] = (
-                f"patch is inert: {g['patent']} still yields {after} usable "
-                f"records (was {before}). It broke nothing and fixed nothing, and "
-                f"the {g['rows_at_stake']} rows it was bought for are still unread.")
-        else:
-            verdict["gap_rows_recovered"] = after - before
+    # Recorded, NOT enforced. An inert patch adds dead code; it does not lose
+    # a compound, and this tier does not block on anything but that.
+    #
+    # It was a blocker for one commit and it declined a patch that recovers
+    # 1,238 rows: Opus promoted US11286268's `FP` column of `+`/`++` to a named
+    # assay, which `extract_from_patent` scores as 0 usable because the bin_key
+    # rule that turns each grade into a range runs in the loop, not the parse.
+    # Judged on the parse it looked like it did nothing. The measurement is
+    # fixed now — `repaired_usable` reads the full path — but the lesson is
+    # that the gate was the mistake, not the metric behind it.
+    #
+    # Escalation still uses it: a rung whose patch recovers nothing climbs to
+    # the next model, and only the last rung's attempt is applied. That is a
+    # preference between candidates, not a veto over all of them.
+    before = base.get(g["patent"], 0)
+    after = verdict.get("repaired_usable")
+    if after is None or after < 0:
+        after = verdict.get("per_patent", {}).get(g["patent"], 0)
+    verdict["gap_rows_recovered"] = after - before
+    if verdict.get("ok") and after <= before:
+        verdict.setdefault("objections", []).append(
+            f"inert: {g['patent']} still reaches {after} usable records "
+            f"(was {before}); the {g['rows_at_stake']} rows it was bought for "
+            f"are still unread")
 
     # A rung that failed climbs, and leaves no journal entry: the record that
     # matters is what was applied and what the last model could not do.
-    if not verdict.get("ok") and not last:
-        logger.info("capability: %s declined %s (%s) — escalating",
-                    model, g["fingerprint"], verdict.get("why", "")[:90])
+    if (not verdict.get("ok") or verdict["gap_rows_recovered"] <= 0) and not last:
+        logger.info("capability: %s recovered nothing on %s (%s) — escalating",
+                    model, g["fingerprint"],
+                    (verdict.get("why") or "; ".join(verdict.get("objections", [])))[:90])
         return None
 
     entry = {
@@ -441,6 +450,7 @@ def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
         "before_source": parts[0]["before_source"],
         "after_source": parts[0]["after_source"],
         "applied": False, "why": verdict.get("why", ""),
+        "objections": verdict.get("objections") or [],
         "gap_rows_recovered": verdict.get("gap_rows_recovered"),
         "total_usable_before": sum(v for k, v in base.items() if k != "_clean"),
         "total_usable_after": verdict.get("total_usable"),

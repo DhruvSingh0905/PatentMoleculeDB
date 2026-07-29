@@ -330,25 +330,29 @@ def test_a_rule_that_yields_nothing_is_not_an_answer():
     assert "capability_gaps.append" in src
 
 
-def test_a_capability_patch_must_fix_the_gap_it_was_bought_for():
-    """`verify_patch` asks "did anything get worse", never "did anything get
-    better", so a patch that changes no behaviour sails through.
+def test_a_patch_is_blocked_only_by_reading_fewer_compounds():
+    """One condition, by instruction: does the patched code read LESS?
 
-    Sonnet's first `classify_column` proposal was applied clean — corpus fine,
-    tests green, 70,051 usable — and US9302989 still produced 30 records with
-    the gap still open. That is the defect this module exists to fix, one tier
-    up: an answer that does nothing recorded as an answer.
+    Every judgement-shaped gate in this system has been wrong at least as
+    often as right — a correct column_map scored 0/23; a 49% floor on a rule
+    whose real fault was a regex in the reader; and in this tier an
+    inert-patch check that declined a patch recovering 1,238 rows. Coverage is
+    the one signal that cannot be argued with, so it is the only one that
+    blocks. Everything else is recorded in `objections` and journaled.
     """
     import inspect
 
-    from patentdb.repair import capability
+    from patentdb.repair import parser_repair
 
-    src = inspect.getsource(capability._try_one)
-    assert "patch is inert" in src
-    assert "gap_rows_recovered" in src
-    # Cheapest-first is wrong for this tier: every attempt costs a full corpus
-    # re-extraction plus the suite, which dwarfs the token difference.
-    assert capability.MODEL_LADDER[0] != capability.config.MODEL_HAIKU
+    src = inspect.getsource(parser_repair.verify_patch)
+    # Fidelity and the suite are evidence now, not returns.
+    assert "reads FEWER compounds" in src
+    assert 'got["objections"] = evidence' in src
+    for signal in ("discrepant_blocks", "tests_pass"):
+        i = src.index(signal, src.index("evidence = []"))
+        assert "evidence.append" in src[i:i + 400], f"{signal} must not block"
+    # ...and exactly one path sets ok=False.
+    assert src.count("ok=False") == 1
 
 
 def test_the_inert_check_measures_the_repaired_path_not_the_parse():

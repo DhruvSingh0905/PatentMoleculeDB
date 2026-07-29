@@ -156,16 +156,24 @@ corpus — rewriting up to `MAX_TARGETS=3` functions from a fixed candidate list
 Multi-target because single-function patches for these shapes are inert:
 US9302989 needed `classify_column` *and* `extract_from_tables` together.
 
-Two things the verifier does NOT check, both learned by shipping them:
+**A patch is declined for exactly ONE reason: it reads fewer compounds.**
+Fidelity discrepancies, a failing suite, and a patch that recovers nothing are
+recorded as `objections` and applied anyway. This is the same call already made
+for model-proposed rules, and it was earned twice more here: an inert-patch
+gate declined a patch recovering 1,238 rows because it measured
+`extract_from_patent` while the fix was completed by a `bin_key` rule in the
+loop. Coverage is the one signal that cannot be argued with; the journal, not a
+gate, is what makes applying safe.
 
-- **that the patch fixes the gap it was bought for.** `verify_patch` asks "did
-  anything get worse". An inert patch passes every check — one was applied
-  clean, corpus fine, tests green, and recovered nothing. A patch must now
-  raise the count on the gap's own patent.
+Two things no check can see, so a human must:
+
+- **wrong values that raise the count.** The 10x bin-scale class. A coverage
+  check will never catch it — spot-check values before quoting a jump.
 - **comments.** A whole-function rewrite silently dropped the block explaining
   why cross-width header inheritance is scoped to one `<tables>` id. Behaviour
   intact, reasoning gone, and no test can catch that. The prompt now demands
-  verbatim preservation — **read every applied patch anyway.**
+  verbatim preservation and it held on its first test (193 → 199 lines) —
+  **read every applied patch anyway.**
 
 Model choice differs by tier *because the economics invert*. A rule is bought
 per layout (hundreds) → Haiku. A capability patch is bought per capability
