@@ -74,6 +74,14 @@ mineru -p {patent.pdf} -o mineru_output -m auto -b pipeline
 
 - **The route classifier is informational only.** `classify_route()` still tags patents `text-dominant` / `markush-dominant` / `mixed`, but `process_patent` runs the text branch for *every* patent regardless. The old gate zeroed out real data (US11566007: 155 examples → 0). Don't "fix" the classifier by re-gating on it.
 - **Markush enumeration is not in the pipeline, and the engine is no longer in the tree.** `markush/enumerate.py` + `step.py` were retired to `_attic/held_out_markush/` — held out pending R-group coverage and a precision check, not deleted as junk. What remains in `markush/` is `context.py` + `mapper.py`, used by `routes/text_markush.py` for region *tagging* only.
+- **A block-level unit belongs only to the columns its legend describes.**
+  A unit stated in a caption or legend is applied to every assay column that
+  lacks one — which stamped `nM` onto US11254686's dimensionless selectivity
+  `Ratio` and onto two clearances printing `uL/min/mg` in their own headers.
+  99 records read `2.24 nM` against BindingDB's 300 nM. `_DIMENSIONLESS` now
+  blocks the inheritance; those records lose the fabricated unit, fail the
+  usability contract, and are dropped. That trade is the module's founding
+  rule — a missing assay is recoverable, a ratio recorded as a potency is not.
 - **`route_audit.json` is the audit artifact.** Written by `_write_outputs`. The old `core/audit.py` (RouteRecord, wiring violations, `patent_class` gates) was a v1 port that nothing ever imported; it is gone.
 - **HTML beats OCR, always.** `load_patent_description(prefer_format="auto")` returns Google Patents HTML first (`output_v2/gpatents_cache/{pid}.json`) and falls back to MinerU markdown (`data/patents/{pid}/all_pages/page_*.md`) only when GP has nothing. MinerU carries `<|ref|>` tags, `[[bbox]]` pollution, and mid-IUPAC line wraps — but it is still needed for the `<table>` structure GP doesn't render.
 - **A clean OPSIN parse from noisy input is treated as a failure.** Strict mode on OCR-noisy sources deliberately rejects plausible parses so the six-stage cascade (OPSIN raw → rule clean → Levenshtein → Vision OCR → LLM normalize → LLM direct SMILES) gets its chance.
@@ -156,7 +164,16 @@ corpus — rewriting up to `MAX_TARGETS=3` functions from a fixed candidate list
 Multi-target because single-function patches for these shapes are inert:
 US9302989 needed `classify_column` *and* `extract_from_tables` together.
 
-**A patch is declined for exactly ONE reason: it reads fewer compounds.**
+**A patch is declined for exactly TWO reasons, both measured rather than
+judged: it reads fewer compounds, or it makes more of our values disagree with
+BindingDB than already did.** BDB publishes a numeric affinity for 100% of its
+rows, so "is this value right" is a lookup, not an opinion — and it is the one
+thing coverage structurally cannot see. `repair/value_check.py` runs at 5%
+tolerance (BDB stores three significant figures) and buckets the rest:
+variance to 2x, disagree to 10x, wrong-scale beyond. Measured as a DELTA, since
+24 flagged values already exist and some are BDB curating a different assay.
+
+    python3 -m patentdb.scripts.eval.value_check_cli
 Fidelity discrepancies, a failing suite, and a patch that recovers nothing are
 recorded as `objections` and applied anyway. This is the same call already made
 for model-proposed rules, and it was earned twice more here: an inert-patch
@@ -165,10 +182,8 @@ gate declined a patch recovering 1,238 rows because it measured
 loop. Coverage is the one signal that cannot be argued with; the journal, not a
 gate, is what makes applying safe.
 
-Two things no check can see, so a human must:
+One thing no check can see, so a human must:
 
-- **wrong values that raise the count.** The 10x bin-scale class. A coverage
-  check will never catch it — spot-check values before quoting a jump.
 - **comments.** A whole-function rewrite silently dropped the block explaining
   why cross-width header inheritance is scoped to one `<tables>` id. Behaviour
   intact, reasoning gone, and no test can catch that. The prompt now demands

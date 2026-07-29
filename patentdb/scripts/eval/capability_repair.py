@@ -73,7 +73,7 @@ def main() -> int:
         print("capability: nothing to repair")
         return 0
     for r in report["results"]:
-        state = "APPLIED" if r.get("ok") else "DECLINED (reads less)"
+        state = "APPLIED" if r.get("ok") else "DECLINED"
         print(f"\n  {r.get('journal_id', '—')} {state}: {r.get('fingerprint')} "
               f"→ {r.get('target', '?')}  ({r.get('rows_at_stake')} rows)")
         if r.get("diagnosis"):
@@ -82,6 +82,9 @@ def main() -> int:
             print(f"    why      : {r.get('why')}")
             continue
         print(f"    corpus   : {r.get('total_usable')} usable, no compounds lost")
+        if r.get("bad_values") is not None:
+            print(f"    BDB      : {r.get('bad_values')} value(s) disagree "
+                  f"(was {r.get('bad_values_before')}) — checked at 5% tolerance")
         print(f"    RECOVERED: +{r.get('gap_rows_recovered')} records on the gap's own patent")
         for o in (r.get("objections") or []):
             print(f"    objection: {o[:150]}   (recorded, not blocking)")

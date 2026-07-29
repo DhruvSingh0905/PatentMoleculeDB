@@ -341,6 +341,7 @@ for p in sorted(pathlib.Path("__XML_DIR__").glob("*.xml")):
     except Exception:
         per_patent[p.stem] = -1
 repaired = None
+bad_values = None
 pid = "__REPAIR_PID__"
 if pid:
     try:
@@ -349,10 +350,15 @@ if pid:
         base = [r for r in extract_from_patent(xml) if r.is_usable]
         extra, _ = repair_patent(pid, xml, max_calls=0)
         repaired = len(base) + sum(1 for r in extra if r.is_usable)
+        # Are the NUMBERS right? A coverage check cannot tell recovered data
+        # from invented data; BindingDB publishes the values, so this is a
+        # lookup. Run inside the sandbox so it measures the PATCHED code.
+        from patentdb.repair.value_check import check_patent
+        bad_values = check_patent(pid, base + list(extra))["bad"]
     except Exception:
         repaired = -1
 print(json.dumps({"discrepant_blocks": discrepant, "per_patent": per_patent,
-                  "repaired_usable": repaired,
+                  "repaired_usable": repaired, "bad_values": bad_values,
                   "total_usable": sum(v for v in per_patent.values() if v > 0)}))
 '''
 

@@ -612,3 +612,38 @@ def test_a_grade_a_colon_and_a_number_is_not_a_key():
     assert (k["D"].lo, k["D"].hi, k["D"].unit) == (100.0, 500.0, "nM")
     d = parse_bin_key("A denotes IC50 < 1 nM; B denotes 1 nM ≤ IC50 < 10 nM")
     assert (d["A"].hi, d["B"].lo, d["B"].hi) == (1.0, 1.0, 10.0)
+
+
+def test_a_block_unit_is_not_stamped_on_a_dimensionless_column():
+    """US11254686 TABLE-US-00003 puts `A=<10 nM; B=10-50 nM; ...` in its
+    caption and heads nine columns, only some of which are concentrations.
+
+    Every assay column took `nM`, including a dimensionless selectivity
+    `Ratio` and two clearances whose own units are printed in their headers.
+    Checked against BindingDB that was 99 records reading `2.24 nM` where the
+    reference says 300 nM — not a near miss, a different quantity, and no
+    coverage check can see it because the count goes UP.
+    """
+    from patentdb.sources.uspto_xml import Cell, Table
+    cap = "The legend is as follows: A=<10 nM; B=10-50 nM; C=50-100 nM"
+    hdr = [[Cell("Compound"), Cell("Ave A2B cAMP IC50"), Cell("Ratio"),
+            Cell("LM CLint (uL/ min/mg/ protein)")]]
+    body = [[Cell("Z1"), Cell("A"), Cell("0.55"), Cell("27.86")]]
+    t = Table(table_id="T1", n_cols=4, header_rows=hdr, body_rows=body,
+              caption=cap)
+    by = {c.header: c for c in A.build_columns(t)}
+    assert by["Ave A2B cAMP IC50"].unit == "nM"      # the legend describes it
+    assert by["Ratio"].unit is None                  # dimensionless
+    assert by["LM CLint (uL/ min/mg/ protein)"].unit is None   # states its own
+
+
+def test_the_value_check_forgives_rounding_and_not_a_wrong_scale():
+    """BindingDB stores three significant figures, so 23.456 nM and 23.5 nM
+    are the same measurement. A ratio read as a potency is not."""
+    from patentdb.repair.value_check import TOLERANCE, _bucket
+    assert TOLERANCE == 0.05
+    assert _bucket(23.456, 23.5) == "agree"          # rounding
+    assert _bucket(1.0, 1.049) == "agree"
+    assert _bucket(1.0, 1.9) == "variance"           # assay to assay
+    assert _bucket(1.0, 5.0) == "disagree"
+    assert _bucket(2.24, 300.0) == "wrong_scale"     # the Ratio class

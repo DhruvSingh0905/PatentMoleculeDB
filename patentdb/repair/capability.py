@@ -42,6 +42,7 @@ import re
 from pathlib import Path
 
 from ..core import config
+from . import value_check
 from .parser_repair import journal_append, verify_patch
 
 logger = logging.getLogger(__name__)
@@ -194,6 +195,28 @@ PATCH_TOOL = {
         "required": ["diagnosis", "patches"],
     },
 }
+
+
+def _bad_values_now(patent_id: str) -> int:
+    """How many of this patent's values already disagree with BindingDB.
+
+    The baseline for the delta. Computed on the unpatched tree, through the
+    same full path the sandbox measures — parse plus cached rules — so the two
+    numbers are comparable.
+    """
+    from ..sources.uspto_assays import extract_from_patent
+    from .loop import repair_patent
+    xml = (config.OUTPUT_DIR / "uspto_xml" / f"{patent_id}.xml")
+    if not xml.exists():
+        return 0
+    try:
+        text = xml.read_text(errors="ignore")
+        base = [r for r in extract_from_patent(text) if r.is_usable]
+        extra, _ = repair_patent(patent_id, text, max_calls=0)
+        return value_check.check_patent(patent_id, base + list(extra))["bad"]
+    except Exception as e:
+        logger.warning("value_check baseline failed for %s: %r", patent_id, e)
+        return 0
 
 
 def _sample_of_table(table) -> str:
@@ -401,6 +424,32 @@ def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
     verdict = verify_patch(module, patched, baseline=base, also=also,
                            repair_pid=g["patent"])
 
+    # SECOND blocking condition, and the only other one: did the patch make our
+    # NUMBERS disagree with BindingDB more than they already did?
+    #
+    # This is not a judgement about the patch, which is why it may block. BDB
+    # publishes a numeric affinity for 100% of its rows, so "is this value
+    # right" is a lookup against the same compound in the same patent. Coverage
+    # cannot see this at all — 99 records read a dimensionless selectivity
+    # ratio as a nanomolar potency while every count went up.
+    #
+    # Measured as a DELTA, never an absolute: 24 flagged values already exist
+    # in the corpus and some are BindingDB curating a different assay than the
+    # column we matched. Requiring zero would block every patch on a patent
+    # that already has one. Introducing new ones is a different claim, and an
+    # observed one.
+    if verdict.get("ok") and verdict.get("bad_values") is not None:
+        before_bad = _bad_values_now(g["patent"])
+        after_bad = verdict["bad_values"]
+        verdict["bad_values_before"] = before_bad
+        if after_bad > before_bad:
+            verdict["ok"] = False
+            verdict["why"] = (
+                f"introduces {after_bad - before_bad} value(s) that disagree with "
+                f"BindingDB beyond {int(value_check.TOLERANCE * 100)}% "
+                f"({before_bad} -> {after_bad}). Coverage went up and the numbers "
+                f"got worse.")
+
     # ...and it must FIX THE GAP IT WAS BOUGHT FOR.
     #
     # `verify_patch` asks "did anything get worse". Nothing asks "did anything
@@ -458,6 +507,8 @@ def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
         "applied": False, "why": verdict.get("why", ""),
         "objections": verdict.get("objections") or [],
         "gap_rows_recovered": verdict.get("gap_rows_recovered"),
+        "bad_values": verdict.get("bad_values"),
+        "bad_values_before": verdict.get("bad_values_before"),
         "total_usable_before": sum(v for k, v in base.items() if k != "_clean"),
         "total_usable_after": verdict.get("total_usable"),
         "coverage_moved": {

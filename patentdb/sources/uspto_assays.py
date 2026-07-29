@@ -150,6 +150,17 @@ _HEADER_STRUCT = re.compile(r"\bstructure\b|\bstruct\.?\b", re.I)
 _HEADER_SUBST = re.compile(r"^\s*R\s*\d*\s*$|^\s*(Ar|X|Y|Z)\s*\d*\s*$", re.I)
 _HEADER_NRUNS = re.compile(r"^\s*\(?\s*n\s*\)?\s*$|\bn\s*=|\bruns?\b|\breps?\b", re.I)
 
+# A column that cannot carry a molar concentration, either because the quantity
+# is dimensionless or because the header states units of its own. Used only to
+# STOP a block-level unit being stamped onto it — never to reject the column.
+# A composite unit (`uL/min/mg`, `mL/min/10^6 cells`) is matched by the slash:
+# whatever it is, it is not the nM the caption was talking about.
+_DIMENSIONLESS = re.compile(
+    r"\bratio\b|\bselectivit|\bfold\b|\bindex\b|\bsel\.|\bshift\b|"
+    r"\bclint\b|\bcl\b|\bt1/2\b|\bauc\b|\bpapp\b|"
+    r"[\u03bcu]?[LlgG]\s*/\s*(?:min|h|hr|kg|mL)|/\s*10\s*\^?\s*\d|"
+    r"\bp(?:IC|EC|K[id])\s*50?\b|\blog\s*[DP]?\b", re.I)
+
 # Names/metrics that mark a real bioassay column.
 _HEADER_ASSAY = re.compile(
     r"\b(ic\s*50|ec\s*50|ed\s*50|gi\s*50|cc\s*50|ki\b|kd\b|kb\b|"
@@ -876,11 +887,28 @@ def build_columns(table: Table, inherited: list[str] | None = None,
     # A unit stated only in the table's legend or caption applies to every
     # assay column that didn't carry its own. Done before the caption fallback
     # so a table with proper headers but no inline unit still gets one.
+    #
+    # ...but only onto columns that could HOLD that unit. A block-level unit is
+    # a statement about the columns the legend describes, not about every
+    # numeric column beside them. US11254686 TABLE-US-00003 heads nine columns
+    # `Compound | Ave A2B cAMP IC50 | Ave A2A cAMP IC50 | Ratio | A1 cAMP IC50
+    # | A3 cAMP IC50 | CYP 450 % INH @ 10 uM | LM CLint (uL/min/mg/protein) |
+    # Hep CLint (mL/min/10^6 cells)`, with `A=<10 nM; B=10-50 nM; ...` in the
+    # caption. Every one of them was stamped `nM` — including a dimensionless
+    # selectivity ratio and two clearances whose own units are printed in their
+    # headers. Checked against BindingDB that is 99 records reading `2.24 nM`
+    # where the reference says 300 nM: not a near miss, a different quantity.
+    #
+    # So a header that names a dimensionless quantity, or that carries units of
+    # its own we could not parse, keeps no unit at all. The record then fails
+    # the usability contract and is dropped, which is the intended trade — a
+    # missing assay is recoverable, a ratio recorded as a potency is a lie the
+    # database cannot detect later.
     legend = table_legend(table)
     ctx_unit = _unit_from(legend) or _unit_from(table.caption) or inherited_unit
     if ctx_unit and ctx_unit != "%":
         for c in cols:
-            if c.kind == ASSAY and not c.unit:
+            if c.kind == ASSAY and not c.unit and not _DIMENSIONLESS.search(c.header or ""):
                 c.unit = ctx_unit
 
     if not any(c.kind == ASSAY for c in cols):
