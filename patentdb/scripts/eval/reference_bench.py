@@ -69,10 +69,23 @@ EXTRACTIONS = config.OUTPUT_DIR / "text_extraction"
 # Measured on US9303033: the first token hits our extracted ids 2,491 times and
 # misses 12; the trailing one hits ZERO times and misses 2,482. Taking the
 # wrong one would have attached 1,237 structures to the wrong compounds.
-_REF_STOP = (r"(?!(?:table|compound|scheme|fig(?:ure)?|claim|page|para|"
+# The label is optional AND positional. `US11286268, Compound 1` numbers its
+# compounds 1..1837 and "Compound 1" is the id; `US9303033, N47, Table 58A,
+# Compound 11` uses `N47` and the trailing "Compound 11" is BindingDB's own
+# within-table counter. A flat stop-list on the word `compound` gets the second
+# right and the first wrong — it cost US11286268 all 1,828 of its reference
+# values, which is why its patch could not be checked at all.
+#
+# What separates them is POSITION, not vocabulary: whatever follows the patent
+# number is the id, and a label immediately there is part of the id rather than
+# a reason to skip. The stop-list still applies to a BARE token, so
+# `US…, Table 5` is not read as compound "Table".
+_REF_LABEL = (r"(?:(?:Examples?|Compounds?|(?:C(?:o?m)?pd)\.?\s*(?:No)?\.?|Ex)"
+              r"\.?\s*)?")
+_REF_STOP = (r"(?!(?:table|scheme|fig(?:ure)?|claim|page|para|"
              r"col(?:umn)?|entry|item|no)\b)")
 _EXAMPLE_REF = re.compile(
-    r"\b(US\d{7,11}[A-Z]?\d?)\s*,\s*(?:Example\s+)?" + _REF_STOP
+    r"\b(US\d{7,11}[A-Z]?\d?)\s*,\s*" + _REF_LABEL + _REF_STOP
     + r"([0-9A-Za-z][0-9A-Za-z\-]{0,9})\b", re.I)
 
 

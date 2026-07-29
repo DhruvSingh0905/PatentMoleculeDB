@@ -579,9 +579,16 @@ def test_a_bindingdb_attribution_without_the_word_example():
     assert ids("US8722692, 1") == ["1"]
     assert ids("US9303033, N47, Table 58A, Compound 11") == ["N47"]
     assert ids("BDBM220085::US9303033, J48, Table 58A, Compound 33") == ["J48"]
-    # ...and a section word is never mistaken for an identifier.
+    # A LABEL immediately after the patent number is part of the id, not a
+    # reason to skip: US11286268 numbers its compounds 1..1837 and writes
+    # "US11286268, Compound 1". A flat stop-list on the word `compound` reads
+    # US9303033 right and US11286268 wrong — it cost that patent all 1,828 of
+    # its reference values, so its patch could not be value-checked at all.
+    # Position separates them, not vocabulary.
+    assert ids("US11286268, Compound 1") == ["1"]
+    assert ids("US1234567, Cmpd. No. 42") == ["42"]
+    # ...and a bare section word is still never an identifier.
     assert ids("US1234567, Table 5") == []
-    assert ids("US1234567, Compound 9") == []
 
 
 def test_a_grade_a_colon_and_a_number_is_not_a_key():
