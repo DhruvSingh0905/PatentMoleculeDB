@@ -78,7 +78,7 @@ MAX_TARGETS = 3
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v2-multi-target"
+PATCH_EPOCH = "v3-preserve-comments"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
@@ -129,6 +129,13 @@ at module level. Not a diff, not a fragment.
 patched with you; a function that starts returning a different shape breaks \
 everything upstream of it and will be rejected.
   - Change as little as possible. You are widening one thing.
+  - KEEP EVERY EXISTING COMMENT AND DOCSTRING, verbatim, in place. They record \
+why each guard exists — which patent broke, what it cost, what was tried and \
+rejected — and that reasoning cannot be recovered from the code. Deleting a \
+comment is a silent regression no test can catch, so it is treated as one. Add \
+to the docstring to describe your change; do not rewrite or prune what is \
+already there. If a comment describes a line you are moving, move the comment \
+with it.
   - Never read LESS than the current code. Your patch runs against every patent \
 in the corpus and is discarded if total records fall or any healthy patent \
 loses rows. Satisfying a count by parsing less is the failure mode being \

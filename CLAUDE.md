@@ -133,6 +133,56 @@ guards exist because they caught live failures:
   wrongly dismissed 10 of 12 real assay tables; the veto downgrades any
   `not_assay` whose sample contains potency language to an escalation.
 
+### Three tiers, and a gap belongs to exactly one
+
+A failing table has three possible causes, and asking the wrong tier wastes a
+paid call on damage we inflicted ourselves:
+
+| Cause | Detector | Cost | Action |
+|---|---|---|---|
+| the DOCUMENT is unusual | yield gap | 1 call/layout | buy a rule (`loop` + `rules`) |
+| the READER lost cells | `parse_fidelity` | **0** | patch `uspto_xml` (`parser_repair`) |
+| our VOCABULARY is too narrow | a rule that yields **0** | **0** | patch the code (`capability`) |
+
+**A rule that produces no records is not an answer.** `lib.add(rule)` used to
+run *before* `apply_rule`, so a rule yielding zero was indistinguishable from a
+layout that needed nothing — US9302989 sat behind an `already_known` for 1,561
+rows while its `column_map`, whose column indices were correct, could never
+fire because the cells read `0.0125, nd`. The rule is still remembered (it is
+insufficient, not wrong); the gap now leaves the tier as a **capability gap**.
+
+`repair/capability.py` buys one patch per capability — three in the whole
+corpus — rewriting up to `MAX_TARGETS=3` functions from a fixed candidate list.
+Multi-target because single-function patches for these shapes are inert:
+US9302989 needed `classify_column` *and* `extract_from_tables` together.
+
+Two things the verifier does NOT check, both learned by shipping them:
+
+- **that the patch fixes the gap it was bought for.** `verify_patch` asks "did
+  anything get worse". An inert patch passes every check — one was applied
+  clean, corpus fine, tests green, and recovered nothing. A patch must now
+  raise the count on the gap's own patent.
+- **comments.** A whole-function rewrite silently dropped the block explaining
+  why cross-width header inheritance is scoped to one `<tables>` id. Behaviour
+  intact, reasoning gone, and no test can catch that. The prompt now demands
+  verbatim preservation — **read every applied patch anyway.**
+
+Model choice differs by tier *because the economics invert*. A rule is bought
+per layout (hundreds) → Haiku. A capability patch is bought per capability
+(three) and every attempt costs a full corpus re-extraction plus the suite, so
+tokens are noise beside compute → `MODEL_LADDER` is Sonnet, then Opus on
+decline. Measured: Haiku diagnosed the shape correctly and then wrote code
+calling a helper that does not exist.
+
+`PATCH_EPOCH` versions the capability cache the way `SYNTH_EPOCH` versions the
+rule cache. Widening the tool without bumping it replayed a stale single-target
+answer that parsed as an empty patch list and read as the model declining.
+
+    python3 -m patentdb.scripts.eval.capability_repair            # scan, free
+    python3 -m patentdb.scripts.eval.capability_repair --repair   # patch + APPLY
+    python3 -m patentdb.scripts.eval.parser_health --history      # shared journal
+    python3 -m patentdb.scripts.eval.parser_health --revert 4     # undoes the whole group
+
 `config.py` currently holds **zero unused constants**. It accumulated 18 of them before the cleanup, several describing machinery that no longer ran. If you delete a code path, delete its config with it.
 
 ## Clear stale caches when extraction strategy changes
