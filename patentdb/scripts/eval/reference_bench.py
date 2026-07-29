@@ -52,15 +52,43 @@ BDB_TSV = config.REPO_ROOT / "output" / "bindingdb" / "our_patents.tsv"
 CHEMBL_CACHE = config.OUTPUT_DIR / "_cache" / "chembl_patents.json"
 EXTRACTIONS = config.OUTPUT_DIR / "text_extraction"
 
+# How BindingDB attributes a ligand to a patent compound. The word "Example"
+# is OPTIONAL, because it is often simply absent:
+#
+#   US8952177, Example 1
+#   US8722692, 1                              <- no keyword at all
+#   US9303033, N47, Table 58A, Compound 11    <- the patent's code, then BDB's
+#
+# Requiring it scored three whole patents at zero that BindingDB holds in full:
+# US9303033 has 2,239 rows there, US8722692 732, US9708336 837. Across the 53
+# patents with no structures of our own, reading only the strict form found
+# 10,147 of 16,222 compounds; reading this form finds 13,453.
+#
+# The id is ALWAYS the token straight after the patent number, and never the
+# trailing "Compound N" — that is BindingDB's own within-table numbering.
+# Measured on US9303033: the first token hits our extracted ids 2,491 times and
+# misses 12; the trailing one hits ZERO times and misses 2,482. Taking the
+# wrong one would have attached 1,237 structures to the wrong compounds.
+_REF_STOP = (r"(?!(?:table|compound|scheme|fig(?:ure)?|claim|page|para|"
+             r"col(?:umn)?|entry|item|no)\b)")
 _EXAMPLE_REF = re.compile(
-    r"\b(US\d{7,11}[A-Z]?\d?)\s*,\s*Example\s+([0-9A-Za-z\-]+)", re.I)
+    r"\b(US\d{7,11}[A-Z]?\d?)\s*,\s*(?:Example\s+)?" + _REF_STOP
+    + r"([0-9A-Za-z][0-9A-Za-z\-]{0,9})\b", re.I)
 
 
 def _norm_cid(cid: str) -> str:
-    """'007' / 'Example 7' / 'Cpd. No. 7' → '7'. One canonical form."""
-    s = str(cid).strip().upper()
-    s = re.sub(r"^(EXAMPLE|CPD\.?\s*NO\.?|COMPOUND)\s*", "", s)
-    return s.lstrip("0") or s
+    """'007' / 'Example 7' / 'Cpd. No. 7' → '7'. One canonical form.
+
+    Delegates to the extractor's own `normalize_cid`, because "one canonical
+    form" has to mean ONE. This function used to re-implement it with
+    `s.lstrip("0")`, which only strips zeros at position 0 — so BindingDB's
+    `I-0117` stayed `I-0117` while the patent's `I-117` normalised to `I-117`
+    and the two never met. On US9718790 that was 1,119 compounds scored as
+    missing that we had extracted correctly all along: a benchmark measuring
+    its own normaliser rather than the extraction.
+    """
+    from patentdb.sources.uspto_assays import normalize_cid
+    return normalize_cid(str(cid)).upper()
 
 
 def _skeleton(ik: str) -> str:

@@ -547,3 +547,38 @@ def test_a_replicate_count_column_is_not_a_second_assay():
     assert recs[("1", "FLAP Ki (uM)")].n_runs == 8
     assert recs[("1", "HWB IC50 (uM)")].n_runs == 3
     assert recs[("2", "FLAP Ki (uM)")].n_runs == 10
+
+
+def test_the_benchmark_normalises_ids_the_way_the_extractor_does():
+    """"One canonical form" has to mean ONE.
+
+    `reference_bench._norm_cid` re-implemented normalisation with
+    `s.lstrip("0")`, which only strips zeros at position 0 — so BindingDB's
+    `I-0117` stayed `I-0117` while the patent's `I-117` normalised to `I-117`
+    and the two never met. 1,119 compounds on US9718790 scored as missing that
+    had been extracted correctly all along.
+    """
+    from patentdb.scripts.eval.reference_bench import _norm_cid
+    for raw in ("I-0117", "I-0020", "A-0005", "007", "Example 0012", "N47",
+                "48-1", "100AA"):
+        assert _norm_cid(raw) == A.normalize_cid(raw).upper(), raw
+    assert _norm_cid("I-0117") == _norm_cid("I-117")
+
+
+def test_a_bindingdb_attribution_without_the_word_example():
+    """BDB writes the patent's compound id straight after the patent number.
+
+    The trailing "Compound N" is BindingDB's own within-table numbering, NOT
+    the patent's id. Measured on US9303033: the first token hits our extracted
+    ids 2,491 times and misses 12; the trailing one hits ZERO and misses 2,482.
+    """
+    from patentdb.scripts.eval.reference_bench import _EXAMPLE_REF
+    def ids(s):
+        return [m.group(2) for m in _EXAMPLE_REF.finditer(s)]
+    assert ids("US8952177, Example 1") == ["1"]
+    assert ids("US8722692, 1") == ["1"]
+    assert ids("US9303033, N47, Table 58A, Compound 11") == ["N47"]
+    assert ids("BDBM220085::US9303033, J48, Table 58A, Compound 33") == ["J48"]
+    # ...and a section word is never mistaken for an identifier.
+    assert ids("US1234567, Table 5") == []
+    assert ids("US1234567, Compound 9") == []
