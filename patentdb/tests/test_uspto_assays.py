@@ -518,3 +518,32 @@ def test_a_prose_clause_may_only_tighten_a_bin_never_widen_it():
     # ...and a scale Form 1 already read correctly is left alone.
     a = parse_bin_key("++++: IC50 >= 1 uM   +++: 1 uM > IC50 >= 0.1 uM")
     assert (a["++++"].lo, a["++++"].hi) == (1.0, None)
+
+
+def test_a_replicate_count_column_is_not_a_second_assay():
+    """US8952177 writes the run count in its OWN column beside the value.
+
+        ['1', '0.0038', '(8)', '0.4', '(3)']
+
+    and lets each assay's header SPAN both columns, so the count column
+    inherits "FLAP Binding wild type HTRF Ki (μM)" and classifies as a second
+    assay. That both invents a duplicate assay column and costs every value
+    its `n` — the attach step only fires on a neighbour typed NRUNS/UNKNOWN.
+    Jie's curated CSV carries n=8 and n=3 for this compound, so the count is
+    data someone asked for, not decoration.
+    """
+    hdr = [[A.Cell("Cmp No."), A.Cell("FLAP Ki (uM)"), A.Cell("FLAP Ki (uM)"),
+            A.Cell("HWB IC50 (uM)"), A.Cell("HWB IC50 (uM)")]] \
+        if hasattr(A, "Cell") else None
+    from patentdb.sources.uspto_xml import Cell, Table
+    hdr = [[Cell("Cmp No."), Cell("FLAP Ki (uM)"), Cell("FLAP Ki (uM)"),
+            Cell("HWB IC50 (uM)"), Cell("HWB IC50 (uM)")]]
+    body = [[Cell("1"), Cell("0.0038"), Cell("(8)"), Cell("0.4"), Cell("(3)")],
+            [Cell("2"), Cell("0.0014"), Cell("(10)"), Cell("0.22"), Cell("(10)")]]
+    t = Table(table_id="T1", n_cols=5, header_rows=hdr, body_rows=body)
+    kinds = [c.kind for c in A.build_columns(t)]
+    assert kinds == [A.CID, A.ASSAY, A.NRUNS, A.ASSAY, A.NRUNS]
+    recs = {(r.cid, r.assay_name): r for r in A.extract_from_tables([t])}
+    assert recs[("1", "FLAP Ki (uM)")].n_runs == 8
+    assert recs[("1", "HWB IC50 (uM)")].n_runs == 3
+    assert recs[("2", "FLAP Ki (uM)")].n_runs == 10

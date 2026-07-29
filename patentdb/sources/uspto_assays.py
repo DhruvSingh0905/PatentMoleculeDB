@@ -785,6 +785,18 @@ def build_columns(table: Table, inherited: list[str] | None = None,
         samples = [r[i].text for r in rows[:40] if len(r) > i]
         c = classify_column(headers[i] if i < len(headers) else "", samples)
         c.index = i
+        # A column of `(8)`, `(10)`, `(3)` is a replicate count whatever its
+        # header says. Patents write the count in its own column beside the
+        # value and let the assay's header SPAN both, so US8952177's run-count
+        # columns inherited "FLAP Binding wild type HTRF Ki (μM)" and
+        # classified as a second assay — which both invented a duplicate assay
+        # column and cost every value its `n` (the attach below only fires on a
+        # neighbour typed NRUNS or UNKNOWN). The values are unambiguous where
+        # the header is not, so they win here.
+        vals = [s.strip() for s in samples if s.strip()]
+        if (c.kind == ASSAY and vals
+                and sum(bool(_NRUNS_ONLY.match(v)) for v in vals) > len(vals) * 0.6):
+            c = Column(i, c.header, NRUNS)
         cols.append(c)
 
     # Exactly one id column. If the header didn't name one, take the leftmost
