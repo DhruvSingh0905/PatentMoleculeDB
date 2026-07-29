@@ -1182,11 +1182,22 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     assay names (e.g. "probe 1, probe 2") and the data cells are also
     comma-separated, each sub-value is emitted as a separate AssayRecord paired
     with its corresponding sub-name.
+
+    Relaxed CID matching: some tables use bare integers with a trailing period
+    ("4.", "5.") as compound identifiers. These are accepted as CIDs when the
+    CID column was classified as such and the value matches a relaxed pattern
+    (digits optionally followed by a period, or the standard _CID_PAT).
     """
     out: list[AssayRecord] = []
     last_header: dict[int, list[str]] = {}
     by_table_id: dict[str, list[str]] = {}
     unit_by_table_id: dict[str, str] = {}
+
+    # Relaxed CID pattern: accepts bare integers with optional trailing period,
+    # e.g. "4." or "12" — these appear when compound numbers are listed without
+    # a prefix. The standard _CID_PAT handles alphanumeric ids like "Cpd-4".
+    import re as _re
+    _BARE_INT_CID = _re.compile(r'^\d+\.?$')
 
     for t in tables:
         hdr_rows, data_rows = _header_rows_of(t)
@@ -1219,7 +1230,12 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
             if _is_spacer(row) or len(row) <= cid_col.index:
                 continue
             raw_cid = row[cid_col.index].text.strip()
-            if not raw_cid or not _CID_PAT.match(raw_cid):
+            if not raw_cid:
+                continue
+            # Accept standard CID patterns AND bare integers with optional
+            # trailing period ("4.", "12") that appear in tables where compound
+            # numbers are listed without a prefix letter.
+            if not (_CID_PAT.match(raw_cid) or _BARE_INT_CID.match(raw_cid)):
                 continue
             cid = normalize_cid(raw_cid)
             if not cid:

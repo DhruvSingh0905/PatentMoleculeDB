@@ -198,6 +198,24 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
         sym = m.group(1)
         if sym in out:
             continue
+        # A grade, a colon and a number is not a key. Every part of Form 1
+        # except the symbol is optional, so `A: 4` and `E=20` match it — and a
+        # patent's chemistry prose is full of both. 97 such matches in
+        # US20230365584A1 alone. Harmless while the harvest text was a few
+        # hundred characters of local legend; the preceding window is now
+        # 6,000, so junk is one widening away from being adopted as a scale.
+        #
+        # A real key always carries at least one of: a unit, a comparison, the
+        # name of the metric, or a RANGE. The range is the one that had to be
+        # learned: US11254686 writes `A=<10 nM  B=10-50 nM  ...  D=100-500`,
+        # stating the unit early and dropping it later, so `D=100-500` has no
+        # unit, no comparison and no metric — and requiring only the first
+        # three cost that patent 372 records. Two numbers joined as a range is
+        # itself the evidence, and `A: 4` / `E=20` have neither.
+        if not (m.group("lou") or m.group("hiu") or m.group("hi2u")
+                or m.group("loop") or m.group("hiop") or m.group("hi2")
+                or re.search(r"IC\s*50|EC\s*50|Ki|Kd|value", m.group(0), re.I)):
+            continue
         lo = hi = None
         unit = _canon_unit(m.group("lou") or m.group("hiu") or m.group("hi2u"))
         lo_op, lo_val = m.group("loop"), m.group("lo")

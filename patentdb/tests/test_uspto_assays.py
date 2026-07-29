@@ -582,3 +582,26 @@ def test_a_bindingdb_attribution_without_the_word_example():
     # ...and a section word is never mistaken for an identifier.
     assert ids("US1234567, Table 5") == []
     assert ids("US1234567, Compound 9") == []
+
+
+def test_a_grade_a_colon_and_a_number_is_not_a_key():
+    """Every part of Form 1 except the symbol is optional, so `A: 4` matched it.
+
+    A patent's chemistry prose is full of those — US20230365584A1 alone yields
+    97 Form-1 matches, including `A: 4`, `B: 4`, `E=20`. Harmless while the
+    harvest text was a few hundred characters of local legend; the preceding
+    window is now 6,000, so junk is one widening away from becoming a scale.
+
+    A real key carries a unit, a comparison, the metric name, or a RANGE. The
+    range had to be learned: US11254686 writes `A=<10 nM  B=10-50 nM ...
+    D=100-500`, stating the unit early and dropping it later, and requiring
+    only the first three cost that patent 372 records.
+    """
+    from patentdb.sources.bin_legend import parse_bin_key
+    for junk in ("A: 4", "B: 4", "E=20", "E=30", "a: 5",
+                 "Ring A is a C5-C7 cycloalkyl", "Step B: 4-methoxythiophene"):
+        assert parse_bin_key(junk) == {}, junk
+    k = parse_bin_key("A=<10 nM B=10-50 nM C=50-100 nM D=100-500")
+    assert (k["D"].lo, k["D"].hi, k["D"].unit) == (100.0, 500.0, "nM")
+    d = parse_bin_key("A denotes IC50 < 1 nM; B denotes 1 nM ≤ IC50 < 10 nM")
+    assert (d["A"].hi, d["B"].lo, d["B"].hi) == (1.0, 1.0, 10.0)
