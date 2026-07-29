@@ -299,3 +299,46 @@ def test_an_unusable_id_column_says_WHY_not_that_the_model_guessed():
         validate(rule, t, baseline_rows=0)
     msg = str(e.value)
     assert "id" in msg.lower() and "12.5" in msg, msg
+
+
+def test_a_rule_that_yields_nothing_is_not_an_answer():
+    """`lib.add` ran BEFORE `apply_rule`, so a rule producing zero records was
+    indistinguishable from a layout that needed nothing.
+
+    US9302989: gap found (1,561 rows), a `column_map` proposed whose column
+    indices are in fact correct, `validate()` reported "fired on 0/1557
+    held-out rows", the suspended gate adopted it anyway, `apply_rule` returned
+    nothing — and every later pass saw `already_known` and never asked again.
+    The rule is still remembered (it is not wrong, only insufficient), but the
+    gap now leaves the tier as a capability gap with its rows still counted.
+    """
+    from patentdb.core import config
+    from patentdb.repair.loop import repair_patent
+
+    xml = (config.OUTPUT_DIR / "uspto_xml" / "US9302989.xml")
+    if not xml.exists():
+        import pytest
+        pytest.skip("US9302989 not cached")
+    _, rep = repair_patent("US9302989", xml.read_text(errors="ignore"), max_calls=0)
+    assert rep.capability_gaps, "an inert rule must surface as a capability gap"
+    g = rep.capability_gaps[0]
+    assert g["rows_at_stake"] > 1000
+    assert g["rule_kind"] == "column_map"
+
+
+def test_a_capability_patch_must_fix_the_gap_it_was_bought_for():
+    """`verify_patch` asks "did anything get worse", never "did anything get
+    better", so a patch that changes no behaviour sails through.
+
+    Sonnet's first `classify_column` proposal was applied clean — corpus fine,
+    tests green, 70,051 usable — and US9302989 still produced 30 records with
+    the gap still open. That is the defect this module exists to fix, one tier
+    up: an answer that does nothing recorded as an answer.
+    """
+    import inspect
+
+    from patentdb.repair import capability
+
+    src = inspect.getsource(capability.repair_capabilities)
+    assert "patch is inert" in src
+    assert "gap_rows_recovered" in src

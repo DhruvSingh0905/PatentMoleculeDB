@@ -48,6 +48,10 @@ class RepairReport:
     adopted_over_objection: int = 0
     escalations: list[dict] = field(default_factory=list)
     rejections: list[dict] = field(default_factory=list)
+    # Gaps where a rule was available and produced NOTHING. Not a bad rule —
+    # a layout no rule kind can express, which is the queue the code-patch
+    # tier reads. See `repair.capability`.
+    capability_gaps: list[dict] = field(default_factory=list)
 
     def summary(self) -> str:
         return (f"{self.patent_id}: {self.gaps_found} gaps "
@@ -55,6 +59,7 @@ class RepairReport:
                 f"{self.adopted} adopted, {self.rejected} rejected, "
                 f"{self.escalated} escalated, "
                 f"{self.adopted_over_objection} over-objection, "
+                f"{len(self.capability_gaps)} capability-gap, "
                 f"+{self.rows_recovered} rows")
 
 
@@ -383,6 +388,7 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
             })
             continue
         rule = lib.get(gap.fingerprint)
+        fresh = False
         if rule is not None:
             report.already_known += 1
         else:
@@ -439,9 +445,13 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
                                              "objection": str(e)}
                         logger.info("repair: %s adopted over objection — %s",
                                     gap.fingerprint, str(e)[:140])
-            lib.add(rule)
+            fresh = True
 
+        # These two are ANSWERS that legitimately produce no records, so they
+        # are persisted here rather than by the yield test below.
         if rule.kind == ESCALATE:
+            if fresh:
+                lib.add(rule)
             report.escalated += 1
             report.escalations.append({
                 "fingerprint": gap.fingerprint, "patent": patent_id,
@@ -451,6 +461,8 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
             })
             continue
         if rule.kind == NOT_ASSAY:
+            if fresh:
+                lib.add(rule)
             continue
 
         table = by_id.get(gap.table_id)
@@ -462,6 +474,49 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
         except Rejected as e:
             logger.warning("repair: rule %s failed at apply time: %s", gap.fingerprint, e)
             continue
+
+        # A rule that produces NOTHING is not an answer, and must never become
+        # the remembered one.
+        #
+        # This is how US9302989 stayed broken. The gap was found (1,561 rows),
+        # Haiku proposed a `column_map` whose column indices were in fact
+        # correct, `validate()` reported "fired on 0/1557 held-out rows", the
+        # suspended gate adopted it anyway, `apply_rule` returned zero — and
+        # `lib.add` had already run, so every later pass saw `already_known`
+        # and never asked again. Eight layouts in the library are in that
+        # state. The real blocker was one layer below anything a rule can
+        # reach: the cell reads `0.0125, nd`, two probe measurements in one
+        # cell, and `parse_value` returns None for it.
+        #
+        # Yield is the one signal here that needs no judgement — it is
+        # observed, not scored — and it was the only one being ignored.
+        if not got:
+            # REMEMBERED, and reported as a capability gap. Both halves matter.
+            #
+            # Remembered, because the rule is usually not wrong — US9302989's
+            # `column_map` names exactly the right columns and will start
+            # producing the moment `parse_value` can read `0.0125, nd`. Throwing
+            # it away would buy the same answer again every run.
+            #
+            # Reported, because "known" must stop meaning "answered". That
+            # conflation is the whole defect: `lib.add` ran before `apply_rule`,
+            # so a rule yielding zero was indistinguishable from a layout that
+            # needed nothing, and 1,561 rows sat behind an `already_known` for
+            # good. The gap now leaves this tier with its rows still counted and
+            # goes to `repair.capability`, which may patch the code instead.
+            if fresh:
+                lib.add(rule)
+            report.capability_gaps.append({
+                "fingerprint": gap.fingerprint, "patent": patent_id,
+                "table": gap.table_id, "rows_at_stake": gap.severity,
+                "rule_kind": rule.kind, "rule_payload": rule.payload,
+                "why": _why_nothing_applied(rule, table),
+                "unparsed_examples": gap.unparsed_examples[:8],
+            })
+            continue
+
+        if fresh:
+            lib.add(rule)
         if got:
             report.adopted += 1
             report.rows_recovered += len(got)
