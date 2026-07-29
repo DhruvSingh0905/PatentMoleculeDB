@@ -283,6 +283,12 @@ def collect_gaps(patent_ids: list[str] | None = None) -> list[dict]:
             logger.warning("capability: %s raised %r", pid, e)
             continue
         out.extend(rep.capability_gaps)
+    # A gap with nothing at stake is not a gap. Once the code tier fixes a
+    # layout, the deterministic parser reads it directly and the rule bought
+    # for it becomes redundant — `apply_rule` returns nothing because there is
+    # nothing left to recover, not because anything is broken. US9302989 sat in
+    # this list at 0 rows after its own patch landed.
+    out = [g for g in out if g["rows_at_stake"] > 0]
     # One question per FINGERPRINT, not per patent — the whole economic argument
     # of this loop. Keep the instance with the most rows riding on it.
     best: dict[str, dict] = {}
