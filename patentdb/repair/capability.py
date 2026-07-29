@@ -57,9 +57,49 @@ PATCHABLE: dict[str, tuple[Path, str]] = {
                         "decides what a column holds from its header and values"),
     "_header_rows_of": (_SRC / "uspto_assays.py",
                         "decides which rows of a table are header rather than data"),
+    "build_columns": (_SRC / "uspto_assays.py",
+                      "builds the Column list for a table, id column included"),
+    "extract_from_tables": (_SRC / "uspto_assays.py",
+                            "walks rows and EMITS AssayRecords from assay columns"),
     "parse_bin_key": (_SRC / "bin_legend.py",
                       "turns a legend's grade symbols into numeric ranges"),
 }
+
+# How many functions one proposal may rewrite. Three, because the shapes that
+# defeated the single-function tier need two or three cooperating changes
+# (see US9302989: header recognition + record emission) and nothing observed
+# has needed more — while every extra function widens a blast radius the
+# verifier has to cover and a human has to read.
+MAX_TARGETS = 3
+
+# Bump whenever the tool schema, the system prompt or the candidate list
+# changes. The API cache is keyed by fingerprint and model, and neither moves
+# when the QUESTION does: widening the tool from one target to a list of three
+# replayed a cached single-target answer, which now parses as an empty
+# `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
+# exists to prevent one tier up — a stale answer to a question we no longer ask.
+PATCH_EPOCH = "v2-multi-target"
+
+# Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
+# the reason is that this tier's economics are the opposite of the rule tier's.
+#
+# A rule is bought per layout and there are hundreds of layouts, so a cheap
+# model that is right most of the time wins. A capability patch is bought per
+# CAPABILITY — three in the whole corpus — and every attempt costs a full
+# verification run: the entire corpus re-extracted plus the test suite, minutes
+# of compute per candidate. The token difference between models is noise beside
+# that, and a wrong patch costs a verification run whether it cost $0.002 or
+# $0.05 to ask for.
+#
+# Measured on the one gap that has been through it: Haiku diagnosed the shape
+# correctly — "two assays in one column, two comma-separated measurements per
+# cell" — and then wrote code calling a helper that does not exist and invented
+# a `multi_value` return shape; the suite caught it on `1,234.5`, a thousands
+# separator its comma-split read as two measurements. Sonnet, given the same
+# prompt and three targets, wrote `classify_column` + `extract_from_tables` and
+# recovered 1,628 records. Diagnosis is easy here; writing code against a live
+# codebase is not.
+MODEL_LADDER = (config.MODEL_SONNET, config.MODEL_OPUS)
 
 
 def _function_source(module: Path, name: str) -> str | None:
@@ -73,7 +113,8 @@ PATCH_SYSTEM = """You are widening an extraction CODEBASE, not describing a tabl
 
 You are shown a patent table our parser reads as empty or unusable, the rule \
 that was tried and produced nothing, and the current source of the functions \
-that decide how such a table is read. Return a corrected version of ONE of them.
+that decide how such a table is read. Return corrected versions of the ones \
+that need to change — up to three.
 
 The failure is that our code has no way to express what this table does. Do not \
 propose something specific to this patent: name the general shape and handle it. \
@@ -92,9 +133,14 @@ everything upstream of it and will be rejected.
 in the corpus and is discarded if total records fall or any healthy patent \
 loses rows. Satisfying a count by parsing less is the failure mode being \
 guarded against, and it will not pass.
+  - Give EVERY function the fix needs, not the smallest edit you can defend. \
+They are applied and verified together, and a half-fix is not a smaller risk — \
+it is a patch that changes nothing, which is discarded. A shape where a column \
+header names two assays needs the classifier to see that AND the emitter to \
+produce two records; either alone is inert.
   - If none of the offered functions is the right place, say so in `diagnosis` \
-and set `target` to `none`. An honest refusal is cheap; a patch to the wrong \
-function wastes a verification run and teaches us nothing.
+and return an empty `patches` list. An honest refusal is cheap; a patch to the \
+wrong function wastes a verification run and teaches us nothing.
 
 Your patch is applied to a scratch copy, run over the whole corpus and the full \
 test suite, and discarded unless every check passes. Describe the fix; the \
@@ -102,7 +148,8 @@ harness decides."""
 
 PATCH_TOOL = {
     "name": "propose_capability_patch",
-    "description": "Widen one function so a currently-unreadable layout parses.",
+    "description": ("Widen one to three functions so a currently-unreadable "
+                    "layout parses."),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -111,18 +158,30 @@ PATCH_TOOL = {
                 "description": ("One or two sentences: what shape this table uses "
                                 "that the current code cannot express."),
             },
-            "target": {
-                "type": "string",
-                "enum": [*PATCHABLE, "none"],
-                "description": "Which function to widen, or `none` if it is not one of these.",
-            },
-            "function_source": {
-                "type": "string",
-                "description": ("The complete corrected function. Empty when "
-                                "target is `none`."),
+            "patches": {
+                "type": "array",
+                "maxItems": MAX_TARGETS,
+                "description": ("The functions to rewrite. Give every function the "
+                                "fix needs — they are applied and verified "
+                                "TOGETHER, so a half-fix is not a smaller risk, "
+                                "it is a patch that changes nothing and is "
+                                "discarded. Empty to decline."),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string", "enum": [*PATCHABLE]},
+                        "function_source": {
+                            "type": "string",
+                            "description": ("The complete corrected function, from "
+                                            "`def` through its final return, "
+                                            "indented at module level."),
+                        },
+                    },
+                    "required": ["target", "function_source"],
+                },
             },
         },
-        "required": ["diagnosis", "target", "function_source"],
+        "required": ["diagnosis", "patches"],
     },
 }
 
@@ -169,7 +228,7 @@ def propose_capability_patch(gap_info: dict, table, *,
         f"It produced NOTHING. {gap_info.get('why', '')}\n\n"
         f"CANDIDATE FUNCTIONS:\n\n" + "\n\n".join(offered))
 
-    key = f"capability::{gap_info['fingerprint']}::{model}"
+    key = f"capability::{PATCH_EPOCH}::{gap_info['fingerprint']}::{model}"
     cached = get_cached(model, key)
     if cached is not None:
         try:
@@ -255,88 +314,134 @@ def repair_capabilities(*, apply: bool | None = None, limit: int | None = None,
         table = {t.table_id: t for t in assemble_blocks(parse_tables(xml))}.get(g["table"])
         if table is None:
             continue
-        prop = propose_capability_patch(g, table, model=model)
-        if not prop or prop.get("target") in (None, "none") or not prop.get("function_source"):
-            declined += 1
-            results.append({"ok": False, "fingerprint": g["fingerprint"],
-                            "rows_at_stake": g["rows_at_stake"],
-                            "why": "model declined: " + (prop or {}).get("diagnosis", "no proposal"),
-                            "diagnosis": (prop or {}).get("diagnosis", "")})
-            continue
-
-        target = prop["target"]
-        module, _ = PATCHABLE[target]
-        current = _function_source(module, target)
-        if current is None:
-            declined += 1
-            continue
-        patched = module.read_text().replace(current, prop["function_source"].rstrip(), 1)
-        if patched == module.read_text():
-            declined += 1
-            results.append({"ok": False, "fingerprint": g["fingerprint"],
-                            "why": f"could not splice {target} back into {module.name}"})
-            continue
-
-        verdict = verify_patch(module, patched, baseline=base)
-
-        # ...and it must FIX THE GAP IT WAS BOUGHT FOR.
-        #
-        # `verify_patch` asks "did anything get worse". Nothing asks "did
-        # anything get better", so a patch that changes no behaviour at all
-        # sails through: Sonnet's first `classify_column` proposal was applied
-        # clean — corpus fine, tests green, 70,051 usable — and US9302989 still
-        # produced 30 records with the gap still open. That is the same defect
-        # this whole module exists to fix, one tier up: an answer that does
-        # nothing being recorded as an answer.
-        #
-        # Scoped to the gap's own patent, because that is the claim being
-        # tested. A patch may legitimately move nothing elsewhere.
-        if verdict.get("ok"):
-            before = base.get(g["patent"], 0)
-            after = verdict.get("per_patent", {}).get(g["patent"], 0)
-            if after <= before:
-                verdict["ok"] = False
-                verdict["why"] = (
-                    f"patch is inert: {g['patent']} still yields {after} usable "
-                    f"records (was {before}). It broke nothing and fixed nothing, "
-                    f"and the {g['rows_at_stake']} rows it was bought for are "
-                    f"still unread.")
+        ladder = (model,) if model else MODEL_LADDER
+        for attempt, use_model in enumerate(ladder, 1):
+            outcome = _try_one(g, table, use_model, base, do_apply,
+                               last=attempt == len(ladder))
+            if outcome is None:
+                continue                       # declined; climb the ladder
+            results.append(outcome)
+            if outcome.get("ok"):
+                applied += 1
             else:
-                verdict["gap_rows_recovered"] = after - before
-        entry = {
-            "action": "capability_patch", "fingerprint": g["fingerprint"],
-            "patent": g["patent"], "table": g["table"],
-            "rows_at_stake": g["rows_at_stake"], "target": target,
-            # Absolute, and named `before_source`/`after_source`: this shares
-            # `parser_repair`'s journal, so it must share its contract or
-            # `--revert` fails on the entry it was meant to undo.
-            "module": str(module),
-            "signature": f"{target}::{g['fingerprint']}",
-            "diagnosis": prop.get("diagnosis", ""), "model": model or config.MODEL_HAIKU,
-            "before_source": current, "after_source": prop["function_source"].rstrip(),
-            "applied": False, "why": verdict.get("why", ""),
-            "total_usable_before": sum(v for k, v in base.items() if k != "_clean"),
-            "total_usable_after": verdict.get("total_usable"),
-            "coverage_moved": {
-                p: (base[p], verdict.get("per_patent", {}).get(p, 0))
-                for p in base if p != "_clean"
-                and verdict.get("per_patent", {}).get(p, 0) != base[p]},
-        }
-        if verdict.get("ok") and do_apply:
-            module.write_text(patched)
-            entry["applied"] = True
-            applied += 1
-        elif not verdict.get("ok"):
+                declined += 1
+            break
+        else:
             declined += 1
-        jid = journal_append(entry)
-        results.append({"ok": bool(verdict.get("ok")), "journal_id": jid,
-                        "fingerprint": g["fingerprint"], "target": target,
-                        "rows_at_stake": g["rows_at_stake"],
-                        "diagnosis": prop.get("diagnosis", ""),
-                        "why": verdict.get("why", ""),
-                        "gap_rows_recovered": verdict.get("gap_rows_recovered"),
-                        "total_usable": verdict.get("total_usable"),
-                        "coverage_moved": entry["coverage_moved"]})
-
     return {"gaps": len(gaps), "applied": applied, "declined": declined,
             "results": results}
+
+
+def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
+             *, last: bool) -> dict | None:
+    """One model's attempt at one gap. None means "declined, try the next".
+
+    A rung that fails returns None rather than a result, so the caller climbs.
+    The LAST rung always returns a result — otherwise a gap every model refused
+    would vanish from the report instead of being visible as still open.
+    """
+    from .parser_repair import journal_append as _journal
+    prop = propose_capability_patch(g, table, model=model)
+    patches = (prop or {}).get("patches") or []
+    if not prop or not patches:
+        if not last:
+            return None
+        return {"ok": False, "fingerprint": g["fingerprint"], "model": model,
+                "rows_at_stake": g["rows_at_stake"],
+                "why": "model declined: " + (prop or {}).get("diagnosis", "no proposal"),
+                "diagnosis": (prop or {}).get("diagnosis", "")}
+
+    # Splice every function into its module IN MEMORY first. Two targets can
+    # live in one file, so edits accumulate per module and are written once —
+    # patching the same file twice from its on-disk text would drop the first.
+    edited: dict[Path, str] = {}
+    parts: list[dict] = []
+    for patch in patches[:MAX_TARGETS]:
+        target = patch.get("target")
+        body = (patch.get("function_source") or "").rstrip()
+        if target not in PATCHABLE or not body:
+            return None if not last else {
+                "ok": False, "fingerprint": g["fingerprint"], "model": model,
+                "rows_at_stake": g["rows_at_stake"],
+                "why": f"unknown or empty target {target!r}",
+                "diagnosis": prop.get("diagnosis", "")}
+        mod, _ = PATCHABLE[target]
+        base_text = edited.get(mod, mod.read_text())
+        current = _function_source(mod, target)
+        if current is None or current not in base_text:
+            return None if not last else {
+                "ok": False, "fingerprint": g["fingerprint"], "model": model,
+                "rows_at_stake": g["rows_at_stake"],
+                "why": f"could not locate {target} in {mod.name}",
+                "diagnosis": prop.get("diagnosis", "")}
+        edited[mod] = base_text.replace(current, body, 1)
+        parts.append({"module": str(mod), "target": target,
+                      "before_source": current, "after_source": body})
+
+    module, patched = next(iter(edited.items()))
+    also = {m: t for m, t in edited.items() if m != module}
+    targets = ", ".join(p["target"] for p in parts)
+
+    verdict = verify_patch(module, patched, baseline=base, also=also)
+
+    # ...and it must FIX THE GAP IT WAS BOUGHT FOR.
+    #
+    # `verify_patch` asks "did anything get worse". Nothing asks "did anything
+    # get better", so a patch that changes no behaviour at all sails through:
+    # Sonnet's first single-target `classify_column` proposal was applied clean
+    # — corpus fine, tests green, 70,051 usable — and US9302989 still produced
+    # 30 records with the gap still open. That is the same defect this module
+    # exists to fix, one tier up: an answer that does nothing being recorded as
+    # an answer.
+    if verdict.get("ok"):
+        before = base.get(g["patent"], 0)
+        after = verdict.get("per_patent", {}).get(g["patent"], 0)
+        if after <= before:
+            verdict["ok"] = False
+            verdict["why"] = (
+                f"patch is inert: {g['patent']} still yields {after} usable "
+                f"records (was {before}). It broke nothing and fixed nothing, and "
+                f"the {g['rows_at_stake']} rows it was bought for are still unread.")
+        else:
+            verdict["gap_rows_recovered"] = after - before
+
+    # A rung that failed climbs, and leaves no journal entry: the record that
+    # matters is what was applied and what the last model could not do.
+    if not verdict.get("ok") and not last:
+        logger.info("capability: %s declined %s (%s) — escalating",
+                    model, g["fingerprint"], verdict.get("why", "")[:90])
+        return None
+
+    entry = {
+        "action": "capability_patch", "fingerprint": g["fingerprint"],
+        "patent": g["patent"], "table": g["table"],
+        "rows_at_stake": g["rows_at_stake"], "target": targets,
+        "signature": f"{targets}::{g['fingerprint']}",
+        "diagnosis": prop.get("diagnosis", ""), "model": model,
+        # The group, and a single-patch view of its first member so the shared
+        # journal reader keeps working on old and new entries alike.
+        "patches": parts,
+        "module": parts[0]["module"],
+        "before_source": parts[0]["before_source"],
+        "after_source": parts[0]["after_source"],
+        "applied": False, "why": verdict.get("why", ""),
+        "gap_rows_recovered": verdict.get("gap_rows_recovered"),
+        "total_usable_before": sum(v for k, v in base.items() if k != "_clean"),
+        "total_usable_after": verdict.get("total_usable"),
+        "coverage_moved": {
+            q: (base[q], verdict.get("per_patent", {}).get(q, 0))
+            for q in base if q != "_clean"
+            and verdict.get("per_patent", {}).get(q, 0) != base[q]},
+    }
+    if verdict.get("ok") and do_apply:
+        for mod, text in edited.items():
+            mod.write_text(text)
+        entry["applied"] = True
+    jid = _journal(entry)
+    return {"ok": bool(verdict.get("ok")), "journal_id": jid, "model": model,
+            "fingerprint": g["fingerprint"], "target": targets,
+            "rows_at_stake": g["rows_at_stake"],
+            "diagnosis": prop.get("diagnosis", ""), "why": verdict.get("why", ""),
+            "gap_rows_recovered": verdict.get("gap_rows_recovered"),
+            "total_usable": verdict.get("total_usable"),
+            "coverage_moved": entry["coverage_moved"]}

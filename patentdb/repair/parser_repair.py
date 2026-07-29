@@ -189,7 +189,8 @@ def corpus_defects(xml_dir: Path | None = None, limit: int | None = None) -> lis
 # ── the acceptance test ───────────────────────────────────────────
 
 def verify_patch(module: Path, new_source: str, *, xml_dir: Path | None = None,
-                 baseline: dict | None = None) -> dict:
+                 baseline: dict | None = None,
+                 also: dict[Path, str] | None = None) -> dict:
     """Run a candidate patch against the whole corpus in a scratch copy.
 
     Never touches the working tree. Four conditions, all mandatory:
@@ -229,10 +230,16 @@ def verify_patch(module: Path, new_source: str, *, xml_dir: Path | None = None,
             (sandbox / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, sandbox / rel)
 
-        target = sandbox / module.relative_to(root)
-        if not target.exists():
-            return {"ok": False, "why": f"{module} is not a tracked file"}
-        target.write_text(new_source)
+        # `also` carries the rest of a MULTI-FUNCTION patch. Some shapes cannot
+        # be fixed one function at a time: US9302989 needs `classify_column` to
+        # see a two-assay header AND the emitter to split one cell into two
+        # records, and either alone is inert. They must be verified together or
+        # each half looks like a patch that changes nothing.
+        for mod, src_text in {module: new_source, **(also or {})}.items():
+            target = sandbox / Path(mod).relative_to(root)
+            if not target.exists():
+                return {"ok": False, "why": f"{mod} is not a tracked file"}
+            target.write_text(src_text)
 
         probe = _PROBE.replace("__XML_DIR__", str(xml_dir.resolve()))
         (sandbox / "_probe.py").write_text(probe)
@@ -595,13 +602,23 @@ def revert(entry_id: str) -> dict:
         return {"ok": False, "why": f"no journal entry {entry_id!r}"}
     if not entry.get("applied"):
         return {"ok": False, "why": f"{entry['id']} was never applied"}
-    module = Path(entry["module"])
-    source = module.read_text()
-    if entry["after_source"] not in source:
-        return {"ok": False, "why": (f"{module.name} no longer contains the text "
-                                     f"{entry['id']} wrote — it has been edited "
-                                     f"since; revert by hand")}
-    module.write_text(source.replace(entry["after_source"], entry["before_source"], 1))
+    # A capability patch may span several functions and modules; undoing one
+    # half of a paired change leaves the tree in a state neither version ever
+    # ran in, so the whole group goes back or none of it does.
+    parts = entry.get("patches") or [{"module": entry["module"],
+                                      "before_source": entry["before_source"],
+                                      "after_source": entry["after_source"]}]
+    for part in parts:
+        m = Path(part["module"])
+        if part["after_source"] not in m.read_text():
+            return {"ok": False, "why": (f"{m.name} no longer contains the text "
+                                         f"{entry['id']} wrote — it has been "
+                                         f"edited since; revert by hand")}
+    for part in parts:
+        m = Path(part["module"])
+        m.write_text(m.read_text().replace(part["after_source"],
+                                           part["before_source"], 1))
+    module = Path(parts[0]["module"])
     journal_append({
         "action": "revert", "reverted": entry["id"], "module": str(module),
         "signature": entry.get("signature", ""),
@@ -617,12 +634,19 @@ def apply_journaled(entry_id: str) -> dict:
     entry = journal_find(entry_id)
     if entry is None:
         return {"ok": False, "why": f"no journal entry {entry_id!r}"}
-    module = Path(entry["module"])
-    source = module.read_text()
-    if entry["before_source"] not in source:
-        return {"ok": False, "why": f"{module.name} no longer matches the "
-                                    f"pre-image {entry['id']} was written against"}
-    module.write_text(source.replace(entry["before_source"], entry["after_source"], 1))
+    parts = entry.get("patches") or [{"module": entry["module"],
+                                      "before_source": entry["before_source"],
+                                      "after_source": entry["after_source"]}]
+    for part in parts:
+        m = Path(part["module"])
+        if part["before_source"] not in m.read_text():
+            return {"ok": False, "why": f"{m.name} no longer matches the "
+                                        f"pre-image {entry['id']} was written against"}
+    for part in parts:
+        m = Path(part["module"])
+        m.write_text(m.read_text().replace(part["before_source"],
+                                           part["after_source"], 1))
+    module = Path(parts[0]["module"])
     journal_append({
         "action": "force-apply", "forced": entry["id"], "module": str(module),
         "signature": entry.get("signature", ""),

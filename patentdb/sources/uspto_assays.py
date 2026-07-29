@@ -696,6 +696,12 @@ def classify_column(header: str, samples: list[str]) -> Column:
     `lc-?ms` exclusion swallowed the entire patent, all 22 reference compounds.
     Both conditions are required, so "LCMS IC50 method" — a metric name with no
     concentration unit — still falls through to the exclusion as before.
+
+    Multi-assay headers: a header of the form "probe 1, probe 2" names two
+    assays in one column. When the header contains a comma and each part looks
+    like an assay name (or the data cells are comma-separated value lists), the
+    column is classified as ASSAY with `assay_name` set to the full header so
+    that `extract_from_tables` can split it later.
     """
     h = (header or "").strip()
     low = h.lower()
@@ -727,6 +733,35 @@ def classify_column(header: str, samples: list[str]) -> Column:
     unit = _unit_from(h)
     if is_assay or (unit and unit != "%"):
         return Column(-1, h, ASSAY, unit=unit, assay_name=h or "unnamed assay")
+
+    # Multi-assay header: comma-separated sub-names, e.g. "probe 1, probe 2".
+    # Detected when the header contains a comma AND the data cells are also
+    # comma-separated (same count of parts), or when each comma-separated part
+    # of the header looks like an assay name on its own.
+    if "," in h:
+        parts = [p.strip() for p in h.split(",") if p.strip()]
+        if len(parts) >= 2:
+            # Check whether data cells are also comma-separated with the same
+            # number of parts — that is the strongest signal.
+            n_parts = len(parts)
+            multi_value_count = 0
+            for s in samples:
+                if not s:
+                    continue
+                cell_parts = [p.strip() for p in s.split(",")]
+                if len(cell_parts) == n_parts:
+                    multi_value_count += 1
+            if multi_value_count > 0 and multi_value_count >= len([s for s in samples if s]) * 0.4:
+                return Column(-1, h, ASSAY, unit=unit, assay_name=h)
+            # Fallback: each part of the header looks like an assay name.
+            parts_are_assay = sum(
+                1 for p in parts
+                if bool(_HEADER_ASSAY.search(p.lower()))
+                or any(a in p.lower() for a in assay_lemmas if len(a) > 2)
+                or bool(_HEADER_POTENCY.search(p.lower()))
+            )
+            if parts_are_assay >= 1:
+                return Column(-1, h, ASSAY, unit=unit, assay_name=h)
 
     # Headerless continuation columns: fall back to the shape of the data.
     if not h:
@@ -1124,6 +1159,11 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     Continuation tables (same column count, no header of their own) inherit the
     most recent header — patents split one logical table across many tgroups
     when it spans pages, and the later pieces carry no header at all.
+
+    Multi-assay columns: when a column header is a comma-separated list of
+    assay names (e.g. "probe 1, probe 2") and the data cells are also
+    comma-separated, each sub-value is emitted as a separate AssayRecord paired
+    with its corresponding sub-name.
     """
     out: list[AssayRecord] = []
     last_header: dict[int, list[str]] = {}
@@ -1170,27 +1210,61 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
             for c in assay_cols:
                 if len(row) <= c.index:
                     continue
-                parsed = parse_value(row[c.index].text)
-                if not parsed:
-                    continue
-                n_runs = parsed.get("n_runs")
-                # A bare "(8)" in the next column is this value's run count.
-                if n_runs is None and len(row) > c.index + 1:
-                    nxt = _NRUNS_ONLY.match(row[c.index + 1].text)
-                    if nxt and cols[c.index + 1].kind in (NRUNS, UNKNOWN):
-                        n_runs = int(nxt.group(1))
-                out.append(AssayRecord(
-                    cid=cid,
-                    assay_name=c.assay_name or c.header or "unnamed assay",
-                    value_numeric=parsed.get("value_numeric"),
-                    qualifier=parsed.get("qualifier"),
-                    unit=parsed.get("unit") or c.unit,
-                    n_runs=n_runs,
-                    letter_grade=parsed.get("letter_grade"),
-                    value_text=parsed.get("value_text", ""),
-                    table_id=t.table_id,
-                    column_header=c.header,
-                ))
+                cell_text = row[c.index].text
+
+                # Detect multi-assay column: header is comma-separated names
+                # and cell is a comma-separated list of values.
+                col_header = c.header or ""
+                header_parts = [p.strip() for p in col_header.split(",") if p.strip()] \
+                    if "," in col_header else []
+                cell_parts = [p.strip() for p in cell_text.split(",")] \
+                    if "," in cell_text and len(header_parts) >= 2 else []
+
+                # One column, several assays: "probe 1, probe 2" over cells
+                # reading "0.00309, 0.00252". `zip` stops at the shorter side,
+                # so a cell with fewer parts than the header pairs what it can
+                # and drops the rest — which is why the equal-length and
+                # unequal-length cases are one branch and not two.
+                if len(header_parts) >= 2 and len(cell_parts) >= 2:
+                    for sub_name, sub_val in zip(header_parts, cell_parts):
+                        parsed = parse_value(sub_val)
+                        if not parsed:
+                            continue
+                        out.append(AssayRecord(
+                            cid=cid,
+                            assay_name=sub_name,
+                            value_numeric=parsed.get("value_numeric"),
+                            qualifier=parsed.get("qualifier"),
+                            unit=parsed.get("unit") or c.unit,
+                            n_runs=parsed.get("n_runs"),
+                            letter_grade=parsed.get("letter_grade"),
+                            value_text=parsed.get("value_text", ""),
+                            table_id=t.table_id,
+                            column_header=c.header,
+                        ))
+                else:
+                    # Single-value cell — original behaviour.
+                    parsed = parse_value(cell_text)
+                    if not parsed:
+                        continue
+                    n_runs = parsed.get("n_runs")
+                    # A bare "(8)" in the next column is this value's run count.
+                    if n_runs is None and len(row) > c.index + 1:
+                        nxt = _NRUNS_ONLY.match(row[c.index + 1].text)
+                        if nxt and cols[c.index + 1].kind in (NRUNS, UNKNOWN):
+                            n_runs = int(nxt.group(1))
+                    out.append(AssayRecord(
+                        cid=cid,
+                        assay_name=c.assay_name or c.header or "unnamed assay",
+                        value_numeric=parsed.get("value_numeric"),
+                        qualifier=parsed.get("qualifier"),
+                        unit=parsed.get("unit") or c.unit,
+                        n_runs=n_runs,
+                        letter_grade=parsed.get("letter_grade"),
+                        value_text=parsed.get("value_text", ""),
+                        table_id=t.table_id,
+                        column_header=c.header,
+                    ))
     return out
 
 
