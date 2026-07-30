@@ -503,3 +503,64 @@ def test_the_applier_survives_any_group_naming():
     m = re.compile(r"^(?:(?P<num>\d+)|Not determined)$").search("Not determined")
     assert m is not None and first_number(m) is None
     assert first_number(None) is None
+
+
+def test_a_patent_that_yields_nothing_always_escalates():
+    """The one check that cannot be silenced by damaging the parsed view.
+
+    Every detector in `gap.py` scores a BLOCK against that block's parsed
+    rows, so a defect big enough to destroy a block's parsed view also
+    destroys the evidence needed to report it. US10189840 lost 89 of 94 rows
+    into the header, `usable_yield` then measured a five-row table, and
+    `find_gaps` skipped it at `shaped_cells < 10` as noise — zero gaps raised
+    while the patent yielded zero usable measurements from 40 compounds.
+
+    So this check counts measurement-shaped CELLS in the raw tgroups: before
+    assembly, before column classification, before any judgement about what a
+    column means. A parser defect cannot suppress a denominator it never
+    touched.
+    """
+    from patentdb.repair.loop import repair_patent
+
+    # A table our extractor cannot read at all: no recognisable id column
+    # header, values in a shape `parse_value` rejects. What matters is only
+    # that measurement-shaped cells are plainly present and nothing came out.
+    rows = "".join(
+        f"<row><entry>row {i}</entry><entry>{i / 7:.3f}</entry>"
+        f"<entry>{i}</entry></row>" for i in range(1, 16))
+    xml = ('<us-patent-grant><description>'
+           '<tables id="TABLE-US-00001" num="00001"><table><tgroup cols="3">'
+           '<thead><row><entry>x</entry><entry>y</entry><entry>z</entry></row>'
+           f'</thead><tbody>{rows}</tbody>'
+           '</tgroup></table></tables></description></us-patent-grant>')
+
+    recs, report = repair_patent("USTEST0001", xml, max_calls=0, dry_run=True)
+    assert not [r for r in recs if r.is_usable], "repro: nothing usable came out"
+    blank = [e for e in report.escalations
+             if e["capability"] == "PATENT YIELDED NOTHING"]
+    assert len(blank) == 1, "a patent that yields nothing must always escalate"
+    assert blank[0]["rows_at_stake"] >= 20
+    assert "raw cells, not parsed rows" in blank[0]["note"]
+
+
+def test_a_patent_that_yields_records_does_not_escalate_as_blank():
+    """The invariant must stay quiet on a healthy patent, or it is noise."""
+    from patentdb.repair.loop import repair_patent
+
+    rows = "".join(
+        f"<row><entry>{i}</entry><entry>{i / 7:.3f}</entry></row>"
+        for i in range(1, 16))
+    xml = ('<us-patent-grant><description>'
+           '<tables id="TABLE-US-00001" num="00001"><table><tgroup cols="2">'
+           '<thead><row><entry>Compound No.</entry>'
+           '<entry>IC50 (nM)</entry></row></thead>'
+           f'<tbody>{rows}</tbody>'
+           '</tgroup></table></tables></description></us-patent-grant>')
+
+    from patentdb.sources.uspto_assays import extract_from_patent
+
+    assert [r for r in extract_from_patent(xml) if r.is_usable], \
+        "repro: this patent must actually yield usable measurements"
+    _, report = repair_patent("USTEST0002", xml, max_calls=0, dry_run=True)
+    assert not [e for e in report.escalations
+                if e["capability"] == "PATENT YIELDED NOTHING"]

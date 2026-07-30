@@ -253,6 +253,75 @@ def test_parse_fidelity_reports_cells_lost_before_extraction_ran():
         U._parse_row = real
 
 
+def _stereo_block(n_groups: int) -> str:
+    """US10189840's shape: the id is written once per stereoisomer group.
+
+    A 3-column stub declares the real header, and the data lives in a 4-column
+    tgroup whose continuation rows carry `(e2)`/`(e3)`/`(e4)` and no id.
+    """
+    rows = []
+    for i in range(1, n_groups + 1):
+        rows.append(f"<row><entry/><entry>{i}</entry><entry>A</entry>"
+                    f"<entry>(e1)</entry></row>")
+        for e in (2, 3, 4):
+            rows.append(f"<row><entry/><entry/><entry>B</entry>"
+                        f"<entry>(e{e})</entry></row>")
+    return (
+        '<tables id="TABLE-US-00005" num="00005"><table>'
+        '<tgroup cols="3"><thead>'
+        '<row><entry>Ex. No.</entry><entry>Blue assay IC50 value</entry>'
+        '<entry/></row></thead>'
+        f'<tbody><row><entry>{n_groups + 1}</entry><entry>A</entry><entry/></row>'
+        '</tbody></tgroup>'
+        '<tgroup cols="4"><tbody>' + "".join(rows) +
+        '</tbody></tgroup></table></tables>')
+
+
+def test_assembly_fidelity_catches_data_rows_filed_as_header():
+    """US10189840: 89 of 94 rows became header rows and no gap was ever raised.
+
+    `_opens_with_id` requires a majority of a fragment's rows to open with a
+    compound id. A patent that writes the id once per stereoisomer group scores
+    39%, the fragment drops out of `kin`, and a fragment outside `kin` has its
+    body offered to the `_is_namelike` header harvest — which is uncapped.
+
+    Every downstream count is computed from the body, so the defect deleted its
+    own evidence: `usable_yield` saw a five-row table and `find_gaps` skipped it
+    as noise below `shaped_cells < 10`. The bug that shrank the table pushed it
+    under the threshold that would have reported it.
+    """
+    from patentdb.sources.uspto_xml import assemble_block, assembly_fidelity, parse_tables
+
+    xml = _stereo_block(12)
+    block = assemble_block(parse_tables(xml), "TABLE-US-00005")
+    n_body = sum(1 for r in block.body_rows if any(c.text.strip() for c in r))
+    assert len(block.header_rows) > n_body, "repro: the header outgrew the body"
+
+    hits = assembly_fidelity(xml)
+    assert len(hits) == 1
+    assert hits[0]["table_id"] == "TABLE-US-00005"
+    assert hits[0]["header_rows"] > hits[0]["body_rows"]
+    assert "assemble_block" in hits[0]["detail"]
+
+
+def test_assembly_fidelity_allows_a_genuine_multi_row_header():
+    """US9708336 TABLE-US-00046 carries a real 7-row header over 838 body rows
+    and yields 5,037 usable records. The invariant is not a row count — it is
+    that a header is smaller than the table it heads."""
+    from patentdb.sources.uspto_xml import assembly_fidelity
+
+    header = "".join(
+        f'<row><entry>lab{i}</entry><entry>IC50</entry><entry>nM</entry></row>'
+        for i in range(7))
+    body = "".join(
+        f'<row><entry>{i}</entry><entry>{i / 10:.2f}</entry><entry>nM</entry></row>'
+        for i in range(1, 40))
+    xml = ('<tables id="TABLE-US-00046" num="00046"><table><tgroup cols="3">'
+           f'<thead>{header}</thead><tbody>{body}</tbody>'
+           '</tgroup></table></tables>')
+    assert assembly_fidelity(xml) == []
+
+
 def test_a_reader_defect_reduces_to_one_repro_for_the_whole_corpus():
     """One bug must ask one question, not sixty.
 

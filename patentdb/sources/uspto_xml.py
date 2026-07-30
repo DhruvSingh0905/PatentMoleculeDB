@@ -659,6 +659,71 @@ def parse_fidelity(xml: str) -> list[dict]:
     return out
 
 
+def assembly_fidelity(xml: str) -> list[dict]:
+    """Blocks whose assembled HEADER outgrew their own body.
+
+    `parse_fidelity` asks whether the READER lost cells the source declared.
+    This asks the next question down: of the rows the reader produced, did
+    ASSEMBLY put them in the right compartment? Nothing above can see that —
+    the rows still exist, they are simply header now, and every downstream
+    count is computed from the body.
+
+    US10189840 TABLE-US-00005 is the case. Its data tgroup writes the compound
+    id once per stereoisomer group and leaves it blank on the `(e1)/(e2)/(e3)/
+    (e4)` continuation rows, so only 39% of rows open with an id and
+    `_opens_with_id`'s majority test drops the fragment out of `kin`. A fragment
+    outside `kin` has its body offered to the header harvest, `_is_namelike`
+    accepts `['', '1', 'A', '(e1)']` — short cells, mixed alpha and numeric,
+    balanced brackets — and 47 data rows become header rows. Five rows survive
+    as body, the patent yields 0 usable records from 40 compounds.
+
+    The harvest has no cap. The body-leading promotion below it stops at 5
+    (`while len(header_rows) < 5`), which is why the corpus shows a hard cliff:
+    1,050 blocks with a 1-row header, a cluster at exactly 5 where that cap
+    bites, and then five blocks at 23-47. Nothing in between.
+
+    So the invariant is not a threshold anyone chose — it is that a header is
+    smaller than the table it heads. US9708336 TABLE-US-00046 carries a genuine
+    7-row header over 838 body rows and 5,037 usable records; it is not flagged,
+    because 7 < 838. Measured over 1,628 blocks this fires on exactly 5.
+
+    Like `parse_fidelity` this is a CODE defect, not a layout gap: no rule can
+    fix a table whose data is in the header, and buying one pays a model to
+    describe damage we inflicted. It needs no model, no reference data and no
+    judgement.
+    """
+    out: list[dict] = []
+    raw = parse_tables(xml)
+    seen: list[str] = []
+    for t in raw:
+        if t.table_id not in seen:
+            seen.append(t.table_id)
+    for tid in seen:
+        asm = assemble_block(raw, tid)
+        if asm is None:
+            continue
+        n_hdr = len(asm.header_rows)
+        n_body = sum(1 for r in asm.body_rows if any(c.text.strip() for c in r))
+        # Above the promotion cap: at or below it the rows were taken by the
+        # capped path, which is bounded by construction and mostly right.
+        if n_hdr <= n_body or n_hdr < 6:
+            continue
+        out.append({
+            "table_id": tid,
+            "header_rows": n_hdr, "body_rows": n_body,
+            "detail": (f"{tid}: assembly produced {n_hdr} header rows over "
+                       f"{n_body} body row(s) — a header cannot be larger than "
+                       f"the table it heads. Data rows were absorbed by the "
+                       f"`_is_namelike` harvest in `assemble_block`, which is "
+                       f"uncapped, after `_opens_with_id` excluded their "
+                       f"fragment from `kin`. Fix the assembler, not this "
+                       f"layout."),
+            "examples": [" | ".join(c.text.strip() for c in r)[:80]
+                         for r in asm.header_rows[-4:]],
+        })
+    return out
+
+
 def assemble_blocks(tables: list["Table"]) -> list["Table"]:
     """`assemble_block` over every block, in document order."""
     seen: list[str] = []

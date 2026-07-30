@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 from ..core import config
 from ..sources.uspto_xml import (
-    Table, assemble_blocks, parse_fidelity, parse_tables,
+    Table, assemble_blocks, assembly_fidelity, parse_fidelity, parse_tables,
 )
 from .gap import Gap, find_gaps, yield_contradictions
 from .rules import (
@@ -73,6 +73,13 @@ class RepairReport:
 # Regex syntax, removed to leave the literal words a pattern is really looking
 # for. Used only to rank two patterns that both matched — never to match.
 _META = re.compile(r"[.^$*+?{}\[\]\\()|]")
+
+# A cell that LOOKS like a measurement, judged on text alone. Deliberately not
+# imported from `gap.py`: the patent-level check below must not depend on the
+# column classifier, the assembler, or anything else that can be the very thing
+# that failed.
+_SHAPED = re.compile(r"^\s*[<>~≈≥≤]?\s*\d*\.?\d+\s*$")
+_GRADE = re.compile(r"^\s*(\++|[A-E])\s*$")
 
 
 def _literal_overlap(pattern: str, name: str) -> int:
@@ -370,6 +377,30 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
     # pays to encode an asymmetry whose fix is already running a few tables away.
     contradictions = {c["table_id"]: c
                       for c in yield_contradictions(tables, baseline)}
+
+    # ...and the third question, which no gap could carry: did ASSEMBLY put the
+    # rows in the right compartment? Reported HERE rather than as a gap
+    # modifier, because the defect it names deletes its own evidence — a block
+    # whose data became header has almost no body left, so every gap detector
+    # measures a five-row table and skips it as noise. US10189840 raised zero
+    # gaps while yielding zero records from 40 compounds. A signal that only
+    # fires when some other signal already fired cannot catch that.
+    misassembled = assembly_fidelity(xml)
+    for d in misassembled:
+        report.escalated += 1
+        report.escalations.append({
+            "fingerprint": None, "patent": patent_id,
+            "table": d["table_id"], "rows_at_stake": d["header_rows"],
+            "capability": "ASSEMBLY DEFECT — not a layout gap",
+            "note": d["detail"] + " Examples of rows filed as header: "
+                    + "; ".join(repr(e) for e in d["examples"][:3]),
+        })
+    if misassembled:
+        logger.warning("repair: %s has %d block(s) whose header outgrew their "
+                       "body; fix assemble_block, not the layout",
+                       patent_id, len(misassembled))
+    misassembled_ids = {d["table_id"] for d in misassembled}
+
     if broken:
         logger.warning("repair: %s has %d block(s) that do not reconcile with "
                        "their source; not asking for rules on those",
@@ -387,6 +418,10 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
                 "capability": "INCONSISTENT HANDLING — not a layout gap",
                 "note": clash["detail"],
             })
+            continue
+        # Already escalated above as a code defect. Asking for a rule as well
+        # would pay a model to describe a table whose data we filed as header.
+        if gap.table_id in misassembled_ids:
             continue
         defect = broken.get(gap.table_id)
         if defect is not None:
@@ -601,6 +636,56 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
                 "capability": "rule validated but matched no rows on apply",
                 "note": _why_nothing_applied(rule, table),
             })
+
+    # THE PATENT-LEVEL INVARIANT. Runs last, is gated by nothing, and consults
+    # neither `gaps` nor `seen_blocks`.
+    #
+    # Every detector in `gap.py` scores a BLOCK, and each of them measures the
+    # parsed view of that block. So a defect large enough to destroy a block's
+    # parsed view also destroys the evidence each detector needs to report it:
+    # US10189840 loses 89 of 94 rows into the header, `usable_yield` then sees a
+    # five-row table, and `find_gaps` skips it at `shaped_cells < 10` as noise.
+    # The bug that shrank the table pushed it under the threshold that would
+    # have reported it. That shape — a failure that preserves the appearance of
+    # the counts — is the recurring defect in this loop's history.
+    #
+    # This check cannot be silenced that way because its denominator is not
+    # parsed at all: measurement-shaped CELLS in the raw tgroups, before
+    # assembly, before column classification, before any judgement about what a
+    # column means. If a document puts hundreds of numbers in tables and we
+    # produce no usable measurement from any of them, that is worth a human's
+    # attention whatever the per-table checks concluded — and it is exactly the
+    # case where those checks are least able to speak.
+    usable_now = sum(1 for r in baseline if r.is_usable) + sum(
+        1 for r in recovered if r.is_usable)
+    if not usable_now:
+        shaped = 0
+        for t in raw:
+            for row in t.body_rows:
+                for c in row:
+                    s = c.text.strip()
+                    if s and (_SHAPED.match(s) or _GRADE.match(s)):
+                        shaped += 1
+        if shaped >= 20:
+            report.escalated += 1
+            report.escalations.append({
+                "fingerprint": None, "patent": patent_id, "table": None,
+                "rows_at_stake": shaped,
+                "capability": "PATENT YIELDED NOTHING",
+                "note": (f"{patent_id} produced 0 usable measurements while its "
+                         f"tables hold {shaped} measurement-shaped cells across "
+                         f"{len({t.table_id for t in raw})} block(s). "
+                         f"{len(gaps)} gap(s) were raised and "
+                         f"{len(misassembled)} assembly defect(s) found, so the "
+                         f"per-table detectors "
+                         + ("did not explain this."
+                            if not gaps and not misassembled
+                            else "may not have explained all of it.")
+                         + " The denominator here is raw cells, not parsed "
+                           "rows, so no parser defect can suppress it."),
+            })
+            logger.warning("repair: %s yielded 0 usable measurements from %d "
+                           "measurement-shaped cells", patent_id, shaped)
 
     if not dry_run:
         lib.save()
