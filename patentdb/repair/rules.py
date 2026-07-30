@@ -578,6 +578,32 @@ def validate(rule: Rule, table, *, min_yield: float = 0.5,
                 f"{dropped[0][0].get('name')!r} introduces {dropped[0][1]!r}) — a "
                 "repair may regroup the patent's own words, not supply new ones")
         assays = [a for a, _ in kept]
+
+        # The same rule applies to UNITS, and it was not being applied at all.
+        #
+        # US9221791 heads its columns `CYP2C9 IC50` with no unit anywhere near
+        # them; the caption names ug/mL for a different column. A model
+        # proposed `nM`. The patent contains uM, mM and ug/mL and never once
+        # says nM, and BindingDB puts those compounds at 42,000 nM — so the
+        # invented unit was a 1000x understatement, on 440 records, arriving
+        # with coverage going UP. Nothing but the value check saw it.
+        #
+        # A unit is a claim about the document, not domain knowledge, so it has
+        # to be IN the document. Dropped rather than rejected: the column is
+        # still real, and a record with no unit fails the usability contract
+        # honestly instead of carrying a fabricated scale.
+        doc_units = set(re.findall(r"\b(nM|pM|mM|[uμµ]M|[uμµ]g/mL|ng/mL|%)\b",
+                                   source_text, re.I))
+        doc_units = {u.lower().replace("μ", "u").replace("µ", "u") for u in doc_units}
+        for a in assays:
+            u = (a.get("unit") or "").strip()
+            if not u:
+                continue
+            if u.lower().replace("μ", "u").replace("µ", "u") not in doc_units:
+                logger.info("repair: dropped ungrounded unit %r on %r — the text "
+                            "for this table names %s", u, a.get("name"),
+                            sorted(doc_units) or "no unit at all")
+                a["unit"] = None
         rule.payload["assays"] = assays
 
         # An unlabelled column is the ambiguous case: we cannot read its header

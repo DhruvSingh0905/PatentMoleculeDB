@@ -402,3 +402,29 @@ def test_the_source_xml_leads_the_prompt():
     assert "colspec" in synthesize.SYSTEM
     # Oversized blocks are head-and-tailed, not truncated to the head.
     assert "middle rows omitted" in src
+
+
+def test_a_proposed_unit_must_appear_in_the_patent():
+    """Names were grounded against the patent's own words; units were not.
+
+    US9221791 heads its columns `CYP2C9 IC50` with no unit near them and
+    names ug/mL in the caption for a different column. A model proposed `nM`.
+    The document contains uM, mM and ug/mL and never once says nM, and
+    BindingDB puts those compounds at 42,000 nM — so the invented unit was a
+    1000x understatement across 440 records, arriving with coverage going UP.
+    Nothing but the value check saw it.
+
+    Dropped rather than rejected: the column is real, and a record with no
+    unit fails the usability contract honestly instead of carrying a
+    fabricated scale. Re-asked with the gate in place, the same model
+    returned uM.
+    """
+    import inspect
+
+    from patentdb.repair import rules
+
+    src = inspect.getsource(rules.validate)
+    assert "doc_units" in src
+    assert 'a["unit"] = None' in src
+    # Grounded against the SAME text the names are grounded against.
+    assert src.index("doc_units") > src.index("source_toks")
