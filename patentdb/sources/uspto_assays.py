@@ -945,8 +945,23 @@ def build_columns(table: Table, inherited: list[str] | None = None,
     # the usability contract and is dropped, which is the intended trade — a
     # missing assay is recoverable, a ratio recorded as a potency is a lie the
     # database cannot detect later.
+    # HEADER FIRST, and it was not a source at all.
+    #
+    # US11420968 heads four assay columns as two pairs under a spanning
+    # `(IC50, nM)`, which our merge lands on only the second column of each
+    # pair. The two that missed out had no unit of their own, so they fell
+    # through to the caption — a paragraph opening "The Bcl-2 family proteins
+    # are central regulators of apoptosis" that mentions uM somewhere — and 111
+    # values were recorded 1000x low. BindingDB caught it; nothing else could.
+    #
+    # The table's own header rows say `nM` twice, in plain sight. A caption is
+    # prose about the biology and may name any unit for any reason; a header is
+    # a statement about these columns. So the precedence is header, then
+    # legend, then caption, then whatever a previous tgroup carried.
+    header_text = " ".join(c.text for r in hdr_rows for c in r)
     legend = table_legend(table)
-    ctx_unit = _unit_from(legend) or _unit_from(table.caption) or inherited_unit
+    ctx_unit = (_unit_from(header_text) or _unit_from(legend)
+                or _unit_from(table.caption) or inherited_unit)
     if ctx_unit and ctx_unit != "%":
         for c in cols:
             if c.kind == ASSAY and not c.unit and not _DIMENSIONLESS.search(c.header or ""):

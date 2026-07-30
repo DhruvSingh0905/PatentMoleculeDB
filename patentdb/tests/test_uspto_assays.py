@@ -706,3 +706,52 @@ def test_a_comma_inside_brackets_does_not_split_an_assay_name():
     assert sp("HT1080 (R132C, 2-hydroxyglutarate) IC50 (uM)") == \
         ["HT1080 (R132C, 2-hydroxyglutarate) IC50 (uM)"]
     assert sp("0.000698 ± 0.000352, n = 7") == ["0.000698 ± 0.000352", "n = 7"]
+
+
+def test_the_table_s_own_header_outranks_its_caption_for_units():
+    """US11420968 heads four assay columns as two pairs under a spanning
+    `(IC50, nM)`, and our merge lands it on the second column of each pair.
+
+    The two that missed out had no unit of their own and fell through to the
+    caption — a paragraph opening "The Bcl-2 family proteins are central
+    regulators of apoptosis" that mentions uM somewhere — so 111 values were
+    recorded 1000x low with every count healthy. A caption is prose about the
+    biology and may name any unit for any reason; a header is a statement
+    about these columns.
+    """
+    from patentdb.sources.uspto_xml import Cell, Table
+    cap = ("The Bcl-2 family proteins are central regulators of apoptosis, "
+           "assayed at 10 uM in our hands.")
+    hdr = [[Cell(""), Cell("Biochemical activity"), Cell("")],
+           [Cell(""), Cell("(IC50, nM)"), Cell("")],
+           [Cell("Example"), Cell("BCL-2"), Cell("Bcl-xl")]]
+    body = [[Cell("A1"), Cell("43"), Cell("4570")]]
+    t = Table(table_id="T1", n_cols=3, header_rows=hdr, body_rows=body,
+              caption=cap)
+    units = {c.header: c.unit for c in A.build_columns(t) if c.kind == A.ASSAY}
+    assert units and set(units.values()) == {"nM"}, units
+
+
+def test_a_table_that_cannot_agree_on_its_own_units_is_a_gap():
+    """Not "a unit was guessed" — guessing is usually right and often the only
+    option. The flag is a guess that CONTRADICTS what the same table states
+    elsewhere, which does not happen in a well-formed header.
+
+    Corpus-wide that distinction is the difference between 4 gaps and 0, and
+    it would still have caught US11420968 saying uM and nM at once.
+    """
+    from patentdb.repair.gap import guessed_units
+    from patentdb.sources.uspto_xml import Cell, Table
+
+    hdr = [[Cell("Example"), Cell("Potency (nM)"), Cell("Cellular activity")]]
+    body = [[Cell("1"), Cell("43"), Cell("582")]]
+    t = Table(table_id="T1", n_cols=3, header_rows=hdr, body_rows=body,
+              caption="Assays were run at 10 uM.")
+    # The header's own nM wins, so the table agrees with itself.
+    assert all(g["agrees"] for g in guessed_units(t))
+    # A single-assay table has no sibling to disagree with.
+    solo = Table(table_id="T2", n_cols=2,
+                 header_rows=[[Cell("Example"), Cell("Activity")]],
+                 body_rows=[[Cell("1"), Cell("5")]],
+                 caption="Assays were run at 10 uM.")
+    assert guessed_units(solo) == []

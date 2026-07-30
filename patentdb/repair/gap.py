@@ -117,6 +117,40 @@ def raw_block(xml: str, table_id: str) -> str:
     return m.group(0) if m else ""
 
 
+def guessed_units(table: Table) -> list[dict]:
+    """Assay columns whose unit was INFERRED, beside siblings that state one.
+
+    A unit is either read off the column's own header or guessed from
+    somewhere else — a legend, a caption, a previous tgroup. Guessing is
+    usually right and usually the only option, so it is not by itself a defect.
+
+    What IS a defect is disagreement WITHIN one table: some columns naming a
+    unit and others not. That does not happen in a well-formed header; it
+    happens when a spanning label lands on part of the group it covers.
+    US11420968 heads four columns as two pairs under `(IC50, nM)`, our merge
+    put it on the second of each pair, and the other two fell through to a
+    caption about apoptosis biology that mentions uM. 111 values, 1000x low,
+    every count healthy — no yield signal can see this, because a wrong unit
+    produces records perfectly.
+
+    So the flag is not "a unit was guessed". It is "this table cannot agree
+    with itself about its own units", which is a header we mangled.
+    """
+    from ..sources.uspto_assays import ASSAY, _unit_from, build_columns
+
+    assay = [c for c in build_columns(table) if c.kind == ASSAY and c.unit]
+    if len(assay) < 2:
+        return []
+    stated = [c for c in assay if _unit_from(c.header or "")]
+    guessed = [c for c in assay if not _unit_from(c.header or "")]
+    if not stated or not guessed:
+        return []
+    said = {_unit_from(c.header or "") for c in stated}
+    return [{"header": c.header, "index": c.index, "guessed": c.unit,
+             "siblings_state": sorted(said),
+             "agrees": c.unit in said} for c in guessed]
+
+
 def dead_assay_columns(table: Table, records) -> list[dict]:
     """Assay columns holding data that yields nothing, beside siblings that do.
 
@@ -356,6 +390,7 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
     cids_per_block: dict[str, set[str]] = {}
     homogeneous_blocks: set[str] = set()
     dead_col_blocks: set[str] = set()
+    unit_blocks: set[str] = set()
     records_list: list = []
     if not isinstance(extracted_by_table, dict):
         records = list(extracted_by_table)
@@ -557,6 +592,42 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
             headers=headers,
             column_kinds=kinds,
         ))
+    # Units this table could not agree with itself about. Runs on its own, like
+    # the two passes below, because a wrong unit costs no rows and every
+    # yield-shaped check therefore scores the table perfectly.
+    for t in tables:
+        if t.table_id in unit_blocks:
+            continue
+        # Only where the guess CONTRADICTS what the table states elsewhere.
+        # A guessed unit matching its siblings is a guess we have no evidence
+        # against, and paying a model to look at it is the noise the
+        # read-fraction gate exists to avoid. Corpus-wide that is the
+        # difference between 4 gaps and 0 — and it would still have caught
+        # US11420968, whose columns said uM and nM at the same time.
+        odd = [g for g in guessed_units(t) if not g["agrees"]]
+        if not odd:
+            continue
+        unit_blocks.add(t.table_id)
+        heads = merge_header(t)
+        worst = odd[0]
+        gaps.append(Gap(
+            patent_id=patent_id, table_id=t.table_id, n_cols=t.n_cols,
+            n_data_rows=rows_per_block.get(t.table_id, len(t.body_rows)),
+            n_extracted=len(cids_per_block.get(t.table_id, ())),
+            fingerprint=layout_fingerprint(t, heads),
+            reason=(f"{len(odd)} assay column(s) have a GUESSED unit while "
+                    f"sibling columns in the same table state one: "
+                    f"{worst['header'][:40]!r} was given {worst['guessed']!r} "
+                    f"from outside its header, and its siblings say "
+                    f"{'/'.join(worst['siblings_state'])}"
+                    + ("" if worst["agrees"] else " — which disagrees. A header "
+                       "label spanning several columns has probably landed on "
+                       "only one of them")),
+            sample=_sample_of(t, heads), headers=heads,
+            expanded_sample=_sample_of(t, heads, 24, expand=True),
+            column_kinds=[c.kind for c in build_columns(t)],
+        ))
+
     # Assay columns that yield nothing while a sibling in the same table does.
     # Its own pass for the same reason as the one below: every other check
     # scores a table by the rows it produced, and a dead column costs no rows.
