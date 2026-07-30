@@ -117,6 +117,63 @@ def raw_block(xml: str, table_id: str) -> str:
     return m.group(0) if m else ""
 
 
+def dead_assay_columns(table: Table, records) -> list[dict]:
+    """Assay columns holding data that yields nothing, beside siblings that do.
+
+    The detector's unit has always been the ROW: how many compounds did this
+    table give us. That makes a table's COLUMNS invisible. US11649247 Table 15
+    heads two assays, `HT1080 (R132C, 2-hydroxyglutarate) IC50 (uM)` reading
+    `0.00275 ± 0.00046, n = 3` and `HT1080 (R132C, aKG) IC50 (uM)` reading
+    `>20.0`. `parse_value` could not read the first, so the potency was lost
+    and every compound survived only as its own inactive ceiling — 20 uM
+    recorded where the patent says 2.75 nM.
+
+    Every gate passed. All 15 compounds were read, so row coverage was 100%;
+    the read-fraction gate skipped the table; fidelity was clean; the suite was
+    green; BindingDB checks values, and the values that survived were right.
+
+    A sibling column that DOES yield is what makes this a defect rather than an
+    observation: the same rows, the same ids, one column read and one not. That
+    is a cell-format gap, and `value_pattern` is the rule kind for it — which is
+    why this is raised as an ordinary gap rather than escalated.
+    """
+    from ..sources.uspto_assays import ASSAY, build_columns
+
+    cols = build_columns(table)
+    assay = [c for c in cols if c.kind == ASSAY]
+    if len(assay) < 2:
+        return []
+    produced = Counter((r.column_header or r.assay_name or "") for r in records
+                       if r.table_id == table.table_id)
+    _, data = _header_rows_of(table)
+    out = []
+    for c in assay:
+        if produced.get(c.header or c.assay_name or ""):
+            continue
+        cells = [r[c.index].text.strip() for r in data
+                 if len(r) > c.index and r[c.index].text.strip()
+                 and r[c.index].text.strip() not in _NULLISH]
+        # An INVERTED table's data column is a list of compound ids, not
+        # measurements: US11566007 writes one row per potency grade with
+        # `A028, A075, A076, ...` beside it. `extract_inverted` reads those and
+        # attributes the records to the block rather than to this column, so
+        # they look dead from here — ten tables' worth of false alarm.
+        if sum(1 for v in cells if v.count(",") >= 2) > len(cells) * 0.5:
+            continue
+        # A column of `+`/`++`/`A` is readable; what it lacks is a KEY, and
+        # that is a different failure with its own detector. This one exists
+        # for cell FORMATS we cannot parse, so grade columns are not its
+        # business — US11566007's inverted blocks otherwise raise two more.
+        if sum(1 for v in cells if _BIN.match(v)) > len(cells) * 0.5:
+            continue
+        if len(cells) >= 5:
+            out.append({"header": c.header, "index": c.index,
+                        "populated": len(cells), "examples": cells[:6]})
+    # Only a defect if a SIBLING yields — otherwise the whole table is a gap
+    # already, and the row-level checks own it.
+    return out if len(out) < len(assay) else []
+
+
 def _id_shape(text: str) -> str:
     """`48-1` and `52-4` → `99-9`. Digits and letters erased, punctuation kept."""
     return re.sub(r"[A-Za-z]", "A", re.sub(r"\d", "9", text.strip()))
@@ -298,8 +355,11 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
     # mostly-parsed, while covering 219 of its 691 rows (0.32).
     cids_per_block: dict[str, set[str]] = {}
     homogeneous_blocks: set[str] = set()
+    dead_col_blocks: set[str] = set()
+    records_list: list = []
     if not isinstance(extracted_by_table, dict):
         records = list(extracted_by_table)
+        records_list = records
         for _r in records:
             if _r.cid:
                 cids_per_block.setdefault(_r.table_id, set()).add(_r.cid)
@@ -497,6 +557,35 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
             headers=headers,
             column_kinds=kinds,
         ))
+    # Assay columns that yield nothing while a sibling in the same table does.
+    # Its own pass for the same reason as the one below: every other check
+    # scores a table by the rows it produced, and a dead column costs no rows.
+    for t in tables:
+        if t.table_id in dead_col_blocks:
+            continue
+        dead = dead_assay_columns(t, records_list)
+        if not dead:
+            continue
+        dead_col_blocks.add(t.table_id)
+        heads = merge_header(t)
+        worst = max(dead, key=lambda d: d["populated"])
+        n_live = len([c for c in build_columns(t) if c.kind == ASSAY]) - len(dead)
+        gaps.append(Gap(
+            patent_id=patent_id, table_id=t.table_id, n_cols=t.n_cols,
+            n_data_rows=rows_per_block.get(t.table_id, len(t.body_rows)),
+            n_extracted=len(cids_per_block.get(t.table_id, ())),
+            fingerprint=layout_fingerprint(t, heads),
+            reason=(f"assay column {worst['header'][:44]!r} holds "
+                    f"{worst['populated']} populated cells and produced NO "
+                    f"records, while {n_live} sibling assay column(s) in the "
+                    f"same table did. Same rows, "
+                    f"same ids, one cell format we cannot read — e.g. "
+                    f"{', '.join(repr(e) for e in worst['examples'][:3])}"),
+            sample=_sample_of(t, heads), headers=heads,
+            expanded_sample=_sample_of(t, heads, 24, expand=True),
+            unparsed_examples=worst["examples"][:8],
+        ))
+
     # Gated by NOTHING above — deliberately its own pass, and it does not
     # consult `seen_blocks`.
     #

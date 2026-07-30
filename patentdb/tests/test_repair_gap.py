@@ -397,3 +397,49 @@ def test_a_value_pattern_will_not_invent_a_compound_id():
     assert apply_rule(r, t, "USTEST") == []
     with pytest.raises(Rejected, match="NAMED as a compound identifier"):
         validate(r, t)
+
+
+def test_a_dead_assay_column_beside_a_live_one_is_a_gap():
+    """The detector's unit was the ROW, so a table's COLUMNS were invisible.
+
+    US11649247 Table 15 heads two assays; `parse_value` could not read
+    `0.00275 ± 0.00046, n = 3`, so the potency was lost and every compound
+    survived only as its own `>20.0` ceiling — 20 uM where the patent says
+    2.75 nM. Every gate passed: all 15 compounds were read so row coverage
+    was 100%, the read-fraction gate skipped the table, fidelity was clean,
+    the suite was green, and BindingDB checks values, not which column they
+    came from.
+    """
+    from patentdb.repair.gap import find_gaps
+    from patentdb.sources import uspto_assays as UA
+
+    hdr = [[Cell("Example #"), Cell("2HG IC50 (uM)"), Cell("aKG IC50 (uM)")]]
+    body = [[Cell(str(i)), Cell(f"0.00{i} [n=3, sd 0.001]"), Cell(">20.0")]
+            for i in range(1, 16)]
+    t = Table(table_id="T1", n_cols=3, header_rows=hdr, body_rows=body)
+    recs = UA.extract_from_tables([t])
+    assert len({r.cid for r in recs}) == 15, "every compound IS read"
+    gaps = [g for g in find_gaps("USTEST", [t], recs)
+            if "produced NO records, while" in g.reason]
+    assert gaps, "a dead assay column beside a live one must raise a gap"
+    assert "0.001 [n=3, sd 0.001]" in gaps[0].unparsed_examples
+
+
+def test_an_inverted_id_list_column_is_not_a_dead_assay_column():
+    """US11566007 writes one row per grade with `A028, A075, ...` beside it.
+
+    `extract_inverted` reads those and attributes the records to the block
+    rather than the column, so they look dead from here — ten tables' worth
+    of false alarm before this exclusion.
+    """
+    from patentdb.repair.gap import dead_assay_columns
+    from patentdb.sources import uspto_assays as UA
+
+    hdr = [[Cell("IC50*"), Cell("Examples")]]
+    body = [[Cell("+"), Cell("A028, A075, A076, A087, A112")],
+            [Cell("++"), Cell("A167, A183, A194, A233, A256")],
+            [Cell("+++"), Cell("A260, A270, A280, A294, A297")],
+            [Cell("++++"), Cell("A299, A319, A333, A338, A349")],
+            [Cell("+++++"), Cell("A350, A353, A354, A367, A368")]]
+    t = Table(table_id="T1", n_cols=2, header_rows=hdr, body_rows=body)
+    assert dead_assay_columns(t, UA.extract_from_tables([t])) == []
