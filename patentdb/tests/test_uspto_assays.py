@@ -647,3 +647,42 @@ def test_the_value_check_forgives_rounding_and_not_a_wrong_scale():
     assert _bucket(1.0, 1.9) == "variance"           # assay to assay
     assert _bucket(1.0, 5.0) == "disagree"
     assert _bucket(2.24, 300.0) == "wrong_scale"     # the Ratio class
+
+
+def test_a_mean_with_a_standard_deviation_is_a_measurement():
+    """`0.00275 ± 0.00046, n = 3` is a potency and a spread, not a reject.
+
+    Rejecting the whole cell lost the measurement too: on US11649247 it kept
+    the `>20.0` ceiling from the neighbouring column and dropped the real
+    value, so the compound read as inactive where the patent reports 2.75 nM.
+    147 assay cells across four patents.
+    """
+    got = A.parse_value("0.00275 ± 0.00046, n = 3")
+    assert got["value_numeric"] == 0.00275 and got["n_runs"] == 3
+    got = A.parse_value("1680 ± 150 (n = 4)")
+    assert got["value_numeric"] == 1680.0 and got["n_runs"] == 4
+    assert A.parse_value("5 ± 2 nM")["unit"] == "nM"
+    # ...and the spread is dropped, not averaged into the value.
+    assert A.parse_value("0.00275 ± 0.00046")["value_numeric"] == 0.00275
+
+
+def test_a_family_wide_bindingdb_row_is_not_evidence_about_one_patent():
+    """BindingDB names whole families in a single row:
+
+        US9079866, 114::US9884878, Compound 114::US9745328, Compound 114
+
+    46,000 of its 84,000 patent-bearing rows cite two or more, up to 17. The
+    affinity was measured once and which family member's table it came from
+    is not recorded, so attributing it to all of them scored 21 of our 24
+    corpus value disagreements — every one against a patent whose own table
+    says something different and is right.
+    """
+    import inspect
+
+    from patentdb.repair import value_check
+
+    src = inspect.getsource(value_check.load_reference)
+    assert "single_patent_only" in src
+    assert 'len({p for p, _ in hits}) > 1' in src
+    assert inspect.signature(
+        value_check.load_reference).parameters["single_patent_only"].default is True

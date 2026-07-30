@@ -364,9 +364,12 @@ def test_a_value_pattern_actually_produces_records():
     from patentdb.repair.loop import apply_rule
     from patentdb.repair.rules import VALUE_PATTERN, Rule
 
-    t = _cellstable(["12.3 ± 1.4", "45.6 ± 2.0", "7.8 ± 0.3"])
+    # A footnote-marked cell, because `12.3 ± 1.4` — the original fixture —
+    # is now read by `parse_value` itself and a rule has nothing left to
+    # rescue. The point of the test is the applier, not the cell shape.
+    t = _cellstable(["12.3\u2020", "45.6\u2020", "7.8\u2020"])
     r = Rule(fingerprint="f", kind=VALUE_PATTERN,
-             payload={"pattern": r"^\s*(?P<num>\d+(?:\.\d+)?)\s*±\s*\d+(?:\.\d+)?\s*$",
+             payload={"pattern": r"^\s*(?P<num>\d+(?:\.\d+)?)\u2020\s*$",
                       "columns": [1]})
     out = apply_rule(r, t, "USTEST")
     assert [x.value_numeric for x in out] == [12.3, 45.6, 7.8]
@@ -387,9 +390,9 @@ def test_a_value_pattern_will_not_invent_a_compound_id():
     from patentdb.repair.rules import VALUE_PATTERN, Rejected, Rule, validate
 
     t = _t(2, [["PEG-length", "Cmax (ng/mL)"]],
-           [[str(i), f"{100 + i} ± 5.0"] for i in range(4)])
+           [[str(i), f"{100 + i}\u2020"] for i in range(4)])
     r = Rule(fingerprint="f", kind=VALUE_PATTERN,
-             payload={"pattern": r"^\s*(?P<num>\d+(?:\.\d+)?)\s*±\s*\d+(?:\.\d+)?\s*$",
+             payload={"pattern": r"^\s*(?P<num>\d+(?:\.\d+)?)\u2020\s*$",
                       "columns": [1]})
     assert apply_rule(r, t, "USTEST") == []
     with pytest.raises(Rejected, match="NAMED as a compound identifier"):

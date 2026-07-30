@@ -53,8 +53,26 @@ def _to_nm(value, unit):
     return None if value is None or unit not in _TO_NM else value * _TO_NM[unit]
 
 
-def load_reference(patent_ids: set[str] | None = None) -> dict:
-    """(patent, cid) -> set of reference values in nM. Empty when BDB is absent."""
+def load_reference(patent_ids: set[str] | None = None,
+                   single_patent_only: bool = True) -> dict:
+    """(patent, cid) -> set of reference values in nM. Empty when BDB is absent.
+
+    Only rows attributing the ligand to ONE patent count, and that is the
+    difference between a benchmark and a rumour. BindingDB routinely names a
+    whole family in a single row —
+
+        US9079866, 114::US9884878, Compound 114::US9745328, Compound 114
+
+    — and 46,000 of its 84,000 patent-bearing rows cite two or more, up to 17.
+    The affinity was measured once, on one ligand; which family member's table
+    it came from is not recorded. Attributing it to all of them scored 21 of
+    our 24 corpus-wide value disagreements, every one of them against a patent
+    whose own table says something different and is right: US9745328 prints
+    `0.0004 uM` for compound 102 where the shared row says `0.1 nM`.
+
+    A family-level value is real evidence about a MOLECULE and no evidence at
+    all about this patent's table, which is what we are checking.
+    """
     from ..scripts.eval.reference_bench import _EXAMPLE_REF, _norm_cid
 
     out: dict[tuple[str, str], set[float]] = collections.defaultdict(set)
@@ -82,11 +100,14 @@ def load_reference(patent_ids: set[str] | None = None) -> dict:
                         pass
             if not vals:
                 continue
-            for m in _EXAMPLE_REF.finditer(row[nm_i] or ""):
-                pid = m.group(1).upper()
+            hits = [(m.group(1).upper(), _norm_cid(m.group(2)))
+                    for m in _EXAMPLE_REF.finditer(row[nm_i] or "")]
+            if single_patent_only and len({p for p, _ in hits}) > 1:
+                continue
+            for pid, cid in hits:
                 if patent_ids and pid not in patent_ids:
                     continue
-                out[(pid, _norm_cid(m.group(2)))].update(vals)
+                out[(pid, cid)].update(vals)
     return out
 
 

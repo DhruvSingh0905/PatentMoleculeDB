@@ -94,6 +94,18 @@ _VALUE_PAT = re.compile(
     r"\s*(?P<unit>nM|µM|μM|uM|mM|pM|%)?"
     r"(?:\s*\(\s*(?P<paren>[^)]{1,12}?)\s*\))?\s*$")
 
+# `1680 ± 150 (n = 4)` / `0.00275 ± 0.00046, n = 3`. The value is the mean and
+# the second number is its spread, which we do not store — but rejecting the
+# whole cell loses the measurement too. 147 assay cells across four patents,
+# and on US11649247 it lost the potency while keeping the `>20.0` ceiling from
+# the neighbouring column, so the compound read as inactive when the patent
+# reports it at 2.75 nM.
+_MEAN_SD = re.compile(
+    r"^\s*(?P<qual>[<>~≈≥≤])?\s*(?P<num>\d+(?:,\d{3})*(?:\.\d+)?)\s*"
+    r"(?:±|\+/-|\+-)\s*\d+(?:,\d{3})*(?:\.\d+)?\s*"
+    r"(?P<unit>nM|µM|μM|uM|mM|pM|%)?"
+    r"[\s,;]*(?:\(?\s*n\s*=\s*(?P<n>\d{1,3})\s*\)?)?[\s,;]*$", re.I)
+
 _NRUNS_ONLY = re.compile(r"^\s*\(\s*(\d{1,3})\s*\)\s*$")
 _LETTER_BIN = re.compile(r"^\s*([A-E])\s*$")
 
@@ -938,6 +950,17 @@ def parse_value(cell: str) -> dict | None:
     _, quals, nulls = _vocab()
     if s.lower() in nulls:
         return None
+    m_sd = _MEAN_SD.match(s)
+    if m_sd:
+        try:
+            return {"value_numeric": float(m_sd.group("num").replace(",", "")),
+                    "qualifier": m_sd.group("qual"),
+                    "unit": _SPELLED_UNIT.get((m_sd.group("unit") or "").lower(),
+                                              m_sd.group("unit")),
+                    "n_runs": int(m_sd.group("n")) if m_sd.group("n") else None,
+                    "annotation": None, "value_text": s}
+        except ValueError:
+            pass
     lb = _LETTER_BIN.match(s)
     if lb:
         return {"letter_grade": lb.group(1).upper(), "value_text": s}
