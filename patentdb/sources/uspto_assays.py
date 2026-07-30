@@ -770,7 +770,7 @@ def classify_column(header: str, samples: list[str]) -> Column:
     # comma-separated (same count of parts), or when each comma-separated part
     # of the header looks like an assay name on its own.
     if "," in h:
-        parts = [p.strip() for p in h.split(",") if p.strip()]
+        parts = split_top_level(h)
         if len(parts) >= 2:
             # Check whether data cells are also comma-separated with the same
             # number of parts — that is the strongest signal.
@@ -779,7 +779,7 @@ def classify_column(header: str, samples: list[str]) -> Column:
             for s in samples:
                 if not s:
                     continue
-                cell_parts = [p.strip() for p in s.split(",")]
+                cell_parts = split_top_level(s)
                 if len(cell_parts) == n_parts:
                     multi_value_count += 1
             if multi_value_count > 0 and multi_value_count >= len([s for s in samples if s]) * 0.4:
@@ -813,6 +813,35 @@ def classify_column(header: str, samples: list[str]) -> Column:
             if plus_or_letter > len(vals) * 0.6:
                 return Column(-1, h, ASSAY, assay_name=h if h else "unnamed assay (letter bin)")
     return Column(-1, h, UNKNOWN)
+
+
+def split_top_level(text: str) -> list[str]:
+    """Split on commas that are NOT inside brackets.
+
+    `probe 1, probe 2` is two assays. `HT1080 (R132C, 2-hydroxyglutarate)
+    IC50 (uM)` is ONE — the comma names a mutant and a metabolite inside a
+    parenthesis. Splitting it produced records under the assay name
+    `HT1080 (R132C` and paired the other half with `n = 7` from the cell, so
+    the run count vanished and the column was named after a fragment.
+
+    Worse, it was intermittent: the sibling column `HT1080 (R132C, aKG) IC50
+    (uM)` kept its full name purely because its cells read `>20.0` with no
+    comma to split on. The same header parsed two different ways depending on
+    what sat under it.
+    """
+    parts, depth, cur = [], 0, []
+    for ch in text or "":
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append("".join(cur).strip())
+    return [p for p in parts if p]
 
 
 def _label_bearing(table: Table, rows) -> list[int]:
@@ -1300,10 +1329,11 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
                 # Detect multi-assay column: header is comma-separated names
                 # and cell is a comma-separated list of values.
                 col_header = c.header or ""
-                header_parts = [p.strip() for p in col_header.split(",") if p.strip()] \
-                    if "," in col_header else []
-                cell_parts = [p.strip() for p in cell_text.split(",")] \
-                    if "," in cell_text and len(header_parts) >= 2 else []
+                header_parts = split_top_level(col_header)
+                if len(header_parts) < 2:
+                    header_parts = []
+                cell_parts = (split_top_level(cell_text)
+                              if header_parts and "," in cell_text else [])
 
                 # One column, several assays: "probe 1, probe 2" over cells
                 # reading "0.00309, 0.00252". `zip` stops at the shorter side,

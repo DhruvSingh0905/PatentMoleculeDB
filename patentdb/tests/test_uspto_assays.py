@@ -686,3 +686,23 @@ def test_a_family_wide_bindingdb_row_is_not_evidence_about_one_patent():
     assert 'len({p for p, _ in hits}) > 1' in src
     assert inspect.signature(
         value_check.load_reference).parameters["single_patent_only"].default is True
+
+
+def test_a_comma_inside_brackets_does_not_split_an_assay_name():
+    """`probe 1, probe 2` is two assays. `HT1080 (R132C, 2-hydroxyglutarate)
+    IC50 (uM)` is ONE — the comma names a mutant and a metabolite.
+
+    Splitting it filed 13 records under the assay name `HT1080 (R132C` and
+    paired the other half with `n = 7` out of the cell, so the run count
+    vanished too. It was intermittent: the sibling column `HT1080 (R132C,
+    aKG) IC50 (uM)` kept its full name only because its cells read `>20.0`
+    with no comma to split on — the same header parsed two ways depending on
+    what sat under it.
+    """
+    from patentdb.sources.uspto_assays import split_top_level as sp
+    assert sp("probe 1, probe 2") == ["probe 1", "probe 2"]
+    assert sp("A2A, A2B") == ["A2A", "A2B"]
+    assert sp("IC50 (nM), Ki (nM)") == ["IC50 (nM)", "Ki (nM)"]
+    assert sp("HT1080 (R132C, 2-hydroxyglutarate) IC50 (uM)") == \
+        ["HT1080 (R132C, 2-hydroxyglutarate) IC50 (uM)"]
+    assert sp("0.000698 ± 0.000352, n = 7") == ["0.000698 ± 0.000352", "n = 7"]
