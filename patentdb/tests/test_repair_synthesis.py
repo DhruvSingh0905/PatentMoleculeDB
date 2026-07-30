@@ -375,3 +375,30 @@ def test_the_inert_check_measures_the_repaired_path_not_the_parse():
     src = inspect.getsource(capability._try_one)
     assert 'repair_pid=g["patent"]' in src
     assert 'verdict.get("repaired_usable")' in src
+
+
+def test_the_source_xml_leads_the_prompt():
+    """`raw_source` used to sit behind `request_more_context`, and it was
+    never once taken: zero of 7,472 cached responses contain that call, and
+    for two of three Gap construction sites the field was empty anyway.
+
+    The cost that justified withholding it does not exist — median raw block
+    is 7,575 characters against a 1,362-character sample, and sending raw for
+    every gap in the corpus costs $0.44 once, cached by fingerprint forever.
+    What withholding it cost is a model diagnosing OUR PARSE instead of the
+    patent, which is the failure this repo's own rule warns about.
+    """
+    import inspect
+
+    from patentdb.repair import synthesize
+
+    src = inspect.getsource(synthesize.propose)
+    assert "THE PATENT'S OWN XML FOR THIS TABLE" in src
+    assert "_RAW_BUDGET" in src
+    # The source is shown BEFORE our reading of it.
+    assert src.index("THE PATENT'S OWN XML") < src.index("OUR READING OF IT")
+    # ...and the system prompt tells the model what a disagreement means.
+    assert "the fault is ours" in synthesize.SYSTEM
+    assert "colspec" in synthesize.SYSTEM
+    # Oversized blocks are head-and-tailed, not truncated to the head.
+    assert "middle rows omitted" in src

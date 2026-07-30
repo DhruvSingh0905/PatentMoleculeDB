@@ -74,6 +74,14 @@ values and must never be mapped as one:
   - retention time, purity, method names
   - the compound identifier itself
 
+You are shown TWO views of the same table: the patent's own CALS XML, and our \
+reading of it. The XML is the source and our reading is derived, so where they \
+disagree the fault is ours. Say so — a note that our header, our column count \
+or our cell boundaries do not match what the source declares is worth more \
+than any rule, because a rule written against a damaged view encodes the \
+damage. `colspec` widths in particular state how a header tgroup maps onto a \
+body tgroup of a different width, and we have got that wrong before.
+
 Prefer `column_map` whenever the table has usable cell structure; it is safer \
 than a regex because there is nothing to over-match. Use `row_regex` only when \
 cell boundaries are lost. Anchor any regex and keep it specific — a pattern \
@@ -121,10 +129,9 @@ MORE_TOOL = {
         "is not enough to decide safely — a header you cannot align to columns, "
         "a legend that appears cut off, too few rows to see the pattern. You "
         "will be shown a larger view of the same table and can then answer. "
-        "`raw_source` returns the table's ORIGINAL CALS XML, which is the only "
-        "view we have not already transformed: if what you were shown "
-        "contradicts it, say so in `note` — that is a bug in our reader and is "
-        "worth more to us than a rule. "
+        "The original CALS XML is already in your first prompt, so ask for "
+        "`more_rows` or `full_legend` when the obstacle is scope rather than "
+        "fidelity. "
         "Prefer this over `escalate` whenever the obstacle is that you cannot "
         "SEE enough: escalate means the capability is missing, not the data."),
     "input_schema": {
@@ -396,6 +403,14 @@ def _to_rule(fingerprint: str, out: dict, model: str, sample: str = "") -> Rule:
                 source="llm", model=model)
 
 
+# Characters of raw CALS sent per gap. 24k is ~6k tokens, under a cent at
+# Haiku rates, and covers the median block (7.6k) whole. The corpus maximum is
+# 428k — one block of 699 rows — so the largest are head-and-tailed: a rule is
+# inferred from a table's SHAPE, and the 400th identical row adds nothing the
+# first thirty did not.
+_RAW_BUDGET = 24_000
+
+
 def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "") -> Rule | None:
     """One call. Returns an UNVALIDATED proposal — the caller must gate it."""
     # Lead with the diagnosis and the cells that actually failed. Buried at the
@@ -429,12 +444,48 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "") -> Rule 
                      "when a single scale governs the whole table. Copy each "
                      "bound in the direction the text states it, even where "
                      "scales run opposite ways.\n")
+    # The SOURCE goes in the first prompt, not behind a tool call.
+    #
+    # It used to be offered via `request_more_context` and it was never once
+    # taken: zero of 7,472 cached responses contain that call, and for two of
+    # the three Gap construction sites `raw_source` was empty anyway, so asking
+    # would have returned nothing. A capability nobody used, that mostly did
+    # not work.
+    #
+    # The cost that justified withholding it does not exist. Median raw block
+    # is 7,575 characters against a 1,362-character sample — 6x — and sending
+    # raw for EVERY gap in the corpus, all 44, costs $0.44 once and is cached
+    # by fingerprint forever.
+    #
+    # What withholding it did cost is the whole class of bug this session was
+    # spent on. `gap.sample` is a view WE built; asking a model to diagnose it
+    # asks about our parse, not the patent. That is the repo's own rule —
+    # never diagnose from the parsed view — applied one level up, and it is
+    # why a model answered `not_assay` about an interleaved NMR fragment and
+    # why a correct `column_map` was proposed for a table whose real problem
+    # was one layer below any rule.
+    #
+    # Both views are shown, in that order, and the prompt says they must
+    # agree. A disagreement between them is a parser defect, which is worth
+    # more than any rule the model could return.
+    raw = gap.raw_source or ""
+    if len(raw) > _RAW_BUDGET:
+        head = raw[: _RAW_BUDGET * 2 // 3]
+        tail = raw[-(_RAW_BUDGET // 3):]
+        raw = (f"{head}\n\n... [{len(gap.raw_source) - _RAW_BUDGET} characters of "
+               f"middle rows omitted] ...\n\n{tail}")
+    source_block = (
+        f"THE PATENT'S OWN XML FOR THIS TABLE — the source of truth:\n"
+        f"{raw}\n\n"
+        f"OUR READING OF IT — derived, and possibly where the fault is:\n"
+        if raw else "OUR READING OF THIS TABLE:\n")
     prompt = (
         f"PROBLEM: {gap.reason}\n{legends}"
         f"{failing}\n"
         f"Table fragment (patent {gap.patent_id}, {gap.n_cols} columns, "
         f"{gap.n_data_rows} data rows).\n"
         f"Columns currently classified as: {gap.column_kinds}\n\n"
+        f"{source_block}"
         f"{gap.sample}\n"
     )
     cache_key = f"synth::{PROMPT_VERSION}::{gap.fingerprint}::{model}"

@@ -60,7 +60,7 @@ _LIBRARY = config.PACKAGE_ROOT / "data" / "layout_rules.json"
 # frozen at a stale `escalate` through every subsequent improvement. `lib.get()`
 # short-circuits before the model is called, so a persisted escalation pins the
 # layout to the capability we had the day it was written.
-SYNTH_EPOCH = "v18-gates-suspended"
+SYNTH_EPOCH = "v19-source-first"
 
 # Regex constructs that make catastrophic backtracking possible. A synthesized
 # pattern runs over thousands of rows, so a quadratic blowup is a hang, and the
