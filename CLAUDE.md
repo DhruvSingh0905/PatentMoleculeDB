@@ -206,6 +206,28 @@ answer that parsed as an empty patch list and read as the model declining.
     python3 -m patentdb.scripts.eval.parser_health --history      # shared journal
     python3 -m patentdb.scripts.eval.parser_health --revert 4     # undoes the whole group
 
+### Suspending a gate suspends the CONTRACT with it
+
+`RULE_GATES_ENFORCE=0` suspends the JUDGEMENT gates — coverage floors, the
+adversarial battery, grounding — because those are opinions and this
+codebase's have been wrong at least as often as right. It was never meant to
+admit a rule the applier cannot execute. Three did enter the library over the
+objection *"value_pattern must capture a named group `num`"*, then crashed
+two whole patents at apply time.
+
+`rules.Invalid` (a `Rejected` subclass, caught FIRST in `loop`) is the
+contract half and always blocks: does the regex compile, can a value_pattern
+ever yield a number. "Is this rule good" is suspended; "can this rule run" is
+not a question of taste.
+
+A gap that raises is now `report.crashed`, not an exception the caller is
+trusted to notice. Both sites that execute a model-supplied regex —
+`validate` and `apply_rule` — record and continue, so one bad proposal costs
+its own gap and not the patent. Three patents were skipped by a corpus run
+with the totals looking healthy, because the runner logged a line and moved
+on; a failure that preserves the appearance of the counts is the shape of
+nearly every defect in this file's history.
+
 `config.py` currently holds **zero unused constants**. It accumulated 18 of them before the cleanup, several describing machinery that no longer ran. If you delete a code path, delete its config with it.
 
 ## Clear stale caches when extraction strategy changes

@@ -428,3 +428,57 @@ def test_a_proposed_unit_must_appear_in_the_patent():
     assert 'a["unit"] = None' in src
     # Grounded against the SAME text the names are grounded against.
     assert src.index("doc_units") > src.index("source_toks")
+
+
+def test_a_contract_violation_blocks_even_when_the_gates_are_suspended():
+    """`RULE_GATES_ENFORCE` suspends JUDGEMENTS, and should never have
+    suspended CONTRACTS.
+
+    "Is this rule good?" — coverage floors, the adversarial battery,
+    grounding — are opinions, and this codebase's have been wrong at least as
+    often as right. "Can this rule run?" is not an opinion. Three rules
+    entered the library over the objection "value_pattern must capture a
+    named group `num`" and then crashed two whole patents at apply time.
+    """
+    from patentdb.core import config
+    from patentdb.repair.rules import (VALUE_PATTERN, Invalid, Rejected, Rule,
+                                       validate)
+    from patentdb.sources.uspto_xml import Cell, Table
+
+    assert config.RULE_GATES_ENFORCE is False, "judgement gates stay suspended"
+    t = Table(table_id="T1", n_cols=2,
+              header_rows=[[Cell("Example"), Cell("IC50 (nM)")]],
+              body_rows=[[Cell(str(i)), Cell(f"{i}†")] for i in range(1, 8)])
+
+    # Cannot ever yield a number -> Invalid, which loop catches FIRST.
+    with pytest.raises(Invalid):
+        validate(Rule(fingerprint="f", kind=VALUE_PATTERN,
+                      payload={"pattern": r"^[A-Z]\d{2}[a-z]\d$"}), t)
+    # A quality verdict stays Rejected, so it can still be adopted over
+    # objection — that suspension was deliberate and stays.
+    try:
+        validate(Rule(fingerprint="g", kind=VALUE_PATTERN,
+                      payload={"pattern": r"^\s*(?P<num>\d+)\s*$"}), t)
+    except Invalid:
+        raise AssertionError("a coverage verdict must not be a contract failure")
+    except Rejected:
+        pass
+
+
+def test_a_gap_that_raises_is_recorded_not_swallowed():
+    """Three patents were skipped entirely by a corpus run and the totals
+    looked healthy, because `repair_patent` raised and the runner logged a
+    line. A failure that preserves the appearance of the counts is the shape
+    of every defect found this week, so a crash is now a report field.
+    """
+    import inspect
+
+    from patentdb.repair import loop
+
+    assert "crashed" in {f.name for f in
+                         __import__("dataclasses").fields(loop.RepairReport)}
+    src = inspect.getsource(loop.repair_patent)
+    # Both sites that execute a MODEL-SUPPLIED regex are covered.
+    assert src.count('"stage": "validate"') == 1
+    assert src.count('"stage": "apply"') == 1
+    assert "CRASHED" in inspect.getsource(loop.RepairReport.summary)

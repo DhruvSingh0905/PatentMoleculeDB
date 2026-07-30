@@ -174,6 +174,31 @@ class Rejected(Exception):
     """A proposed rule failed its gate. Carries why, for the escalation queue."""
 
 
+class Invalid(Rejected):
+    """The rule cannot be EXECUTED at all — a contract violation, not a verdict.
+
+    The suspension of the judgement gates was right and this is why it needed a
+    second category. `validate` asks two different kinds of question:
+
+      "is this rule GOOD?"   — coverage floors, the adversarial battery,
+                               grounding. Opinions, and this codebase's have
+                               been wrong at least as often as right: a correct
+                               `column_map` scored 0/23, a 49% floor blamed a
+                               layout for a regex in the reader. SUSPENDED.
+
+      "can this rule RUN?"   — does the regex compile, does a column_map name a
+                               cid, can a value_pattern ever yield a number.
+                               Not opinions. A rule failing these is not
+                               low-quality, it is not a rule.
+
+    Suspending the first suspended the second with it, and three structurally
+    unusable rules entered the library over the objection "value_pattern must
+    capture a named group `num`" — then crashed two whole patents out of the
+    loop at apply time. This subclasses `Rejected` so nothing that catches the
+    old type stops working, and `loop` catches it FIRST so it always blocks.
+    """
+
+
 try:                                    # `regex` supports a match timeout; `re` does not
     import regex as _re_engine
     _HAS_TIMEOUT = True
@@ -411,10 +436,12 @@ def _validate_value_pattern(rule: Rule, table) -> dict:
             raw = raw.replace("(", "(?P<num>", 1)
             pat = _safe_regex(raw)
             rule.payload["pattern"] = raw
-        else:
-            raise Rejected(
-                "value_pattern must capture a named group `num` "
-                f"(got groups={pat.groups}, named={list(pat.groupindex)})")
+        elif not any(n.lower().startswith("num") for n in (pat.groupindex or {})):
+            raise Invalid(
+                "value_pattern captures no number: no group named `num`, no "
+                "single unnamed group to promote, and nothing named `num*` "
+                f"(groups={pat.groups}, named={list(pat.groupindex)}). Such a "
+                "rule cannot produce a value on any input.")
 
     _, data = _header_rows_of(table)
     cols = rule.payload.get("columns")

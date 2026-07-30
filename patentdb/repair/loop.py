@@ -28,7 +28,7 @@ from ..sources.uspto_xml import (
 from .gap import Gap, find_gaps, yield_contradictions
 from .rules import (
     BIN_KEY, COLUMN_MAP, ESCALATE, NOT_ASSAY, ROW_REGEX, VALUE_PATTERN,
-    Rejected, Rule, RuleLibrary, validate,
+    Invalid, Rejected, Rule, RuleLibrary, validate,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,12 @@ class RepairReport:
     # a layout no rule kind can express, which is the queue the code-patch
     # tier reads. See `repair.capability`.
     capability_gaps: list[dict] = field(default_factory=list)
+    # Gaps that raised. A FIRST-CLASS outcome, not something the caller is
+    # trusted to notice: three patents were skipped entirely by a corpus run
+    # because `repair_patent` raised, the runner logged a line, and the totals
+    # looked healthy. A failure that preserves the appearance of the counts is
+    # the shape of every defect found this week.
+    crashed: list[dict] = field(default_factory=list)
 
     def summary(self) -> str:
         return (f"{self.patent_id}: {self.gaps_found} gaps "
@@ -60,6 +66,7 @@ class RepairReport:
                 f"{self.escalated} escalated, "
                 f"{self.adopted_over_objection} over-objection, "
                 f"{len(self.capability_gaps)} capability-gap, "
+                f"{len(self.crashed)} CRASHED, "
                 f"+{self.rows_recovered} rows")
 
 
@@ -433,6 +440,24 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
                 try:
                     rule.validated_on = validate(
                         rule, table, baseline_rows=per_table.get(gap.table_id, 0))
+                except Invalid as e:
+                    # A CONTRACT violation, not a verdict. `RULE_GATES_ENFORCE`
+                    # suspends the judgement gates because they have been wrong
+                    # as often as right; it was never meant to admit a rule the
+                    # applier cannot execute. Three such rules entered the
+                    # library over the objection "value_pattern must capture a
+                    # named group `num`" and crashed two patents at apply time.
+                    report.rejected += 1
+                    report.rejections.append({
+                        "fingerprint": gap.fingerprint, "patent": patent_id,
+                        "table": gap.table_id, "proposed": rule.kind,
+                        "why_rejected": str(e), "contract": True,
+                        "sample": gap.sample[:400], "enforced": True,
+                    })
+                    rule = Rule(fingerprint=gap.fingerprint, kind=ESCALATE,
+                                payload={"capability": "unexecutable proposal",
+                                         "note": str(e)},
+                                source="llm", model=rule.model)
                 except Rejected as e:
                     report.rejections.append({
                         "fingerprint": gap.fingerprint, "patent": patent_id,
@@ -452,6 +477,24 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
                                              "objection": str(e)}
                         logger.info("repair: %s adopted over objection — %s",
                                     gap.fingerprint, str(e)[:140])
+                except Exception as e:
+                    # `validate` executes a MODEL-SUPPLIED regex against real
+                    # cells, so any exception here is ours to own, not the
+                    # caller's to notice. US12281080 died on an AttributeError
+                    # and US10654855/US11254686 on `IndexError('no such
+                    # group')`; each cost a whole patent, and the corpus totals
+                    # looked healthy because the runner logged a line and moved
+                    # on. Recorded as a crash and the gap abandoned — one bad
+                    # proposal must not cost the other gaps in this patent.
+                    logger.warning("repair: %s crashed validating %s: %r",
+                                   patent_id, gap.fingerprint, e)
+                    report.crashed.append({
+                        "fingerprint": gap.fingerprint, "patent": patent_id,
+                        "table": gap.table_id, "stage": "validate",
+                        "rule_kind": rule.kind, "error": repr(e)[:200],
+                        "rows_at_stake": gap.severity,
+                    })
+                    continue
             fresh = True
 
         # These two are ANSWERS that legitimately produce no records, so they
@@ -480,6 +523,16 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
             got = apply_rule(rule, table, patent_id)
         except Rejected as e:
             logger.warning("repair: rule %s failed at apply time: %s", gap.fingerprint, e)
+            continue
+        except Exception as e:
+            logger.warning("repair: %s crashed applying %s: %r",
+                           patent_id, gap.fingerprint, e)
+            report.crashed.append({
+                "fingerprint": gap.fingerprint, "patent": patent_id,
+                "table": gap.table_id, "stage": "apply",
+                "rule_kind": rule.kind, "error": repr(e)[:200],
+                "rows_at_stake": gap.severity,
+            })
             continue
 
         # A rule that produces NOTHING is not an answer, and must never become
