@@ -345,6 +345,35 @@ def _validate_bin_key(rule: Rule, table) -> dict:
             "coverage": round(len(covered) / len(present), 3), "kind": BIN_KEY}
 
 
+def first_number(m) -> str | None:
+    """The number a value pattern captured, whatever the model called it.
+
+    `num` is the documented contract, and three adopted rules do not honour
+    it: a model describing a two-value cell writes `num1`/`num2`, and one
+    returned a pattern with no groups at all. The suspended gate let all three
+    into the library over its own objection, and `m.group("num")` then raised
+    `IndexError('no such group')` — crashing two whole patents out of the loop.
+
+    That is the distinction the suspension did not draw. A gate that asks "is
+    this rule GOOD" is a judgement and has been wrong repeatedly; a gate that
+    asks "does this rule have the shape the applier requires" is a contract.
+    Suspending the first suspended the second with it.
+
+    Rather than re-gate, the applier is made total: prefer `num`, else the
+    first participating group named `num*`, else nothing. `num1`/`num2` then
+    WORK instead of crashing, which is what the model meant by them.
+    """
+    if m is None:
+        return None
+    names = m.re.groupindex or {}
+    if "num" in names:
+        return m.group("num")
+    for name in sorted(names, key=lambda n: names[n]):
+        if name.lower().startswith("num") and m.group(name):
+            return m.group(name)
+    return None
+
+
 def _validate_value_pattern(rule: Rule, table) -> dict:
     """Gate a proposed CELL parser. Three conditions, all mandatory.
 
@@ -405,10 +434,23 @@ def _validate_value_pattern(rule: Rule, table) -> dict:
             current = parse_value(s)
             m = _search(pat, s)
             proposed = None
-            if m:
+            # A named group can MATCH without participating. US12281080's
+            # proposal is an alternation — `(?P<num>\d+...)|Not\s+determined|
+            # N\.A\....` — so `Not determined` matches the pattern while `num`
+            # captures nothing, and `m.group("num")` is None. `None.replace`
+            # raises AttributeError, which was not in the caught tuple, so the
+            # whole patent crashed out of the loop.
+            #
+            # The model was being MORE careful than we assumed, not less: it
+            # wrote a pattern that recognises the patent's null markers instead
+            # of letting them fall through. Not participating means "matched,
+            # but there is no number here", which is the same as no match to
+            # every caller below.
+            raw_num = first_number(m)
+            if raw_num:
                 try:
-                    proposed = float(m.group("num").replace(",", ""))
-                except (TypeError, ValueError):
+                    proposed = float(raw_num.replace(",", ""))
+                except ValueError:
                     proposed = None
             if current and current.get("value_numeric") is not None:
                 if proposed is None or abs(proposed - current["value_numeric"]) > 1e-9:

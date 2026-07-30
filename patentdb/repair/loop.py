@@ -290,9 +290,16 @@ def apply_rule(rule: Rule, table: Table, patent_id: str) -> list:
                 m = _search(pat, s)
                 if not m:
                     continue
+                # Same guard as the validator: a named group can match without
+                # participating, and a model describing a two-value cell names
+                # its groups `num1`/`num2` rather than `num`.
+                from .rules import first_number
+                raw_num = first_number(m)
+                if not raw_num:
+                    continue
                 try:
-                    v = float(m.group("num").replace(",", ""))
-                except (TypeError, ValueError, IndexError):
+                    v = float(raw_num.replace(",", ""))
+                except ValueError:
                     continue
                 out.append(AssayRecord(
                     cid=cid, assay_name=col.assay_name or col.header or "assay",

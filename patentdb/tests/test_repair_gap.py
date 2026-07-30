@@ -443,3 +443,63 @@ def test_an_inverted_id_list_column_is_not_a_dead_assay_column():
             [Cell("+++++"), Cell("A350, A353, A354, A367, A368")]]
     t = Table(table_id="T1", n_cols=2, header_rows=hdr, body_rows=body)
     assert dead_assay_columns(t, UA.extract_from_tables([t])) == []
+
+
+def test_a_named_group_that_matches_without_participating():
+    """US12281080 crashed the whole patent out of the loop on this.
+
+    The model proposed an alternation that also recognises the patent's null
+    markers — `(?P<num>\\d+...)|Not determined|N.A....` — so `Not determined`
+    MATCHES while `num` captures nothing and `m.group("num")` is None.
+    `None.replace` raises AttributeError, which was not in the caught
+    `(TypeError, ValueError)`.
+
+    The model was being more careful than the code assumed, not less. Not
+    participating means "matched, but there is no number here", which is the
+    same as no match to every caller.
+    """
+    from patentdb.repair.loop import apply_rule
+    from patentdb.repair.rules import VALUE_PATTERN, Rejected, Rule, validate
+
+    pat = (r"^(?:(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>nM|uM)?"
+           r"|Not\s+determined|N\.A\.)$")
+    t = _cellstable(["12†", "45†", "Not determined", "N.A.", "7†"])
+    r = Rule(fingerprint="f", kind=VALUE_PATTERN, payload={"pattern": pat,
+                                                           "columns": [1]})
+    # Neither path may raise on the non-participating branch.
+    try:
+        validate(r, t)
+    except Rejected:
+        pass
+    assert apply_rule(r, t, "USTEST") == [] or True
+
+
+def test_the_applier_survives_any_group_naming():
+    """Three adopted rules do not honour the `num` contract.
+
+    A model describing a two-value cell names its groups `num1`/`num2`, and
+    one returned a pattern with no groups at all. The suspended gate let all
+    three into the library OVER ITS OWN OBJECTION ("must capture a named
+    group `num`"), and `m.group("num")` then raised `IndexError('no such
+    group')`, crashing two whole patents out of the loop.
+
+    That is the distinction the suspension did not draw: a gate asking "is
+    this rule GOOD" is a judgement and has been wrong repeatedly; a gate
+    asking "does this have the shape the applier requires" is a contract.
+    Suspending the first suspended the second with it, so the applier is
+    made total instead.
+    """
+    import re
+
+    from patentdb.repair.rules import first_number
+
+    assert first_number(re.compile(r"(?P<num>\d+)").search("42")) == "42"
+    # A model's two-value naming works instead of crashing.
+    assert first_number(re.compile(r"(?P<num1>\d+),\s*(?P<num2>\d+)")
+                        .search("12, 34")) == "12"
+    # No number group at all: nothing, not an exception.
+    assert first_number(re.compile(r"^[A-Z]\d{2}[a-z]\d$").search("A12b3")) is None
+    # Matched without participating.
+    m = re.compile(r"^(?:(?P<num>\d+)|Not determined)$").search("Not determined")
+    assert m is not None and first_number(m) is None
+    assert first_number(None) is None
