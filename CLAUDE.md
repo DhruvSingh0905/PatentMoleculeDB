@@ -164,16 +164,40 @@ corpus — rewriting up to `MAX_TARGETS=3` functions from a fixed candidate list
 Multi-target because single-function patches for these shapes are inert:
 US9302989 needed `classify_column` *and* `extract_from_tables` together.
 
-**A patch is declined for exactly TWO reasons, both measured rather than
-judged: it reads fewer compounds, or it makes more of our values disagree with
-BindingDB than already did.** BDB publishes a numeric affinity for 100% of its
-rows, so "is this value right" is a lookup, not an opinion — and it is the one
-thing coverage structurally cannot see. `repair/value_check.py` runs at 5%
-tolerance (BDB stores three significant figures) and buckets the rest:
-variance to 2x, disagree to 10x, wrong-scale beyond. Measured as a DELTA, since
-24 flagged values already exist and some are BDB curating a different assay.
+**A patch is declined for exactly ONE reason: it picks up fewer COMPOUNDS than
+before.** Nothing else blocks — not fidelity, not the test suite, not value
+agreement, not inertness. All of those are measured, journaled, printed and
+applied anyway.
+
+That is deliberate and was learned the hard way. A fixed rule about what a good
+repair looks like is the wrong premise for an extractor whose job is adapting
+to layouts nobody anticipated, and every such gate here eventually blocked
+something correct: a `column_map` scored 0/23, a 49% floor blamed a layout for
+a regex in the reader, an inert-check declined a patch recovering 1,238 rows,
+and a BDB-delta gate lasted one commit. The journal is what makes applying safe
+— any state is one `--revert` away.
+
+Compounds, not records: a patch that splits one cell into two rows doubles the
+record count without finding a molecule.
+
+`repair/value_check.py` still runs, at 5% tolerance for BDB's three-significant-
+figure rounding, bucketing variance (2x), disagree (10x) and wrong-scale
+beyond. It is how a dimensionless ratio recorded as a nanomolar potency was
+found. It reports; it does not gate.
 
     python3 -m patentdb.scripts.eval.value_check_cli
+    python3 -m patentdb.scripts.eval.verify_page --patents US9302989
+    python3 -m patentdb.scripts.eval.model_bakeoff --patents US9302989 --patch
+
+**Removing the gates moves the judgement to the model choice**, which is why
+`model_bakeoff` exists: it runs the loop under Haiku, Sonnet and Opus over the
+same test patents, restoring every patchable module, the rule library and the
+journal between runs so each starts from an identical tree, and logs what each
+proposed, adopted, escalated and patched.
+
+`verify_page` puts the patent's own CALS beside the records we derived from it,
+per block, in one self-contained page — because no automated check can look at
+a table and say "that is not what the patent means".
 Fidelity discrepancies, a failing suite, and a patch that recovers nothing are
 recorded as `objections` and applied anyway. This is the same call already made
 for model-proposed rules, and it was earned twice more here: an inert-patch

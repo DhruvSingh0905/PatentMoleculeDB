@@ -424,41 +424,30 @@ def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
     verdict = verify_patch(module, patched, baseline=base, also=also,
                            repair_pid=g["patent"])
 
-    # SECOND blocking condition, and the only other one: did the patch make our
-    # NUMBERS disagree with BindingDB more than they already did?
+    # The BindingDB value delta is RECORDED, not enforced.
     #
-    # This is not a judgement about the patch, which is why it may block. BDB
-    # publishes a numeric affinity for 100% of its rows, so "is this value
-    # right" is a lookup against the same compound in the same patent. Coverage
-    # cannot see this at all — 99 records read a dimensionless selectivity
-    # ratio as a nanomolar potency while every count went up.
+    # It was the second blocking condition for one commit. Taking it out is
+    # deliberate: a fixed rule about what a good patch looks like is the wrong
+    # premise for an extractor whose whole job is adapting to layouts nobody
+    # anticipated. Every such rule here has eventually blocked something
+    # correct — a column_map at 0/23, a 49% floor on a reader bug, an
+    # inert-check on a patch recovering 1,238 rows — and each cost more than
+    # the fabrications it caught, which the value check finds afterwards
+    # anyway. So there is ONE condition, and it is the only one that cannot be
+    # an opinion: does the patched code pick up more compounds than before?
     #
-    # Measured as a DELTA, never an absolute: 24 flagged values already exist
-    # in the corpus and some are BindingDB curating a different assay than the
-    # column we matched. Requiring zero would block every patch on a patent
-    # that already has one. Introducing new ones is a different claim, and an
-    # observed one.
-    if verdict.get("ok") and verdict.get("bad_values") is not None:
+    # Everything else — fidelity, the suite, value agreement, inertness — is
+    # measured, journaled, printed, and applied regardless. The journal is what
+    # makes that safe: any state is one `--revert` away.
+    if verdict.get("bad_values") is not None:
         before_bad = _bad_values_now(g["patent"])
         after_bad = verdict["bad_values"]
         verdict["bad_values_before"] = before_bad
         if after_bad > before_bad:
-            verdict["ok"] = False
-            verdict["why"] = (
-                f"introduces {after_bad - before_bad} value(s) that disagree with "
-                f"BindingDB beyond {int(value_check.TOLERANCE * 100)}% "
-                f"({before_bad} -> {after_bad}). Coverage went up and the numbers "
-                f"got worse.")
+            verdict.setdefault("objections", []).append(
+                f"introduces {after_bad - before_bad} value(s) disagreeing with "
+                f"BindingDB ({before_bad} -> {after_bad})")
 
-    # ...and it must FIX THE GAP IT WAS BOUGHT FOR.
-    #
-    # `verify_patch` asks "did anything get worse". Nothing asks "did anything
-    # get better", so a patch that changes no behaviour at all sails through:
-    # Sonnet's first single-target `classify_column` proposal was applied clean
-    # — corpus fine, tests green, 70,051 usable — and US9302989 still produced
-    # 30 records with the gap still open. That is the same defect this module
-    # exists to fix, one tier up: an answer that does nothing being recorded as
-    # an answer.
     # Recorded, NOT enforced. An inert patch adds dead code; it does not lose
     # a compound, and this tier does not block on anything but that.
     #

@@ -306,8 +306,8 @@ def verify_patch(module: Path, new_source: str, *, xml_dir: Path | None = None,
             if got.get("repaired_usable") is not None and got["repaired_usable"] >= 0:
                 got["full_path_usable"] = got["repaired_usable"]
             if after < total_before:
-                got.update(ok=False, why=(f"reads FEWER compounds: {total_before} -> "
-                                          f"{after}. The one condition."))
+                got.update(ok=False, why=(f"picks up FEWER compounds: {total_before} "
+                                          f"-> {after}. The only condition."))
                 got["objections"] = evidence
                 return got
             moved = {p: (baseline[p], got["per_patent"].get(p, 0))
@@ -337,7 +337,11 @@ for p in sorted(pathlib.Path("__XML_DIR__").glob("*.xml")):
     xml = p.read_text()
     discrepant += len(parse_fidelity(xml))
     try:
-        per_patent[p.stem] = sum(1 for r in extract_from_patent(xml) if r.is_usable)
+        # COMPOUNDS, not records. A patch that splits one cell into two rows
+        # doubles the record count without finding anything new; the question
+        # is whether the patent gave up more of its molecules.
+        per_patent[p.stem] = len({r.cid for r in extract_from_patent(xml)
+                                  if r.is_usable and r.cid})
     except Exception:
         per_patent[p.stem] = -1
 repaired = None

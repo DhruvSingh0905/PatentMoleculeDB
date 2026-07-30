@@ -330,8 +330,8 @@ def test_a_rule_that_yields_nothing_is_not_an_answer():
     assert "capability_gaps.append" in src
 
 
-def test_a_patch_is_blocked_only_by_reading_fewer_compounds():
-    """One condition, by instruction: does the patched code read LESS?
+def test_a_patch_is_blocked_only_by_picking_up_fewer_compounds():
+    """ONE condition: does the patched code pick up fewer COMPOUNDS?
 
     Every judgement-shaped gate in this system has been wrong at least as
     often as right — a correct column_map scored 0/23; a 49% floor on a rule
@@ -346,13 +346,29 @@ def test_a_patch_is_blocked_only_by_reading_fewer_compounds():
 
     src = inspect.getsource(parser_repair.verify_patch)
     # Fidelity and the suite are evidence now, not returns.
-    assert "reads FEWER compounds" in src
+    assert "picks up FEWER compounds" in src
     assert 'got["objections"] = evidence' in src
     for signal in ("discrepant_blocks", "tests_pass"):
         i = src.index(signal, src.index("evidence = []"))
         assert "evidence.append" in src[i:i + 400], f"{signal} must not block"
     # ...and exactly one path sets ok=False.
     assert src.count("ok=False") == 1
+
+
+def test_the_bdb_value_delta_is_recorded_not_enforced():
+    """It blocked for one commit. Fixed acceptance rules are the wrong premise
+    for an adaptive extractor — each one here eventually blocked something
+    correct, and the value check finds a fabrication afterwards anyway."""
+    import inspect
+
+    from patentdb.repair import capability
+
+    src = inspect.getsource(capability._try_one)
+    assert "RECORDED, not enforced" in src
+    i = src.index("bad_values_before")
+    # It appends an objection; it does not set ok=False.
+    assert "objections" in src[i:i + 400]
+    assert 'verdict["ok"] = False' not in src[i:i + 400]
 
 
 def test_the_inert_check_measures_the_repaired_path_not_the_parse():
@@ -454,8 +470,10 @@ def test_a_contract_violation_blocks_even_when_the_gates_are_suspended():
     with pytest.raises(Invalid):
         validate(Rule(fingerprint="f", kind=VALUE_PATTERN,
                       payload={"pattern": r"^[A-Z]\d{2}[a-z]\d$"}), t)
-    # A quality verdict stays Rejected, so it can still be adopted over
-    # objection — that suspension was deliberate and stays.
+    # Fixed rules about what a good patch looks like are the wrong premise for
+    # an extractor built to adapt: every one here eventually blocked something
+    # correct. The BindingDB value delta was a blocking condition for exactly
+    # one commit and is now evidence, like fidelity and the suite.
     try:
         validate(Rule(fingerprint="g", kind=VALUE_PATTERN,
                       payload={"pattern": r"^\s*(?P<num>\d+)\s*$"}), t)
