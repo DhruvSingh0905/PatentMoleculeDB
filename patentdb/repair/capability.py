@@ -267,6 +267,36 @@ def _sample_of_table(table) -> str:
     return "\n".join(lines)
 
 
+def _retry_note(gap_info: dict) -> str:
+    """What the LAST patch for this layout did, when there was one.
+
+    A patch is applied on corpus coverage, which is the right condition — it is
+    the only one that cannot be argued with. But it means a patch can land,
+    raise the corpus, and leave the patent that ASKED for it at zero: measured,
+    US10266548 and US9801872 both had a patch applied and stayed at 0.
+
+    That is not a reason to block the patch. It is a reason not to call the gap
+    answered. The model is told what its predecessor did so the next attempt is
+    a different attempt rather than the same one re-derived.
+    """
+    prior = gap_info.get("prior_attempts") or []
+    if not prior:
+        return ""
+    lines = ["A PREVIOUS patch for this same layout was already APPLIED and did "
+             "NOT fix this patent:"]
+    for a in prior[-3:]:
+        lines.append(f"  - targeted {a.get('target')}: corpus coverage moved "
+                     f"{a.get('total_usable_before')} -> {a.get('total_usable_after')}, "
+                     f"but {gap_info['patent']} went "
+                     f"{a.get('before', '?')} -> {a.get('after', '?')} usable.")
+        if a.get("diagnosis"):
+            lines.append(f"    it reasoned: {str(a['diagnosis'])[:300]}")
+    lines.append("Do not repeat that patch. Either target a DIFFERENT function, "
+                 "or explain in `diagnosis` why this patent cannot be read by "
+                 "any function on the candidate list.\n\n")
+    return "\n".join(lines)
+
+
 def propose_capability_patch(gap_info: dict, table, *,
                              model: str | None = None) -> dict | None:
     """One paid question per LAYOUT FINGERPRINT, cached like every other."""
@@ -292,9 +322,16 @@ def propose_capability_patch(gap_info: dict, table, *,
         f"A `{gap_info['rule_kind']}` rule was already tried on this layout:\n"
         f"  {json.dumps(gap_info.get('rule_payload'))[:400]}\n"
         f"It produced NOTHING. {gap_info.get('why', '')}\n\n"
-        f"CANDIDATE FUNCTIONS:\n\n" + "\n\n".join(offered))
+        + _retry_note(gap_info)
+        + f"CANDIDATE FUNCTIONS:\n\n" + "\n\n".join(offered))
 
-    key = f"capability::{PATCH_EPOCH}::{gap_info['fingerprint']}::{model}"
+    # The retry count is IN THE KEY. Without it a re-run replays the same
+    # cached answer, so a patch that applied and left its own patent at zero
+    # would be proposed again, verbatim, for ever. `retry` is derived from the
+    # journal, so it survives the process that recorded it.
+    retry = int(gap_info.get("retry") or 0)
+    key = (f"capability::{PATCH_EPOCH}::{gap_info['fingerprint']}::{model}"
+           + (f"::retry{retry}" if retry else ""))
     cached = get_cached(model, key)
     if cached is not None:
         try:
@@ -406,6 +443,34 @@ def _gap_from_a_silent_patent(patent_id: str, report) -> dict | None:
     }
 
 
+def _annotate_prior_attempts(gaps: list[dict]) -> None:
+    """Attach prior applied-but-inert attempts, per fingerprint, from the journal."""
+    from .parser_repair import journal_read
+
+    try:
+        entries = journal_read()
+    except Exception:                            # a missing journal is not an error
+        return
+    by_fp: dict[str, list[dict]] = {}
+    for e in entries:
+        if e.get("action") != "capability_patch" or not e.get("applied"):
+            continue
+        if (e.get("gap_rows_recovered") or 0) > 0:
+            continue                             # it worked; nothing to warn about
+        by_fp.setdefault(str(e.get("fingerprint")), []).append({
+            "target": e.get("target"), "diagnosis": e.get("diagnosis"),
+            "total_usable_before": e.get("total_usable_before"),
+            "total_usable_after": e.get("total_usable_after"),
+            "before": (e.get("coverage_moved") or {}).get(e.get("patent"), [None, None])[0],
+            "after": (e.get("coverage_moved") or {}).get(e.get("patent"), [None, None])[1],
+        })
+    for g in gaps:
+        prior = by_fp.get(str(g.get("fingerprint")))
+        if prior:
+            g["prior_attempts"] = prior
+            g["retry"] = len(prior)
+
+
 def collect_gaps(patent_ids: list[str] | None = None) -> list[dict]:
     """Every capability gap in the corpus, biggest first. Free — no model calls."""
     from .loop import repair_patent
@@ -431,6 +496,12 @@ def collect_gaps(patent_ids: list[str] | None = None) -> list[dict]:
     # nothing left to recover, not because anything is broken. US9302989 sat in
     # this list at 0 rows after its own patch landed.
     out = [g for g in out if g["rows_at_stake"] > 0]
+    # Annotate each gap with what has ALREADY been tried on its layout and
+    # failed to move the patent that raised it. Read from the journal, so it
+    # survives the process — a gap whose patch applied without fixing its own
+    # patent must come back as a DIFFERENT question, not the same one replayed
+    # from cache.
+    _annotate_prior_attempts(out)
     # One question per FINGERPRINT, not per patent — the whole economic argument
     # of this loop. Keep the instance with the most rows riding on it.
     best: dict[str, dict] = {}

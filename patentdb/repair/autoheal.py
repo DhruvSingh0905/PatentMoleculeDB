@@ -180,6 +180,21 @@ def maybe_escalate(patent_id: str, report) -> dict | None:
         logger.warning("autoheal:   %s %s — %s",
                        "APPLIED" if r.get("ok") else "declined",
                        r.get("target"), str(r.get("why") or "")[:200])
+    # A patch can APPLY on corpus coverage and still leave the patent that
+    # asked for it at zero — measured, twice. That is not a reason to block the
+    # patch; corpus coverage is the one condition that cannot be argued with.
+    # It IS a reason not to record the capability as bought: releasing the key
+    # lets a later run ask again, and `collect_gaps` will by then have read the
+    # failed attempt out of the journal and put it in the next prompt.
+    unresolved = [r for r in rep.get("results", [])
+                  if r.get("ok") and (r.get("gap_rows_recovered") or 0) <= 0]
+    if unresolved:
+        with _lock:
+            _attempted.discard(key)
+        logger.warning("autoheal: %s — patch APPLIED but %s is still unfixed; "
+                       "releasing the capability so a later run asks again",
+                       patent_id, patent_id)
+        rep["target_unresolved"] = True
     rep["status"] = "ran"
     rep["key"] = key
     return rep
