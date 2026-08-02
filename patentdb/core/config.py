@@ -45,6 +45,24 @@ OUTPUT_DIR = REPO_ROOT / "output_v2"
 IMAGES_DIR = OUTPUT_DIR / "images"
 LOGS_DIR = OUTPUT_DIR / "logs"
 
+# The BindingDB subset every benchmark scores against.
+#
+# This was hardcoded to `output/bindingdb/our_patents.tsv` in two modules —
+# and `output/` is FROZEN v1, read-only. So the reference could never grow
+# with the corpus: adding ten patents left them with zero reference rows, and
+# `reference_bench` skips a patent whose reference set is empty (`if not
+# ref_all: continue`). A new batch therefore scored not "0% coverage" but
+# nothing at all, silently, while the corpus totals looked unchanged.
+#
+# Prefers a writable copy under OUTPUT_DIR and falls back to the frozen one,
+# so an untouched checkout behaves exactly as before. Extend it with an awk
+# pass over `data/BindingDB_All.tsv` filtering column 22 (`Patent Number`).
+BDB_REFERENCE_TSV = Path(os.environ.get("BDB_REFERENCE_TSV", "")) if os.environ.get(
+    "BDB_REFERENCE_TSV") else (
+    OUTPUT_DIR / "bindingdb" / "our_patents.tsv"
+    if (OUTPUT_DIR / "bindingdb" / "our_patents.tsv").exists()
+    else REPO_ROOT / "output" / "bindingdb" / "our_patents.tsv")
+
 # ── HARVEST burst tier (coverage safety net) ──────────────────────
 # When True, the pipeline runs the gap detector after the cheap tier
 # completes; on signal trip, fires the HARVEST 5-agent burst over the

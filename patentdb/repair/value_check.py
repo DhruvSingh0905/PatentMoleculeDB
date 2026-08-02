@@ -46,7 +46,7 @@ TOLERANCE = 0.05
 _TO_NM = {"nM": 1.0, "uM": 1e3, "µM": 1e3, "μM": 1e3, "mM": 1e6, "pM": 1e-3,
           "M": 1e9}
 
-_BDB = config.REPO_ROOT / "output" / "bindingdb" / "our_patents.tsv"
+_BDB = config.BDB_REFERENCE_TSV
 
 
 def _to_nm(value, unit):

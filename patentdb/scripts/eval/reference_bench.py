@@ -48,7 +48,7 @@ from patentdb.core import config
 
 csv.field_size_limit(10 ** 9)
 
-BDB_TSV = config.REPO_ROOT / "output" / "bindingdb" / "our_patents.tsv"
+BDB_TSV = config.BDB_REFERENCE_TSV
 CHEMBL_CACHE = config.OUTPUT_DIR / "_cache" / "chembl_patents.json"
 EXTRACTIONS = config.OUTPUT_DIR / "text_extraction"
 

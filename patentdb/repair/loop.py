@@ -74,11 +74,22 @@ class RepairReport:
 # for. Used only to rank two patterns that both matched — never to match.
 _META = re.compile(r"[.^$*+?{}\[\]\\()|]")
 
-# A cell that LOOKS like a measurement, judged on text alone. Deliberately not
-# imported from `gap.py`: the patent-level check below must not depend on the
-# column classifier, the assembler, or anything else that can be the very thing
-# that failed.
-_SHAPED = re.compile(r"^\s*[<>~≈≥≤]?\s*\d*\.?\d+\s*$")
+# A cell that LOOKS like it carries a measurement, judged on text alone.
+# Deliberately not imported from `gap.py`: the patent-level check below must not
+# depend on the column classifier, the assembler, or anything else that can be
+# the very thing that failed.
+#
+# "Short and contains a digit", NOT "is a bare number". The first version
+# required the whole cell to parse as a number, which US10266548 answered with
+# `shaped=0` while holding 1,049 such cells and 242 extracted records — its
+# values carry their unit inline. A denominator meant to be unsuppressable was
+# being suppressed by cell FORMATTING, which is the same class of defect it
+# exists to catch, one level in.
+#
+# Breadth is safe here precisely because the condition is conjunctive: this only
+# matters when the patent produced ZERO usable measurements. Measured over 83
+# patents, widening the test adds exactly one patent — the one it was missing.
+_SHAPED = re.compile(r"^(?=.{1,30}$)(?=.*\d).*$", re.S)
 _GRADE = re.compile(r"^\s*(\++|[A-E])\s*$")
 
 
