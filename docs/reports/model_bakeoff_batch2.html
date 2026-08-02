@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model bake-off — batch 2</title>
+<style>
+  :root{
+    --bg:#fbfaf8; --surface:#fff; --ink:#1c1b19; --ink2:#4a4844; --muted:#7c7873;
+    --line:#e5e1da; --accent:#3d5a80; --good:#3f6c51; --warn:#8a6d3b; --bad:#8c4a3f;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#16151a;--surface:#1e1d23;--ink:#eceaf0;--ink2:#c3c0c9;--muted:#8f8b97;
+          --line:#302e38;--accent:#8fb0d4;--good:#7fb894;--warn:#d0ab6d;--bad:#d9907f;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:2.5rem 1.25rem 5rem;background:var(--bg);color:var(--ink);
+       font:16px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;}
+  .wrap{max-width:60rem;margin:0 auto}
+  header{border-bottom:2px solid var(--line);padding-bottom:1.25rem;margin-bottom:2rem}
+  h1{font-size:1.9rem;line-height:1.2;margin:0 0 .4rem;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:.9rem}
+  .sub b{color:var(--ink2);font-weight:600}
+  h2{font-size:1.15rem;margin:2.5rem 0 .85rem;letter-spacing:-.01em;
+     padding-bottom:.4rem;border-bottom:1px solid var(--line)}
+  h3{font-size:.95rem;margin:1.75rem 0 .6rem;color:var(--ink2)}
+  p{margin:0 0 1rem;color:var(--ink2)}
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 0 1.25rem}
+  table{border-collapse:collapse;width:100%;min-width:34rem;background:var(--surface);
+        border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:.9rem}
+  th,td{padding:.6rem .75rem;text-align:left;border-bottom:1px solid var(--line)}
+  th{background:color-mix(in srgb,var(--accent) 8%,var(--surface));
+     font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--ink2);font-weight:650}
+  tbody tr:last-child td{border-bottom:none}
+  td.n,th.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+  td.model{font-family:var(--mono);font-weight:650;color:var(--ink)}
+  .win{color:var(--good);font-weight:700}
+  .miss{color:var(--bad);font-weight:700}
+  tr.same td{background:color-mix(in srgb,var(--good) 7%,transparent)}
+  .note{border-left:3px solid var(--accent);background:var(--surface);
+        padding:.85rem 1.1rem;border-radius:0 6px 6px 0;margin:0 0 1.25rem;font-size:.92rem}
+  .note.warn{border-left-color:var(--warn)}
+  .note strong{color:var(--ink)}
+  ol,ul{margin:0 0 1.25rem;padding-left:1.3rem;color:var(--ink2)}
+  li{margin-bottom:.55rem}
+  code{font-family:var(--mono);font-size:.87em;background:color-mix(in srgb,var(--ink) 7%,transparent);
+       padding:.1em .38em;border-radius:3px}
+  .kicker{display:inline-block;font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;
+          color:var(--accent);font-weight:700;margin-bottom:.5rem}
+  footer{margin-top:3rem;padding-top:1.25rem;border-top:1px solid var(--line);
+         color:var(--muted);font-size:.82rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <span class="kicker">Repair loop · model selection</span>
+  <h1>Model bake-off — batch 2</h1>
+  <p class="sub">2026-08-02 · <b>10</b> patents · <b>8</b> questions per model ·
+     <b>$0</b> — every answer served from the <code>(fingerprint, model)</code> cache</p>
+</header>
+
+<h2>Result</h2>
+<div class="scroll">
+<table>
+  <thead><tr>
+    <th>Model</th><th class="n">Asked</th><th class="n">Adopted</th>
+    <th class="n">Escalated</th><th class="n">Over-objection</th>
+    <th class="n">Rows recovered</th><th class="n">API calls</th>
+  </tr></thead>
+  <tbody>
+    <tr><td class="model">haiku</td><td class="n">8</td><td class="n">6</td>
+        <td class="n">4</td><td class="n">4</td>
+        <td class="n">+1,837</td><td class="n">0</td></tr>
+    <tr class="same"><td class="model">sonnet</td><td class="n">8</td><td class="n">7</td>
+        <td class="n">3</td><td class="n">5</td>
+        <td class="n win">+1,869</td><td class="n">0</td></tr>
+    <tr class="same"><td class="model">opus</td><td class="n">8</td><td class="n">7</td>
+        <td class="n">3</td><td class="n">5</td>
+        <td class="n win">+1,869</td><td class="n">0</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>All three agree on 7 of 8 questions.</strong> Sonnet and Opus are identical in
+every recorded field — same adoptions, same escalations, same objections, and the same
+resulting library (<code>bin_key 19, escalate 14, column_map 28, not_assay 4,
+value_pattern 5</code>).</p>
+
+<h3>The single disagreement — US11420968</h3>
+<div class="scroll">
+<table>
+  <thead><tr><th>Model</th><th>Proposed</th><th>Outcome</th><th class="n">Rows</th></tr></thead>
+  <tbody>
+    <tr><td class="model">haiku</td><td><code>value_pattern</code></td>
+      <td><span class="miss">Contract violation</span> — captured no number: no group named
+          <code>num</code>, no single unnamed group, nothing named <code>num*</code>. Escalated.</td>
+      <td class="n miss">0</td></tr>
+    <tr><td class="model">sonnet / opus</td><td><code>column_map</code></td>
+      <td>Adopted over the coverage objection.</td>
+      <td class="n win">+32</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  Haiku's failure was <strong>structural, not a matter of judgement</strong> — it wrote a regex
+  the applier cannot execute. That is precisely what <code>rules.Invalid</code> exists to catch,
+  and it did: the proposal became an escalation instead of an apply-time crash. The miss cost
+  32 rows on one patent.
+</div>
+
+<h2>Recommendation</h2>
+<ul>
+  <li><strong>Keep Haiku as the rule-tier default.</strong> It matches the frontier models on 7 of 8
+      layouts at a fraction of the price, and a rule is bought <em>per layout</em> (hundreds), so
+      the tier's economics are dominated by token cost.</li>
+  <li><strong>Opus is never worth it here.</strong> Byte-identical to Sonnet across all eight
+      questions. Nothing in this run justifies its price on the rule tier.</li>
+  <li><strong>Worth considering:</strong> retry once with Sonnet when a proposal raises
+      <code>Invalid</code>. It fires only on structurally malformed proposals — rare, free the rest
+      of the time — and would have recovered the 32 rows. The only evidence-backed improvement
+      this run suggests.</li>
+</ul>
+
+<h2>What had to be fixed before the run meant anything</h2>
+<p>The harness had never compared models. Three independent defects, each individually sufficient
+to make the output vacuous, none of which changed how the output <em>looked</em>:</p>
+<ol>
+  <li><strong><code>repair_patent</code> never passed a model to <code>propose</code>.</strong>
+      The rule tier used <code>SYNTH_MODEL</code> regardless of the label. Haiku vs Haiku vs Haiku.</li>
+  <li><strong>A settled corpus asks nothing.</strong> Rules persist by layout fingerprint — that
+      <em>is</em> the cost advantage over HARVEST — so every layout already had an answer. The first
+      run measured <code>asked 0, adopted 6</code>: three identical replays of cached work. Fixed
+      with <code>--forget</code>; <code>_Snapshot</code> still restores the library afterwards.</li>
+  <li><strong><code>gaps_for_patent</code> fingerprinted raw tgroups while <code>repair_patent</code>
+      fingerprints assembled blocks.</strong> The two disagreed about the identity of every
+      multi-tgroup table, so <code>--forget</code> dropped 1 rule where production would consult 6.
+      The same detector/extractor divergence <code>classify_like_extractor</code> exists to prevent,
+      one level up.</li>
+</ol>
+
+<div class="note warn">
+  And the cost meter: <code>getattr(cost_tracker, "total_usd", 0.0)</code> — the attribute is
+  <code>total_cost</code>, so it returned the default on every run. <strong>A meter that reads zero
+  when it is working and zero when it is not.</strong> It now reads <code>total_cost</code> and
+  reports <code>api_calls</code> beside it, because a genuine $0 (everything cached) is otherwise
+  indistinguishable from a broken one.
+</div>
+
+<h2>Caveats</h2>
+<ul>
+  <li><strong><code>compounds_gained</code> is structurally blind to the rule tier.</strong> It
+      measures <code>extract_from_patent</code>, the deterministic parser, which does not consult the
+      rule library — it can only move when <code>--patch</code> rewrites source. Read
+      <em>rows recovered</em> for rule-tier work; the <code>cmpd+</code> column reading 0 for all
+      three models is expected, not a finding.</li>
+  <li><strong><code>--patch</code> (the capability tier) was not run.</strong> This batch produced 0
+      capability gaps, and each patch attempt costs a full corpus re-extraction plus the suite. The
+      model-choice question for that tier is untouched; <code>MODEL_LADDER</code> (Sonnet → Opus)
+      still rests on single anecdotes.</li>
+  <li><strong>Every answer came from cache</strong>, so this measures what each model already said,
+      not fresh sampling. Re-running against a cleared cache would cost roughly $1 and could differ —
+      model outputs are not deterministic.</li>
+</ul>
+
+<footer>
+  Generated from <code>docs/reports/model_bakeoff_batch2.json</code> ·
+  <code>python3 -m patentdb.scripts.eval.model_bakeoff --patents … --forget</code>
+</footer>
+
+</div>
+</body>
+</html>
