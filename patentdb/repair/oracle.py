@@ -50,12 +50,23 @@ logger = logging.getLogger(__name__)
 # Bump when the prompt or the schema changes — same discipline as SYNTH_EPOCH
 # and PATCH_EPOCH. A stale answer to a question we no longer ask reads as the
 # model being wrong.
-ORACLE_EPOCH = "v1"
+ORACLE_EPOCH = "v3-bounded-rows"
 
 # Enough of the block to read, not so much that a 1,700-row table is billed in
 # full. The head is where the header and the first data rows live, which is all
 # a reader needs to establish the pattern.
 _RAW_BUDGET = 14_000
+
+# An oracle is a TARGET, not an extraction: thirty rows prove the data is there
+# and give a patch something to reproduce, and the thirty-first proves nothing
+# further. Bounding the ASK is what keeps the answer inside `_MAX_TOKENS`.
+_MAX_ROWS = 30
+# 4,096 was not enough. The first real call ran out mid-`rows` on a 94-row
+# table, the tool JSON truncated after its first key, and the caller read that
+# as "this block contains nothing" — a truncated answer and an empty table are
+# the same object unless someone checks. `stop_reason` is now checked; this
+# ceiling is set so it should not be reached.
+_MAX_TOKENS = 16_000
 
 _TOOL = {
     "name": "report_rows",
@@ -72,9 +83,13 @@ _TOOL = {
             },
             "rows": {
                 "type": "array",
-                "description": ("One entry per measurement actually printed in "
-                                "the block shown. Do NOT infer, interpolate or "
-                                "continue a pattern beyond what is written."),
+                "description": (f"One entry per measurement actually printed in "
+                                f"the block shown, up to {_MAX_ROWS} — this is a "
+                                f"TARGET for a parser, not an extraction, so a "
+                                f"representative sample of the first rows is "
+                                f"exactly as useful as all of them. Do NOT infer, "
+                                f"interpolate or continue a pattern beyond what "
+                                f"is written."),
                 "items": {
                     "type": "object",
                     "properties": {
@@ -83,7 +98,12 @@ _TOOL = {
                         "assay": {"type": "string",
                                   "description": "assay name from the header"},
                         "value": {"type": "string",
-                                  "description": "the value exactly as printed"},
+                                  "description": ("the value exactly as printed. "
+                                                  "An ORDINAL GRADE — `A`, `B`, "
+                                                  "`+++`, `**` — IS a value: it "
+                                                  "is a potency band whose legend "
+                                                  "sits elsewhere in the patent. "
+                                                  "Report it as printed.")},
                         "unit": {"type": "string",
                                  "description": "unit, or '' if the block states none"},
                         "n_runs": {"type": "string",
@@ -95,10 +115,18 @@ _TOOL = {
             "why_we_might_miss_them": {
                 "type": "string",
                 "description": ("One or two sentences: what is structurally "
-                                "unusual about how this block encodes its rows."),
+                                "unusual about how this block encodes its rows. "
+                                "If you are returning NO rows, this must say "
+                                "why — an empty answer with no reason is "
+                                "indistinguishable from an empty table."),
             },
         },
-        "required": ["holds_assay_data", "rows"],
+        # `why` is REQUIRED. It was optional, and the first real call came back
+        # `holds_assay_data: true` with zero rows and no explanation — for a
+        # block holding 40 graded compounds. A silent empty answer reads exactly
+        # like a block with nothing in it, which is the one confusion this whole
+        # module exists to end.
+        "required": ["holds_assay_data", "rows", "why_we_might_miss_them"],
     },
 }
 
@@ -108,6 +136,13 @@ Report only what is PRINTED. Never infer a value, never continue a numbering
 pattern, never carry a unit from your own knowledge of the assay. If a compound
 id is written once and the rows beneath it are blank, those rows belong to that
 same compound — say so by repeating the id.
+
+A VALUE IS NOT ALWAYS A NUMBER. Patents routinely grade potency in ordinal
+bands — `A`/`B`/`C`, `+`/`++`/`+++`, `*`/`**` — and define them in a legend that
+may sit anywhere in the document, often nowhere near the table. A column of
+those letters IS assay data and each letter IS a value: report it as printed and
+leave `unit` empty. Returning no rows because the cells "have no numbers" is the
+single most likely way to be wrong here.
 
 If the block is not assay data — NMR shifts, mass spec, retention times, a
 formulation recipe, crystallographic parameters — set `holds_assay_data` false
@@ -154,7 +189,7 @@ def read_block(patent_id: str, table_id: str, xml: str, fingerprint: str,
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     try:
         resp = client.messages.create(
-            model=model, max_tokens=4096, system=_SYSTEM,
+            model=model, max_tokens=_MAX_TOKENS, system=_SYSTEM,
             tools=[_TOOL], tool_choice={"type": "tool", "name": "report_rows"},
             messages=[{"role": "user", "content":
                        f"Patent {patent_id}, block {table_id}:\n\n{raw}"}],
@@ -164,10 +199,26 @@ def read_block(patent_id: str, table_id: str, xml: str, fingerprint: str,
         return None
     cost_tracker.record(resp.usage.input_tokens, resp.usage.output_tokens,
                         model, patent_id=patent_id)
+    # A TRUNCATED answer is not an empty table. The tool JSON is emitted as a
+    # stream, so hitting the ceiling leaves a partial object that parses fine
+    # and reports whatever keys arrived first — on the first real call, exactly
+    # `{"holds_assay_data": true}` for a block holding 40 graded compounds.
+    # Read as data that says "there is nothing here", which is the one answer
+    # this module exists to distinguish from "we cannot read it".
+    if resp.stop_reason == "max_tokens":
+        logger.warning("oracle: %s %s hit the output ceiling (%d tokens) — "
+                       "discarding the partial answer rather than reading it "
+                       "as an empty block", patent_id, table_id, _MAX_TOKENS)
+        return None
     call = next((b for b in resp.content if getattr(b, "type", "") == "tool_use"), None)
     if call is None:
         return None
     out = dict(call.input)
+    if out.get("holds_assay_data") and not (out.get("rows") or []):
+        logger.warning("oracle: %s %s says it holds assay data and returned no "
+                       "rows — treating as no answer. why=%r", patent_id,
+                       table_id, str(out.get("why_we_might_miss_them"))[:160])
+        return None
     store_cached(model, key, json.dumps(out),
                  input_tokens=resp.usage.input_tokens,
                  output_tokens=resp.usage.output_tokens)
