@@ -616,7 +616,7 @@ def test_a_zero_yield_patent_reaches_the_code_tier(tmp_path, monkeypatch):
 
     # A SECOND patent sharing the fingerprint must not buy the same patch again.
     out2 = autoheal.maybe_escalate("US9999999", R())
-    assert out2 is None
+    assert out2["status"] == "capability_already_bought"
     assert calls == [["US10266548"]], "one capability, one purchase"
 
 
@@ -645,8 +645,11 @@ def test_autoheal_respects_its_per_run_budget(tmp_path, monkeypatch):
             crashed = []
         return R()
 
-    assert autoheal.maybe_escalate("USA", report("fp-a")) is not None
-    assert autoheal.maybe_escalate("USB", report("fp-b")) is None, "budget spent"
+    assert autoheal.maybe_escalate("USA", report("fp-a"))["status"] == "ran"
+    # A skip must SAY WHY. Returning None made "nothing to do", "already
+    # bought" and "out of budget" indistinguishable to any caller counting
+    # unhealed patents — the question this run exists to answer.
+    assert autoheal.maybe_escalate("USB", report("fp-b"))["status"] == "budget_spent"
     assert len(calls) == 1
     # ...but the one that could not be bought is still journaled, so it is a
     # queue rather than a loss.

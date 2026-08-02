@@ -126,12 +126,12 @@ def maybe_escalate(patent_id: str, report) -> dict | None:
     journal_escalations(patent_id, report)
 
     if not config.REPAIR_AUTOHEAL:
-        return None
+        return {"status": "disabled"}
     if getattr(_healing, "active", False):
-        return None                            # inside a patch verification
+        return {"status": "reentrant"}         # inside a patch verification
     wanted = _wants_code_tier(report)
     if not wanted:
-        return None
+        return {"status": "nothing_a_patch_could_fix"}
 
     # One key per capability. A `PATENT YIELDED NOTHING` escalation carries no
     # fingerprint (it is patent-level, not table-level), so it keys on the
@@ -143,7 +143,7 @@ def maybe_escalate(patent_id: str, report) -> dict | None:
     with _lock:
         if key in _attempted:
             logger.info("autoheal: %s already put to the code tier this run", key)
-            return None
+            return {"status": "capability_already_bought", "key": key}
         if _spent >= config.AUTOHEAL_MAX_PER_RUN:
             logger.warning(
                 "autoheal: %s needs the code tier but this run has spent its "
@@ -151,7 +151,9 @@ def maybe_escalate(patent_id: str, report) -> dict | None:
                 "`capability_repair --repair`",
                 patent_id, config.AUTOHEAL_MAX_PER_RUN,
                 config.ESCALATION_JOURNAL.name)
-            return None
+            return {"status": "budget_spent", "key": key,
+                    "rows_at_stake": max((w.get("rows_at_stake") or 0)
+                                         for w in wanted)}
         _attempted.add(key)
         _spent += 1
 
@@ -167,7 +169,7 @@ def maybe_escalate(patent_id: str, report) -> dict | None:
         # have produced results — the same contract the rule tier has in
         # `process_patent`.
         logger.warning("autoheal: code tier failed for %s (%r)", patent_id, e)
-        return None
+        return {"status": "code_tier_raised", "key": key, "error": repr(e)[:300]}
     finally:
         _healing.active = False
 
@@ -178,6 +180,8 @@ def maybe_escalate(patent_id: str, report) -> dict | None:
         logger.warning("autoheal:   %s %s — %s",
                        "APPLIED" if r.get("ok") else "declined",
                        r.get("target"), str(r.get("why") or "")[:200])
+    rep["status"] = "ran"
+    rep["key"] = key
     return rep
 
 
