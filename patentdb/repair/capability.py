@@ -345,7 +345,8 @@ def propose_capability_patch(gap_info: dict, table, *,
         logger.info("capability: no API key; cannot propose a patch")
         return None
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    from ..core.api_client import resilient_client
+    client = resilient_client()
     resp = client.messages.create(
         model=model, max_tokens=4000, temperature=0,
         system=[{"type": "text", "text": PATCH_SYSTEM,

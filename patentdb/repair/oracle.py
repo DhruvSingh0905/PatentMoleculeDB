@@ -186,7 +186,8 @@ def read_block(patent_id: str, table_id: str, xml: str, fingerprint: str,
 
     if not config.ANTHROPIC_API_KEY:
         return None
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    from ..core.api_client import resilient_client
+    client = resilient_client()
     try:
         resp = client.messages.create(
             model=model, max_tokens=_MAX_TOKENS, system=_SYSTEM,

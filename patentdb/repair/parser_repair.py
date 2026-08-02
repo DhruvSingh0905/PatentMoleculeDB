@@ -385,6 +385,22 @@ print(json.dumps({"discrepant_blocks": discrepant, "per_patent": per_patent,
 '''
 
 
+# Memoised per (xml_dir, source mtime). `autoheal` calls `repair_capabilities`
+# once per failing patent, and each call recomputed this over the WHOLE corpus:
+# the 7-patent heal run did seven identical 103-patent scans for a number that
+# cannot change while the sources are untouched. Keyed on the mtimes of the
+# patchable modules so a landed patch correctly invalidates it — this is a cache
+# of an expensive measurement, not a cache of a decision.
+_BASELINE_CACHE: dict[tuple, dict] = {}
+
+
+def _baseline_key(xml_dir: Path) -> tuple:
+    from .capability import PATCHABLE
+    mods = sorted({m for m, _ in PATCHABLE.values()})
+    return (str(xml_dir),) + tuple(
+        (m.name, m.stat().st_mtime_ns if m.exists() else 0) for m in mods)
+
+
 def baseline_counts(xml_dir: Path | None = None) -> dict:
     """Distinct usable COMPOUNDS per patent — the floor a patch must hold.
 
@@ -413,6 +429,12 @@ def baseline_counts(xml_dir: Path | None = None) -> dict:
     from ..sources.uspto_xml import parse_fidelity
 
     xml_dir = xml_dir or (config.OUTPUT_DIR / "uspto_xml")
+    try:
+        ck = _baseline_key(xml_dir)
+        if ck in _BASELINE_CACHE:
+            return _BASELINE_CACHE[ck]
+    except Exception:                            # never let caching break a run
+        ck = None
     out: dict = {}
     clean: set[str] = set()
     for p in sorted(xml_dir.glob("*.xml")):
@@ -426,6 +448,8 @@ def baseline_counts(xml_dir: Path | None = None) -> dict:
             clean.add(p.stem)
     # Only these patents' counts are a trustworthy floor — see verify_patch.
     out["_clean"] = clean
+    if ck is not None:
+        _BASELINE_CACHE[ck] = out
     return out
 
 
@@ -518,7 +542,8 @@ def propose_patch(defect: Defect, func_name: str, module: Path,
         logger.info("parser_repair: no API key; cannot propose a patch")
         return None
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    from ..core.api_client import resilient_client
+    client = resilient_client()
     resp = client.messages.create(
         model=model, max_tokens=2000, temperature=0,
         system=[{"type": "text", "text": PATCH_SYSTEM,

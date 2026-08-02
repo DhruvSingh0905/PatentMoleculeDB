@@ -400,6 +400,13 @@ def _is_namelike(cells: list["Cell"], *, declared: bool = False) -> bool:
     single header spanning one column, making the header "outgrow" the body.
     Rows containing such cells are rejected unless they were declared in
     <thead>.
+
+    Compound-name + value rows: a two-cell row where one cell is a long
+    chemical/compound name and the other is a short numeric value is DATA,
+    not a column header. Patents like US9018217 list one compound per XML
+    row with the IC50 beside it; without this guard every such row passes
+    the name-like test (the compound name is non-numeric text, the value is
+    short) and the entire table is consumed as header, leaving no data rows.
     """
     texts = [c.text.strip() for c in cells if c.text.strip()]
     if len(texts) < 2:
@@ -435,6 +442,26 @@ def _is_namelike(cells: list["Cell"], *, declared: bool = False) -> bool:
             # "1 2" could be legitimate header content.
             if len(tokens) >= 6 and all(re.fullmatch(r'\d+', tok) for tok in tokens):
                 return False
+    # Compound-name + measurement-value rows: when a row has exactly two
+    # non-empty cells and one of them is a short token that looks like a bare
+    # numeric measurement (integer or decimal, with optional qualifier) while
+    # the other is a longer string containing chemical-name characters (hyphens,
+    # brackets, "yl", "methyl", etc.), this is a data row — one compound and
+    # its IC50 — not a column label. US9018217 TABLE-US-00001 lists 36 such
+    # rows; without this check every one is swallowed into the header.
+    if not declared and len(texts) == 2:
+        # Identify which cell (if any) is a bare numeric value
+        for idx in (0, 1):
+            other = 1 - idx
+            val = texts[idx]
+            name = texts[other]
+            # A bare numeric value: optional qualifier, digits, optional decimal
+            if re.fullmatch(r'[<>=~≤≥]*\s*\d+\.?\d*', val) and len(name) > 15:
+                # The other cell looks like a compound/chemical name if it
+                # contains typical chemical substrings or heavy punctuation
+                if (re.search(r'(?:yl|phenyl|methyl|imidazol|pyrimidin|morpholin|triazol|chloro|bromo|fluoro|ethyl|propyl|cyclo)', name, re.IGNORECASE)
+                        or (name.count('-') + name.count('[') + name.count('(')) >= 3):
+                    return False
     # All-numeric rows are data, not headers.
     return not all(re.fullmatch(r"[\d.,;:<>=~\s-]+", t) for t in texts)
 

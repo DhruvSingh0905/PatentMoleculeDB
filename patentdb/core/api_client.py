@@ -27,8 +27,27 @@ FAILURES_LOG = config.LOGS_DIR / "failures.jsonl"
 API_LOG = config.LOGS_DIR / "api_log.jsonl"
 
 
+# A capability patch is a long generation over a large prompt, and a dropped
+# connection cost two whole patents on the first real run — US10227341 and
+# US10266548 both died on APITimeoutError with no retry, losing the gap rather
+# than the request. `uspto_xml._get` has retried transient HTTP for months; the
+# model calls retried nothing.
+_API_TIMEOUT_S = 600.0
+_API_RETRIES = 3
+
+
+def resilient_client() -> anthropic.Anthropic:
+    """The client every repair tier should use: retries transient failures.
+
+    The SDK retries connection errors, timeouts, 408/409/429 and 5xx on its own
+    once configured — what it will not do is guess that we wanted it.
+    """
+    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY,
+                               max_retries=_API_RETRIES, timeout=_API_TIMEOUT_S)
+
+
 def _get_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    return resilient_client()
 
 
 def _log_api_call(

@@ -501,7 +501,8 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "") -> Rule 
         return None
 
     import anthropic
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    from ..core.api_client import resilient_client
+    client = resilient_client()
 
     # Let it look again before it answers.
     #

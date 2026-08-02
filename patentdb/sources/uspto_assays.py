@@ -743,7 +743,11 @@ def classify_column(header: str, samples: list[str]) -> Column:
     negative-log10 potency values. The "p" prefix is directly attached to the
     metric name with no word boundary, so standard assay-name regexes that
     rely on \\b fail to match. These are recognised explicitly as assay
-    columns (dimensionless — no concentration unit).
+    columns (dimensionless — no concentration unit). The header text itself
+    is used as the unit (e.g. "pIC50") so that emitted records carry a
+    meaningful unit rather than None. US9801872 TABLE-US-00001 heads its only
+    assay column "pIC50" over 71 rows; without the unit assignment every
+    record failed the usability contract and the patent produced nothing.
     """
     h = (header or "").strip()
     low = h.lower()
@@ -776,16 +780,26 @@ def classify_column(header: str, samples: list[str]) -> Column:
     assay_lemmas, _, _ = _vocab()
     is_assay = bool(_HEADER_ASSAY.search(low)) or any(a in low for a in assay_lemmas if len(a) > 2)
     # Also recognise "% Inh" / "% inh" / "% inhibition" as assay indicators.
-    # These appear in headers like "MAGL % Inh 1 \u03bcM (mouse)" and are not
+    # These appear in headers like "MAGL % Inh 1 uM (mouse)" and are not
     # caught by the standard assay regex or lemma list.
     if not is_assay and re.search(r'%\s*inh', low):
         is_assay = True
     # p-prefixed potency metrics: "pIC50", "pEC50", "pKi", "pKd" etc.
     # The 'p' is directly attached to the metric name so word-boundary-based
     # patterns miss them. These are dimensionless (-log10 of a concentration).
-    if not is_assay and re.search(r'(?i)\bp\s*(?:ic|ec)\s*50\b|\bp\s*(?:ki|kd|k_?i|k_?d)\b', low):
+    # The header text itself is used as the unit so that emitted records carry
+    # a meaningful unit (e.g. "pIC50") rather than None — a unit of None fails
+    # the usability contract and causes the record to be dropped.
+    _p_metric_match = re.search(r'(?i)\bp\s*(?:ic|ec)\s*50\b|\bp\s*(?:ki|kd|k_?i|k_?d)\b', low)
+    if not is_assay and _p_metric_match:
         is_assay = True
     unit = _unit_from(h)
+    # For p-prefixed metrics the header IS the unit (e.g. "pIC50"). When
+    # _unit_from returns nothing (because pIC50 is not a concentration unit),
+    # use the header text itself as the unit so downstream records are not
+    # emitted with unit=None.
+    if _p_metric_match and not unit:
+        unit = h
     if is_assay or (unit and unit != "%"):
         return Column(-1, h, ASSAY, unit=unit, assay_name=h or "unnamed assay")
 
@@ -1351,6 +1365,12 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     left blank on the rest. The last-seen CID is carried forward so that
     sub-rows with an empty CID cell still produce records. The carry resets
     at each new table to avoid leaking across unrelated tables.
+
+    Embedded CID extraction: when the CID column cell is blank but another
+    column (typically NMR/MS text) contains an embedded compound identifier
+    like "Compound 1.001: ...", the CID is extracted from that cell. This
+    handles tables where the structure/image column is empty and the compound
+    name only appears inside the characterisation data cell.
     """
     out: list[AssayRecord] = []
     last_header: dict[int, list[str]] = {}
@@ -1362,6 +1382,16 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     # a prefix. The standard _CID_PAT handles alphanumeric ids like "Cpd-4".
     import re as _re
     _BARE_INT_CID = _re.compile(r'^\d+\.?$')
+
+    # Pattern to extract a compound identifier embedded in a longer text cell,
+    # e.g. "Compound 1.001: 1H NMR ..." → "Compound 1.001".  Also matches
+    # common variants like "Cpd 1.001", "Cmpd-1.001", "Example 1.001".
+    _EMBEDDED_CID = _re.compile(
+        r'(?:Compound|Cpd|Cmpd|Example|Ex\.?)'
+        r'[\s.#\-]*'
+        r'(\d+(?:[\._]\d+)?(?:[a-zA-Z])?)',
+        _re.IGNORECASE,
+    )
 
     for t in tables:
         hdr_rows, data_rows = _header_rows_of(t)
@@ -1410,21 +1440,41 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
                     continue
                 prev_cid = cid
             else:
-                # Empty CID cell — carry forward the last-seen CID.
-                # Only do this when the row has at least one parseable assay
-                # value, to avoid adopting spacer/annotation rows.
-                if prev_cid is None:
-                    continue
-                has_value = False
-                for c in assay_cols:
-                    if len(row) > c.index and row[c.index].text.strip():
-                        pv = parse_value(row[c.index].text)
-                        if pv:
-                            has_value = True
+                # Empty CID cell — try to extract an embedded CID from other
+                # columns in this row (e.g. "Compound 1.001: 1H NMR ...").
+                embedded_cid: str | None = None
+                for ci in range(len(row)):
+                    if ci == cid_col.index:
+                        continue
+                    cell_t = row[ci].text.strip()
+                    if not cell_t:
+                        continue
+                    em = _EMBEDDED_CID.search(cell_t)
+                    if em:
+                        # Reconstruct a CID string like "Compound 1.001"
+                        raw_embedded = em.group(0).strip()
+                        embedded_cid = normalize_cid(raw_embedded)
+                        if embedded_cid:
                             break
-                if not has_value:
-                    continue
-                cid = prev_cid
+                if embedded_cid:
+                    cid = embedded_cid
+                    prev_cid = cid
+                else:
+                    # Fall back to carry-forward from the last-seen CID.
+                    # Only do this when the row has at least one parseable assay
+                    # value, to avoid adopting spacer/annotation rows.
+                    if prev_cid is None:
+                        continue
+                    has_value = False
+                    for c in assay_cols:
+                        if len(row) > c.index and row[c.index].text.strip():
+                            pv = parse_value(row[c.index].text)
+                            if pv:
+                                has_value = True
+                                break
+                    if not has_value:
+                        continue
+                    cid = prev_cid
 
             for c in assay_cols:
                 if len(row) <= c.index:
