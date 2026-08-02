@@ -733,6 +733,11 @@ def classify_column(header: str, samples: list[str]) -> Column:
     name. This handles short assay abbreviations like "FP" that don't appear
     in any vocabulary list. US11286268 has header "FP" over 1258 rows of
     +/++/+++ values that were lost without this.
+
+    Star/hash-bin promotion: cells containing only repeated `*` or `#`
+    characters are ordinal potency bands (like +/++/+++). Columns whose data
+    is predominantly these symbols are promoted to ASSAY the same way
+    plus-bins and letter-grades are.
     """
     h = (header or "").strip()
     low = h.lower()
@@ -761,6 +766,11 @@ def classify_column(header: str, samples: list[str]) -> Column:
 
     assay_lemmas, _, _ = _vocab()
     is_assay = bool(_HEADER_ASSAY.search(low)) or any(a in low for a in assay_lemmas if len(a) > 2)
+    # Also recognise "% Inh" / "% inh" / "% inhibition" as assay indicators.
+    # These appear in headers like "MAGL % Inh 1 \u03bcM (mouse)" and are not
+    # caught by the standard assay regex or lemma list.
+    if not is_assay and re.search(r'%\s*inh', low):
+        is_assay = True
     unit = _unit_from(h)
     if is_assay or (unit and unit != "%"):
         return Column(-1, h, ASSAY, unit=unit, assay_name=h or "unnamed assay")
@@ -807,8 +817,10 @@ def classify_column(header: str, samples: list[str]) -> Column:
                 # column of parenthesised numbers is unlikely.
                 if not h:
                     return Column(-1, h, NRUNS)
+            # Star/hash bins (`*`, `**`, `###`) are ordinal grades like +/++/+++.
             plus_or_letter = sum(
-                bool(_LETTER_BIN.match(v) or _PLUS_BIN.match(v)) for v in vals
+                bool(_LETTER_BIN.match(v) or _PLUS_BIN.match(v)
+                     or _STAR_HASH_BIN.match(v.strip())) for v in vals
             )
             if plus_or_letter > len(vals) * 0.6:
                 return Column(-1, h, ASSAY, assay_name=h if h else "unnamed assay (letter bin)")
@@ -988,8 +1000,20 @@ def build_columns(table: Table, inherited: list[str] | None = None,
 
 # ── value parsing ─────────────────────────────────────────────────
 
+# `*`/`**` and `#`/`##` are ordinal potency bands, the same idea as `+`/`++`.
+# Hoisted to module level: the patch that introduced this compiled it inside
+# `parse_value`, which runs for every cell of every table in the corpus.
+_STAR_HASH_BIN = re.compile(r"([*]+|[#]+)")
+
+
 def parse_value(cell: str) -> dict | None:
-    """Parse one measurement cell. None when it holds no usable value."""
+    """Parse one measurement cell. None when it holds no usable value.
+
+    Star/hash bin grades: cells containing only repeated `*` or `#` characters
+    (e.g. `**`, `###`) are ordinal potency bands used in patent tables where a
+    bin_key legend maps them to numeric ranges. They are recorded as letter
+    grades, analogous to `+`/`++`/`+++` and `A`/`B`/`C`.
+    """
     s = (cell or "").strip()
     _, quals, nulls = _vocab()
     if s.lower() in nulls:
@@ -1013,6 +1037,12 @@ def parse_value(cell: str) -> dict | None:
         # `+`/`++`/`+++` is an ordinal potency band. Recorded as a grade; any
         # number we assigned to it would be invented.
         return {"letter_grade": pb.group(1), "value_text": s}
+    # Star-bin (`*`/`**`/`***`) and hash-bin (`#`/`##`/`###`) grades: ordinal
+    # potency bands used in tables whose legend maps symbols to numeric ranges.
+    # Treated identically to plus-bins.
+    sh = _STAR_HASH_BIN.fullmatch(s)
+    if sh:
+        return {"letter_grade": sh.group(1), "value_text": s}
     m = _VALUE_PAT.match(s)
     if not m:
         return None
