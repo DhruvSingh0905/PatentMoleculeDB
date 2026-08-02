@@ -43,6 +43,7 @@ from pathlib import Path
 
 from ..core import config
 from . import value_check
+from .oracle import diff, read_block, target_note
 from .parser_repair import journal_append, verify_patch
 
 logger = logging.getLogger(__name__)
@@ -322,6 +323,7 @@ def propose_capability_patch(gap_info: dict, table, *,
         f"A `{gap_info['rule_kind']}` rule was already tried on this layout:\n"
         f"  {json.dumps(gap_info.get('rule_payload'))[:400]}\n"
         f"It produced NOTHING. {gap_info.get('why', '')}\n\n"
+        + (gap_info.get("oracle_note") or "")
         + _retry_note(gap_info)
         + f"CANDIDATE FUNCTIONS:\n\n" + "\n\n".join(offered))
 
@@ -331,7 +333,8 @@ def propose_capability_patch(gap_info: dict, table, *,
     # journal, so it survives the process that recorded it.
     retry = int(gap_info.get("retry") or 0)
     key = (f"capability::{PATCH_EPOCH}::{gap_info['fingerprint']}::{model}"
-           + (f"::retry{retry}" if retry else ""))
+           + (f"::retry{retry}" if retry else "")
+           + ("::oracle" if gap_info.get("oracle_note") else ""))
     cached = get_cached(model, key)
     if cached is not None:
         try:
@@ -512,6 +515,45 @@ def collect_gaps(patent_ids: list[str] | None = None) -> list[dict]:
     return sorted(best.values(), key=lambda g: -g["rows_at_stake"])
 
 
+def _attach_oracle(g: dict, xml: str) -> None:
+    """Read the failing block independently, and diff it against what we got.
+
+    Only for a patent that yields NOTHING, because that is the case where the
+    model has twice declined to write a patch — it could describe the defect and
+    had no way to check a fix. One block, one call, cached by fingerprint.
+
+    It also settles the question the tier could not previously ask: is there
+    anything in here at all. `holds_assay_data: false` ends the gap for free
+    rather than buying a patch for a formulation table.
+    """
+    from ..sources.uspto_assays import extract_from_patent
+
+    try:
+        records = list(extract_from_patent(xml))
+        if any(r.is_usable for r in records):
+            return                               # not a silent patent
+        oracle = read_block(g["patent"], g["table"], xml, g["fingerprint"])
+        if not oracle:
+            return
+        g["oracle"] = oracle
+        if not oracle.get("holds_assay_data"):
+            g["oracle_note"] = target_note(oracle, {})
+            logger.warning("oracle: %s %s reports NO assay data — %s",
+                           g["patent"], g["table"],
+                           str(oracle.get("why_we_might_miss_them"))[:120])
+            return
+        d = diff(oracle, records, g["table"])
+        g["oracle_diff"] = d
+        g["oracle_note"] = target_note(oracle, d)
+        logger.warning("oracle: %s %s — %d row(s) present, we produce %d; "
+                       "missing row/value/unit = %d/%d/%d",
+                       g["patent"], g["table"], d["oracle_rows"],
+                       d["we_produced"], d["n_missing_row"],
+                       d["n_missing_value"], d["n_missing_unit"])
+    except Exception as e:                       # never break a run
+        logger.warning("oracle: skipped for %s (%r)", g.get("patent"), e)
+
+
 def repair_capabilities(*, apply: bool | None = None, limit: int | None = None,
                         patent_ids: list[str] | None = None,
                         model: str | None = None) -> dict:
@@ -540,6 +582,7 @@ def repair_capabilities(*, apply: bool | None = None, limit: int | None = None,
 
     for g in gaps:
         xml = (xml_dir / f"{g['patent']}.xml").read_text(errors="ignore")
+        _attach_oracle(g, xml)
         table = {t.table_id: t for t in assemble_blocks(parse_tables(xml))}.get(g["table"])
         if table is None:
             continue
