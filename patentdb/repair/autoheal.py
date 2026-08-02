@@ -115,7 +115,15 @@ def _wants_code_tier(report) -> list[dict]:
         return gaps
     blank = [e for e in getattr(report, "escalations", [])
              if e.get("capability") == "PATENT YIELDED NOTHING"]
-    return blank
+    if blank:
+        return blank
+    # A patent can extract plenty and still be WRONG, and none of the signals
+    # above will say so — they all score rows produced. An implausible result
+    # is a code gap of the same kind: a replicate count the reader drops, a
+    # header whose unit did not survive the merge. Ranked below the two above
+    # because a patent that yielded nothing is the more urgent failure.
+    return [e for e in getattr(report, "escalations", [])
+            if str(e.get("capability", "")).startswith("IMPLAUSIBLE:")]
 
 
 def maybe_escalate(patent_id: str, report) -> dict | None:

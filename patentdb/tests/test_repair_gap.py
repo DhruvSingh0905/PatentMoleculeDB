@@ -701,3 +701,56 @@ def test_a_silent_patent_is_scoped_from_raw_rows_not_the_damaged_view(monkeypatc
     assert gaps[0]["table"] == "TABLE-REAL", (
         f"picked {gaps[0]['table']} — scoped from the damaged view, not the source")
     assert "Assume the reader, not the layout" in gaps[0]["why"]
+
+
+def test_a_uniformly_wrong_column_is_caught_without_a_reference_database():
+    """The check that does not depend on BindingDB.
+
+    US11420968 heads four columns as two pairs under `(IC50, nM)`; the merge
+    put the unit on the second of each pair and the other two inherited `uM`
+    from a caption. 111 values landed 1,000x low and every one of them was
+    individually plausible — nothing that looks at a value on its own can see
+    it. The patent contradicting itself can, and no reference is consulted.
+    """
+    from patentdb.repair.plausibility import check_same_assay_disagrees
+
+    class R:
+        def __init__(self, v, unit, table):
+            self.value_numeric, self.unit, self.table_id = v, unit, table
+            self.assay_name, self.cid, self.n_runs = "IC50 BCL-2", "1", None
+            self.is_usable = True
+
+    recs = ([R(v, "nM", "T-A") for v in (18.0, 19.0, 20.0, 21.0, 22.0)]
+            + [R(v, "nM", "T-B") for v in (0.018, 0.019, 0.020, 0.021, 0.022)])
+    flags = check_same_assay_disagrees("USTEST", "", recs)
+    assert len(flags) == 1
+    assert flags[0].kind == "same_assay_disagrees"
+    assert "1000x apart" in flags[0].detail or "x apart" in flags[0].detail
+
+    # The same assay measured consistently must stay silent, or it is noise.
+    same = ([R(v, "nM", "T-A") for v in (18.0, 19.0, 20.0, 21.0, 22.0)]
+            + [R(v, "nM", "T-B") for v in (17.0, 23.0, 25.0, 15.0, 20.0)])
+    assert check_same_assay_disagrees("USTEST", "", same) == []
+
+
+def test_a_potency_is_flagged_only_when_no_scale_could_make_it_one():
+    """The window is two orders WIDER than the observed corpus on each side:
+    the job is catching a 1,000x unit error, not policing pharmacology."""
+    from patentdb.repair.plausibility import check_potency_out_of_range
+
+    class R:
+        def __init__(self, v, unit):
+            self.value_numeric, self.unit = v, unit
+            self.assay_name, self.cid, self.table_id = "IC50", "1", "T"
+            self.is_usable = True
+
+    assert check_potency_out_of_range("USTEST", "", [R(0.5, "nM")]) == []
+    assert check_potency_out_of_range("USTEST", "", [R(5.0, "uM")]) == []
+    # 1 M as an IC50 is not a potency at any scale.
+    bad = check_potency_out_of_range("USTEST", "", [R(1.0, "M")])
+    assert len(bad) == 1 and bad[0].rows_at_stake == 1
+    # A non-potency column is never judged against a concentration window.
+    class Ratio(R):
+        def __init__(self):
+            super().__init__(1e9, "nM"); self.assay_name = "Selectivity Ratio"
+    assert check_potency_out_of_range("USTEST", "", [Ratio()]) == []

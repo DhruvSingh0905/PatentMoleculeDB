@@ -713,6 +713,31 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
             logger.warning("repair: %s yielded 0 usable measurements from %d "
                            "measurement-shaped cells", patent_id, shaped)
 
+    # DOES THE RESULT MAKE SENSE — asked of the data we produced, with no
+    # reference database in the loop. Every check above scores rows produced;
+    # none can see a row that came out complete and wrong, and that class has
+    # cost more here than any coverage gap. `value_check` catches it against
+    # BindingDB, which cannot speak for a compound it has never seen — so the
+    # live check has to be chemistry and internal consistency instead.
+    #
+    # Runs last, over baseline + whatever the loop recovered, so it judges the
+    # final answer rather than an intermediate one.
+    try:
+        from .plausibility import audit as _plausibility
+        for f in _plausibility(patent_id, xml, list(baseline) + list(recovered)):
+            report.escalated += 1
+            report.escalations.append({
+                "fingerprint": None, "patent": patent_id, "table": f.table_id,
+                "rows_at_stake": f.rows_at_stake,
+                "capability": f"IMPLAUSIBLE: {f.kind}",
+                "note": f.detail + (" e.g. " + "; ".join(f.examples[:3])
+                                    if f.examples else ""),
+            })
+            logger.warning("plausibility: %s %s — %s", patent_id, f.kind,
+                           f.detail[:160])
+    except Exception as e:                       # reporting must never break a run
+        logger.warning("plausibility: skipped for %s (%r)", patent_id, e)
+
     if not dry_run:
         lib.save()
     return recovered, report
