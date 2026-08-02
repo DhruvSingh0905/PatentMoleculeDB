@@ -297,6 +297,19 @@ def verify_patch(module: Path, new_source: str, *, xml_dir: Path | None = None,
                             f"their source")
         if not got["tests_pass"]:
             evidence.append(f"test suite fails: {got['tests_tail']}")
+        # A patch that THROWS is not a patch that found less. The probe scores an
+        # exception as -1 and `total_usable` drops, which the coverage condition
+        # then reports as "picks up FEWER compounds" — true in arithmetic and
+        # useless as feedback, because the model is told to find more data when
+        # what it needs to hear is that its code raises. Named separately so the
+        # next attempt has something to act on.
+        crashed = sorted(p for p, v in got["per_patent"].items() if v < 0)
+        got["crashed_patents"] = crashed
+        if crashed:
+            evidence.append(f"extraction RAISES on {len(crashed)} patent(s): "
+                            + ", ".join(crashed[:5])
+                            + ("..." if len(crashed) > 5 else ""))
+
         if baseline:
             trusted = baseline.get("_clean", set(baseline) - {"_clean"})
             total_before = sum(v for k, v in baseline.items() if k != "_clean")
@@ -306,8 +319,13 @@ def verify_patch(module: Path, new_source: str, *, xml_dir: Path | None = None,
             if got.get("repaired_usable") is not None and got["repaired_usable"] >= 0:
                 got["full_path_usable"] = got["repaired_usable"]
             if after < total_before:
-                got.update(ok=False, why=(f"picks up FEWER compounds: {total_before} "
-                                          f"-> {after}. The only condition."))
+                got.update(ok=False, why=(
+                    (f"extraction RAISES on {len(crashed)} patent(s) "
+                     f"({', '.join(crashed[:3])}) — fix the exception first; "
+                     f"compounds {total_before} -> {after}."
+                     if crashed else
+                     f"picks up FEWER compounds: {total_before} -> {after}. "
+                     f"The only condition.")))
                 got["objections"] = evidence
                 return got
             moved = {p: (baseline[p], got["per_patent"].get(p, 0))
@@ -368,7 +386,28 @@ print(json.dumps({"discrepant_blocks": discrepant, "per_patent": per_patent,
 
 
 def baseline_counts(xml_dir: Path | None = None) -> dict:
-    """Usable records per patent as things stand — the floor a patch must hold."""
+    """Distinct usable COMPOUNDS per patent — the floor a patch must hold.
+
+    Compounds, and the unit is the whole point. This counted usable RECORDS
+    while `_PROBE` counted `len({r.cid ...})`, and `verify_patch` compared the
+    two directly:
+
+        total_before = 75004     records, from here
+        after        = 31114     compounds, from the probe
+        if after < total_before: -> "picks up FEWER compounds"
+
+    There are always more records than compounds — a patent with three assay
+    columns emits ~3 records per molecule — so the condition was arithmetically
+    unsatisfiable and the capability tier could never apply anything. Every
+    decline this session read "75004 -> 31114" whatever was patched, because
+    31114 is simply the corpus's compound count and no patch moved it much; the
+    one assembler patch that DID move it scored 31093 and was declined for
+    twenty-one compounds against a baseline in the wrong unit.
+
+    The docstring above `verify_patch` already says compounds, `_PROBE` already
+    explains why records are the wrong unit, and this function silently
+    disagreed with both.
+    """
     from ..sources.uspto_assays import extract_from_patent
 
     from ..sources.uspto_xml import parse_fidelity
@@ -379,7 +418,8 @@ def baseline_counts(xml_dir: Path | None = None) -> dict:
     for p in sorted(xml_dir.glob("*.xml")):
         try:
             xml = p.read_text()
-            out[p.stem] = sum(1 for r in extract_from_patent(xml) if r.is_usable)
+            out[p.stem] = len({r.cid for r in extract_from_patent(xml)
+                               if r.is_usable and r.cid})
         except Exception:                            # noqa: BLE001 - probe only
             continue
         if not parse_fidelity(xml):

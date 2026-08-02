@@ -67,6 +67,31 @@ PATCHABLE: dict[str, tuple[Path, str]] = {
                             "walks rows and EMITS AssayRecords from assay columns"),
     "parse_bin_key": (_SRC / "bin_legend.py",
                       "turns a legend's grade symbols into numeric ranges"),
+    # ── the ASSEMBLER ────────────────────────────────────────────────
+    # Absent until now, and their absence was visible in the model's own
+    # answers: on US10189840 and US9018217 it diagnosed the defect exactly
+    # ("example numbers 1 2 3 ... 35 are crammed into the same cell as
+    # `Ex. No.`") and then declined, because every function it was permitted
+    # to rewrite lives downstream of the damage. It could see the bug and not
+    # reach it.
+    #
+    # A patent that yields NOTHING is usually broken here rather than in the
+    # readers above — by the time a row reaches `parse_value`, assembly has
+    # already decided whether it is data at all. Higher blast radius, so the
+    # same protection as everything else and nothing more: a patch that picks
+    # up fewer compounds is declined, and the journal makes any state one
+    # `--revert` away.
+    "assemble_block": (_SRC / "uspto_xml.py",
+                       "stitches every tgroup of one <tables> block into the "
+                       "grid it encodes, choosing which fragments are data and "
+                       "which are header or interleaved annotation"),
+    "_opens_with_id": (_SRC / "uspto_xml.py",
+                       "decides whether a row begins with a compound identifier "
+                       "— the test that separates a data fragment from an "
+                       "annotation fragment"),
+    "_is_namelike": (_SRC / "uspto_xml.py",
+                     "decides whether a row is column NAMES rather than data; a "
+                     "false positive here files data rows as header"),
 }
 
 # How many functions one proposal may rewrite. Three, because the shapes that
@@ -82,7 +107,7 @@ MAX_TARGETS = 3
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v3-preserve-comments"
+PATCH_EPOCH = "v4-assembler-patchable"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
