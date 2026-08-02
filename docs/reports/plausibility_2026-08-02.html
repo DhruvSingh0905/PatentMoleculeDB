@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plausibility signals — independent of BindingDB</title>
+<style>
+  :root{--bg:#fbfaf8;--surface:#fff;--ink:#1c1b19;--ink2:#4a4844;--muted:#7c7873;
+        --line:#e5e1da;--accent:#3d5a80;--good:#3f6c51;--warn:#8a6d3b;--bad:#8c4a3f;
+        --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;}
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#16151a;--surface:#1e1d23;--ink:#eceaf0;--ink2:#c3c0c9;--muted:#8f8b97;
+          --line:#302e38;--accent:#8fb0d4;--good:#7fb894;--warn:#d0ab6d;--bad:#d9907f;}}
+  *{box-sizing:border-box}
+  body{margin:0;padding:2.5rem 1.25rem 5rem;background:var(--bg);color:var(--ink);
+       font:16px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;}
+  .wrap{max-width:62rem;margin:0 auto}
+  header{border-bottom:2px solid var(--line);padding-bottom:1.25rem;margin-bottom:2rem}
+  h1{font-size:1.85rem;line-height:1.2;margin:0 0 .4rem;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:.9rem}.sub b{color:var(--ink2);font-weight:600}
+  h2{font-size:1.15rem;margin:2.5rem 0 .85rem;letter-spacing:-.01em;
+     padding-bottom:.4rem;border-bottom:1px solid var(--line)}
+  p{margin:0 0 1rem;color:var(--ink2)}
+  .guarantee{background:var(--surface);border:1px solid var(--line);
+             border-left:4px solid var(--good);border-radius:0 10px 10px 0;
+             padding:1.1rem 1.3rem;margin:0 0 1.5rem}
+  .guarantee .big{font-size:1.5rem;font-weight:700;color:var(--good);
+                  letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 0 1.25rem}
+  table{border-collapse:collapse;width:100%;min-width:32rem;background:var(--surface);
+        border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:.9rem}
+  th,td{padding:.6rem .75rem;text-align:left;border-bottom:1px solid var(--line)}
+  th{background:color-mix(in srgb,var(--accent) 8%,var(--surface));font-size:.72rem;
+     text-transform:uppercase;letter-spacing:.07em;color:var(--ink2);font-weight:650}
+  tbody tr:last-child td{border-bottom:none}
+  td.n,th.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+  tr.hero td{background:color-mix(in srgb,var(--accent) 8%,transparent);font-weight:600}
+  pre{background:var(--surface);border:1px solid var(--line);border-radius:8px;
+      padding:.9rem 1.1rem;overflow-x:auto;font-family:var(--mono);font-size:.82rem;
+      line-height:1.55;color:var(--ink2);margin:0 0 1.25rem}
+  .note{border-left:3px solid var(--accent);background:var(--surface);
+        padding:.85rem 1.1rem;border-radius:0 6px 6px 0;margin:0 0 1.25rem;font-size:.92rem}
+  .note.warn{border-left-color:var(--warn)}
+  .note strong{color:var(--ink)}
+  ul{margin:0 0 1.25rem;padding-left:1.3rem;color:var(--ink2)}li{margin-bottom:.5rem}
+  code{font-family:var(--mono);font-size:.87em;
+       background:color-mix(in srgb,var(--ink) 7%,transparent);
+       padding:.1em .38em;border-radius:3px}
+  .bars{display:grid;grid-template-columns:auto 1fr auto;gap:.3rem .7rem;
+        align-items:center;font-family:var(--mono);font-size:.8rem;margin:0 0 1.25rem}
+  .bars .lab{color:var(--muted);text-align:right}
+  .bars .bar{height:.75rem;background:var(--accent);border-radius:2px;opacity:.85}
+  .bars .val{color:var(--ink2);font-variant-numeric:tabular-nums}
+  .kicker{display:inline-block;font-size:.7rem;text-transform:uppercase;
+          letter-spacing:.08em;color:var(--accent);font-weight:700;margin-bottom:.5rem}
+  footer{margin-top:3rem;padding-top:1.25rem;border-top:1px solid var(--line);
+         color:var(--muted);font-size:.82rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <span class="kicker">Self-healing loop · independent validation</span>
+  <h1>Plausibility signals — independent of BindingDB</h1>
+  <p class="sub">2026-08-02 · <b>103</b> patents · <b>17</b> flags across <b>14</b> patents</p>
+</header>
+
+<h2>The guarantee, verified</h2>
+<div class="guarantee">
+  <div class="big">0 patents zero out silently</div>
+  <p style="margin:.4rem 0 0">96 of 103 produce usable data. All 7 that produce nothing
+  raise the invariant and route to the code tier. Pinned by
+  <code>test_a_zero_yield_patent_always_escalates</code>.</p>
+</div>
+
+<h2>Why these checks don't use BindingDB</h2>
+<p>Every signal in <code>gap.py</code> scores <em>rows produced</em>. None can see a row
+that came out complete and wrong — and that class has cost more here than any coverage gap:
+99 records once read <code>2.24&nbsp;nM</code> where the patent says 300&nbsp;nM, with every
+count healthy, because a wrong unit produces records perfectly.</p>
+<div class="note warn">
+  <code>value_check</code> catches those against BindingDB, which is the wrong dependency for
+  a live check. BDB covers a fraction of what we extract, lags new patents entirely, and can
+  say nothing at all about a compound it has never seen. <strong>A patent we get wrong in a
+  way BDB cannot see is exactly the patent nobody will notice.</strong>
+</div>
+
+<h2>The four expectations</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Check</th><th>Question</th><th class="n">Flags</th></tr></thead>
+  <tbody>
+    <tr class="hero"><td><code>same_assay_disagrees</code></td>
+      <td>one assay, two blocks, medians orders of magnitude apart</td><td class="n">8</td></tr>
+    <tr><td><code>potency_out_of_range</code></td>
+      <td>a potency that is not one at any real concentration</td><td class="n">7</td></tr>
+    <tr><td><code>n_runs_dropped</code></td>
+      <td>a replicate count the cell printed and we did not keep</td><td class="n">2</td></tr>
+    <tr><td><code>unnamed_assay</code></td>
+      <td>a usable measurement nobody can say the meaning of</td><td class="n">0</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong><code>same_assay_disagrees</code> is the one that matters.</strong>
+<code>2.24&nbsp;nM</code> is plausible in isolation; it is wrong only because the same assay
+reads 300&nbsp;nM twelve rows earlier. Absolute bounds cannot see that, and a reference
+database should not have to.</p>
+
+<div class="note">
+  It caught <strong>US11420968 — the known unit bug — at 0.069&nbsp;nM vs 18.5&nbsp;nM,
+  268× apart, with no database consulted.</strong>
+</div>
+
+<ul>
+  <li><strong>US9718825</strong> — <code>ic50 [μm]</code> reads 5.7&nbsp;nM on one block and
+      1,250&nbsp;nM on another, 219× apart (666 rows)</li>
+  <li><strong>US20240140938</strong> (batch 4, unseen) — 34.35&nbsp;nM vs 9,420&nbsp;nM, 274× apart</li>
+  <li><strong>US9670201 / US10376513</strong> — 324 and 218 cells state a replicate count,
+      <strong>0 captured</strong></li>
+</ul>
+
+<h2>Thresholds are measured, not chosen</h2>
+<p>54,102 potency records, by order of magnitude in nM:</p>
+<div class="bars">
+  <span class="lab">1e-2</span><div class="bar" style="width:1.9%"></div><span class="val">256</span>
+  <span class="lab">1e-1</span><div class="bar" style="width:23%"></div><span class="val">3,304</span>
+  <span class="lab">1e0</span><div class="bar" style="width:94%"></div><span class="val">13,204</span>
+  <span class="lab">1e1</span><div class="bar" style="width:100%"></div><span class="val">14,103</span>
+  <span class="lab">1e2</span><div class="bar" style="width:69%"></div><span class="val">9,741</span>
+  <span class="lab">1e3</span><div class="bar" style="width:62%"></div><span class="val">8,807</span>
+  <span class="lab">1e4</span><div class="bar" style="width:33%"></div><span class="val">4,588</span>
+  <span class="lab">1e5</span><div class="bar" style="width:0.7%"></div><span class="val">91</span>
+  <span class="lab">1e6</span><div class="bar" style="width:0.3%"></div><span class="val">8</span>
+  <span class="lab">≤0</span><div class="bar" style="width:0.3%"></div><span class="val">27</span>
+</div>
+<p>99.8% land between 1e-2 and 1e4&nbsp;nM. The window is set at <strong>1e-3 to 1e6</strong>
+— two orders wider on each side — because the job is catching a 1,000× unit error, not
+policing pharmacology: a real sub-picomolar binder must not be reported as a defect.
+The disagreement factor is <strong>100×</strong>, since assay variability spans maybe 10×
+and the unit errors this exists to catch are 1,000×.</p>
+
+<h2>Framework</h2>
+<p>This is <strong>declarative data validation</strong> — the Great Expectations model:
+assertions about data, grouped into a suite, producing a validation result rather than
+raising. That shape is right and is what <code>plausibility.py</code> implements. The
+<em>dependency</em> is not: four checks over dataclass records do not justify adapting
+everything into DataFrames, and GX's value is its Data Docs and suite management, neither of
+which this needs. Pattern taken, library not.</p>
+<p>The rescan half — flag, then let the model re-read the raw XML — is the
+<strong>evaluator-optimizer</strong> pattern, which Anthropic's guidance recommends only
+"when we have clear evaluation criteria." These four are exactly that: deterministic, cheap,
+and each names the function responsible.</p>
+
+<h2>Assay payload, all 103 patents</h2>
+<pre>records            104,338
+usable              90,770  (87.0%)
+compounds           35,130
+with a unit         96,331  (92.3% of ALL records)
+n_runs                 421 of 601 cells that state one  (70.0%)
+
+unusable, by missing field:  10,303 value · 8,007 unit · 120 assay_name
+
+values vs BindingDB (19,547 references):
+   14,273 agree · 2,621 range_contains · 1,826 no_record · 773 no_value
+       50 variance · 2 wrong_scale · 1 disagree
+   → 84.2% agreement on the 16,948 comparable</pre>
+<p><strong>One disagreement and two wrong-scale in the entire corpus.</strong></p>
+
+<h2>Caveat</h2>
+<p><code>n_runs</code> at 70% is the weakest figure, and now has a detector where it had none.
+The 180 missed are concentrated in two patents; nothing has been patched for them yet — they
+are journaled and will be picked up by the code tier on the next run.</p>
+
+<footer>103 patents · 197 tests · 0 orphans · <code>ae65b7a</code></footer>
+
+</div>
+</body>
+</html>
