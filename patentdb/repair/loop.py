@@ -325,11 +325,18 @@ def apply_rule(rule: Rule, table: Table, patent_id: str) -> list:
 
 
 def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = None,
-                  max_calls: int = 4, dry_run: bool = False) -> tuple[list, RepairReport]:
+                  max_calls: int = 4, dry_run: bool = False,
+                  model: str | None = None) -> tuple[list, RepairReport]:
     """Recover what the deterministic parser missed. Returns (records, report).
 
     `max_calls` bounds spend per patent. Gaps are ranked by how many rows they
     cost us, so a limited budget is spent where it recovers the most.
+
+    `model` overrides the synthesis model for this patent. It exists for
+    `scripts.eval.model_bakeoff`, which compares what different models propose:
+    without it the bake-off called `propose` with its default every time and
+    compared one model against itself under three labels. Answers are cached per
+    (fingerprint, model), so switching models does not read another's answer.
     """
     from collections import Counter
 
@@ -449,8 +456,8 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
                 report.proposed += 1
                 calls += 1
                 continue
-            from .synthesize import propose
-            rule = propose(gap, patent_id=patent_id)
+            from .synthesize import SYNTH_MODEL, propose
+            rule = propose(gap, patent_id=patent_id, model=model or SYNTH_MODEL)
             calls += 1
             report.proposed += 1
             if rule is None:

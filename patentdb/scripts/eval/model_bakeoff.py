@@ -108,6 +108,43 @@ def _reload_pipeline() -> None:
             importlib.reload(mod)
 
 
+def _forget(pids: list[str]) -> int:
+    """Drop the library's answers for these patents' layouts.
+
+    Without this the bake-off is VACUOUS, and silently so. Rules are keyed by
+    layout fingerprint and persist forever by design — that is the whole cost
+    advantage over HARVEST — so a corpus that has already been through the loop
+    has an answer for every layout the test patents contain. All three models
+    are then asked nothing, every run reports `asked 0, adopted N`, and the
+    table compares three identical replays of the FIRST model's work.
+
+    Measured on batch 2: 0 asked, 6 adopted from cache. A harness whose null
+    result looks exactly like a real result is the failure mode this repo keeps
+    finding, so the forgetting is explicit rather than left to the operator.
+
+    `_Snapshot` still holds the original library and restores it between models
+    and at the end, so this is scoped to the run.
+    """
+    from ...repair.gap import gaps_for_patent
+    from ...repair.rules import RuleLibrary
+
+    lib = RuleLibrary()
+    fingerprints: set[str] = set()
+    for pid in pids:
+        f = config.OUTPUT_DIR / "uspto_xml" / f"{pid}.xml"
+        if not f.exists():
+            continue
+        try:
+            for g in gaps_for_patent(pid, f.read_text(errors="ignore")):
+                fingerprints.add(g.fingerprint)
+        except Exception as e:
+            print(f"  (could not enumerate gaps for {pid}: {e!r})"[:120])
+    dropped = sum(1 for fp in fingerprints if lib._rules.pop(fp, None) is not None)
+    if dropped:
+        lib.save()
+    return dropped
+
+
 def _compounds(pids: list[str]) -> dict[str, int]:
     """Distinct compounds per patent — the one acceptance metric."""
     from ...sources.uspto_assays import extract_from_patent
@@ -137,14 +174,22 @@ def _values(pids: list[str]) -> dict:
 
 
 def run_one(label: str, model: str, pids: list[str], *, patch: bool,
-            dry_run: bool) -> dict:
+            dry_run: bool, forget: bool = False) -> dict:
     """One model, from a clean tree. Returns everything it did."""
     from ...core.cost_tracker import cost_tracker
     from ...repair.loop import repair_patent
 
     started = time.time()
     before = _compounds(pids)
-    spend0 = getattr(cost_tracker, "total_usd", 0.0)
+    # `total_cost`, not `total_usd`. The tracker has never had a `total_usd`
+    # attribute, so `getattr(..., "total_usd", 0.0)` returned the DEFAULT on
+    # every run and this column reported $0.0000 whatever happened — a meter
+    # that reads zero when it is working and zero when it is not.
+    spend0 = cost_tracker.total_cost
+    calls0 = cost_tracker.call_count
+    forgotten = _forget(pids) if forget else 0
+    if forget:
+        print(f"  forgot {forgotten} cached rule(s) for these layouts")
 
     per_patent = []
     for pid in pids:
@@ -153,7 +198,8 @@ def run_one(label: str, model: str, pids: list[str], *, patch: bool,
             continue
         xml = f.read_text(errors="ignore")
         try:
-            _, rep = repair_patent(pid, xml, max_calls=4, dry_run=dry_run)
+            _, rep = repair_patent(pid, xml, max_calls=4, dry_run=dry_run,
+                                   model=model)
         except Exception as e:                      # should not happen; recorded if it does
             per_patent.append({"patent": pid, "uncaught": repr(e)[:160]})
             continue
@@ -193,9 +239,16 @@ def run_one(label: str, model: str, pids: list[str], *, patch: bool,
     after = _compounds(pids)
     from ...repair.rules import RuleLibrary
     lib = RuleLibrary()
+    # A $0 here is ambiguous unless we also say whether the API was reached:
+    # answers are cached per (fingerprint, model) and persist across sessions,
+    # so a genuine $0 (every question already answered) looks exactly like a
+    # broken meter. `api_calls` is what separates them.
+    api_calls = cost_tracker.call_count - calls0
     return {
         "model": label, "model_id": model, "seconds": round(time.time() - started, 1),
-        "cost_usd": round(getattr(cost_tracker, "total_usd", 0.0) - spend0, 4),
+        "cost_usd": round(cost_tracker.total_cost - spend0, 4),
+        "api_calls": api_calls,
+        "rules_forgotten": forgotten,
         "compounds_before": before, "compounds_after": after,
         "compounds_gained": {p: after.get(p, 0) - before.get(p, 0)
                              for p in before if after.get(p, 0) != before.get(p, 0)},
@@ -215,6 +268,11 @@ def main() -> int:
                     help="also run the code-patch tier (writes source files)")
     ap.add_argument("--dry-run", action="store_true",
                     help="count what WOULD be asked; no API calls, no writes")
+    ap.add_argument("--forget", action="store_true",
+                    help="drop cached rules for these layouts before each model, "
+                         "so every model is asked the same questions (without "
+                         "this a settled corpus asks nothing and the comparison "
+                         "measures nothing)")
     ap.add_argument("--out", default="docs/reports/model_bakeoff.json")
     a = ap.parse_args()
 
@@ -237,7 +295,8 @@ def main() -> int:
                 print(f"  reverted before {label}: "
                       f"{', '.join(changed) if changed else 'nothing had changed'}")
             print(f"\n=== {label} ({MODELS[label]}) ===")
-            r = run_one(label, MODELS[label], pids, patch=a.patch, dry_run=a.dry_run)
+            r = run_one(label, MODELS[label], pids, patch=a.patch,
+                        dry_run=a.dry_run, forget=a.forget)
             runs.append(r)
             asked = sum(p.get("asked", 0) for p in r["per_patent"])
             print(f"  asked {asked}, gained {sum(r['compounds_gained'].values())} "
@@ -255,7 +314,7 @@ def main() -> int:
     print(f"\nwrote {dest}\n")
 
     print(f"{'model':8s} {'asked':>6s} {'adopt':>6s} {'rej':>5s} {'esc':>5s} "
-          f"{'crash':>6s} {'patch':>6s} {'cmpd+':>6s} {'$':>8s}")
+          f"{'crash':>6s} {'patch':>6s} {'cmpd+':>6s} {'api':>5s} {'$':>8s}")
     for r in runs:
         pp = r["per_patent"]
         print(f"{r['model']:8s} {sum(p.get('asked',0) for p in pp):6d} "
@@ -265,7 +324,12 @@ def main() -> int:
               f"{sum(len(p.get('crashed',[])) for p in pp):6d} "
               f"{sum(1 for x in r['patches'] if x.get('applied')):6d} "
               f"{sum(r['compounds_gained'].values()):6d} "
+              f"{r.get('api_calls', 0):5d} "
               f"{r['cost_usd']:8.4f}")
+    if all(r.get("api_calls", 0) == 0 for r in runs):
+        print("\n  api=0 everywhere: every answer replayed from the "
+              "(fingerprint, model) cache. The comparison is real and it cost "
+              "nothing; the $ column is not evidence the meter works.")
     print("\nWhat each model chose to do — the part a table cannot show:")
     for r in runs:
         print(f"\n  {r['model']}:")

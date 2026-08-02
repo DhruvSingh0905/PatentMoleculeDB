@@ -807,10 +807,19 @@ _MISSING_TO_REPAIR = {
 
 
 def gaps_for_patent(patent_id: str, xml: str) -> list[Gap]:
-    """Convenience wrapper: parse, extract, and report what was left behind."""
+    """Convenience wrapper: parse, extract, and report what was left behind.
+
+    ASSEMBLES first, because `repair_patent` does. This wrapper fingerprinted
+    raw tgroups while production fingerprinted assembled blocks, so the two
+    disagreed about the identity of every multi-tgroup table — the same
+    detector/extractor divergence `classify_like_extractor` exists to prevent,
+    one level up. It surfaced when `model_bakeoff --forget` used these
+    fingerprints to clear the rule cache and dropped 1 rule where production
+    would go on to consult 6, leaving the bake-off measuring a cache replay.
+    """
     from ..sources.uspto_assays import extract_from_patent
-    from ..sources.uspto_xml import parse_tables
-    tables = parse_tables(xml)
+    from ..sources.uspto_xml import assemble_blocks, parse_tables
+    tables = assemble_blocks(parse_tables(xml))
     # Pass the RECORDS, not a count — the detector must be able to ask whether
     # each one is a usable measurement, which a tally cannot answer.
     return find_gaps(patent_id, tables, extract_from_patent(xml), _source_xml=xml)

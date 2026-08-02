@@ -1,0 +1,759 @@
+{
+ "patents": [
+  "US9949975",
+  "US9732088",
+  "US11884671",
+  "US11420968",
+  "US11053246",
+  "US10722495",
+  "US10710980",
+  "US10689373",
+  "US10189840",
+  "US10125101"
+ ],
+ "runs": [
+  {
+   "model": "haiku",
+   "model_id": "claude-haiku-4-5-20251001",
+   "seconds": 1.6,
+   "cost_usd": 0.0,
+   "api_calls": 0,
+   "rules_forgotten": 8,
+   "compounds_before": {
+    "US9949975": 29,
+    "US9732088": 41,
+    "US11884671": 52,
+    "US11420968": 664,
+    "US11053246": 0,
+    "US10722495": 51,
+    "US10710980": 0,
+    "US10689373": 154,
+    "US10189840": 0,
+    "US10125101": 37
+   },
+   "compounds_after": {
+    "US9949975": 29,
+    "US9732088": 41,
+    "US11884671": 52,
+    "US11420968": 664,
+    "US11053246": 0,
+    "US10722495": 51,
+    "US10710980": 0,
+    "US10689373": 154,
+    "US10189840": 0,
+    "US10125101": 37
+   },
+   "compounds_gained": {},
+   "per_patent": [
+    {
+     "patent": "US9949975",
+     "gaps": 1,
+     "known": 0,
+     "asked": 1,
+     "adopted": 1,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 18,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US9732088",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US11884671",
+     "gaps": 2,
+     "known": 0,
+     "asked": 2,
+     "adopted": 1,
+     "rejected": 0,
+     "escalated": 1,
+     "over_objection": 1,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 416,
+     "escalations": [
+      {
+       "capability": "contested not_assay",
+       "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      }
+     ],
+     "rejections": [
+      {
+       "kind": "column_map",
+       "why": "rule yields 48 rows but the existing parser already gets 416 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      }
+     ]
+    },
+    {
+     "patent": "US11420968",
+     "gaps": 1,
+     "known": 0,
+     "asked": 1,
+     "adopted": 0,
+     "rejected": 1,
+     "escalated": 1,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [
+      {
+       "capability": "unexecutable proposal",
+       "note": "value_pattern captures no number: no group named `num`, no single unnamed group to promote, and nothing named `num*` (groups=0, named=[]). Such a rule cannot produce a value on any input."
+      }
+     ],
+     "rejections": [
+      {
+       "kind": "value_pattern",
+       "why": "value_pattern captures no number: no group named `num`, no single unnamed group to promote, and nothing named `num*` (groups=0, named=[]). Such a rule cannot produce a value on any input.",
+       "contract": true
+      }
+     ]
+    },
+    {
+     "patent": "US11053246",
+     "gaps": 1,
+     "known": 0,
+     "asked": 1,
+     "adopted": 1,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 699,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US10722495",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US10710980",
+     "gaps": 3,
+     "known": 0,
+     "asked": 3,
+     "adopted": 3,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 3,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 704,
+     "escalations": [],
+     "rejections": [
+      {
+       "kind": "column_map",
+       "why": "rule yields 84 rows but the existing parser already gets 176 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      },
+      {
+       "kind": "column_map",
+       "why": "rule yields 84 rows but the existing parser already gets 440 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      },
+      {
+       "kind": "column_map",
+       "why": "rule yields 84 rows but the existing parser already gets 88 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      }
+     ]
+    },
+    {
+     "patent": "US10689373",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US10189840",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 2,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [
+      {
+       "capability": "ASSEMBLY DEFECT \u2014 not a layout gap",
+       "note": "TABLE-US-00005: assembly produced 47 header rows over 5 body row(s) \u2014 a header cannot be larger than the table it heads. Data rows were absorbed by the `_is_namelike` harvest in `assemble_block`, which is uncapped, after"
+      },
+      {
+       "capability": "PATENT YIELDED NOTHING",
+       "note": "US10189840 produced 0 usable measurements while its tables hold 182 measurement-shaped cells across 5 block(s). 0 gap(s) were raised and 1 assembly defect(s) found, so the per-table detectors may not have explained all o"
+      }
+     ],
+     "rejections": []
+    },
+    {
+     "patent": "US10125101",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    }
+   ],
+   "patches": [],
+   "library_by_kind": {
+    "bin_key": 19,
+    "escalate": 15,
+    "column_map": 27,
+    "not_assay": 4,
+    "value_pattern": 5
+   },
+   "values": {
+    "total": {
+     "agree": 671,
+     "refs": 842,
+     "variance": 50,
+     "no_record": 56,
+     "no_value": 14,
+     "range_contains": 51
+    },
+    "bad": {}
+   }
+  },
+  {
+   "model": "sonnet",
+   "model_id": "claude-sonnet-4-6",
+   "seconds": 1.7,
+   "cost_usd": 0.0,
+   "api_calls": 0,
+   "rules_forgotten": 8,
+   "compounds_before": {
+    "US9949975": 29,
+    "US9732088": 41,
+    "US11884671": 52,
+    "US11420968": 664,
+    "US11053246": 0,
+    "US10722495": 51,
+    "US10710980": 0,
+    "US10689373": 154,
+    "US10189840": 0,
+    "US10125101": 37
+   },
+   "compounds_after": {
+    "US9949975": 29,
+    "US9732088": 41,
+    "US11884671": 52,
+    "US11420968": 664,
+    "US11053246": 0,
+    "US10722495": 51,
+    "US10710980": 0,
+    "US10689373": 154,
+    "US10189840": 0,
+    "US10125101": 37
+   },
+   "compounds_gained": {},
+   "per_patent": [
+    {
+     "patent": "US9949975",
+     "gaps": 1,
+     "known": 0,
+     "asked": 1,
+     "adopted": 1,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 18,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US9732088",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US11884671",
+     "gaps": 2,
+     "known": 0,
+     "asked": 2,
+     "adopted": 1,
+     "rejected": 0,
+     "escalated": 1,
+     "over_objection": 1,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 416,
+     "escalations": [
+      {
+       "capability": "contested not_assay",
+       "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      }
+     ],
+     "rejections": [
+      {
+       "kind": "column_map",
+       "why": "rule yields 48 rows but the existing parser already gets 416 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      }
+     ]
+    },
+    {
+     "patent": "US11420968",
+     "gaps": 1,
+     "known": 0,
+     "asked": 1,
+     "adopted": 1,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 1,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 32,
+     "escalations": [],
+     "rejections": [
+      {
+       "kind": "column_map",
+       "why": "rule yields 13 rows but the existing parser already gets 27 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      }
+     ]
+    },
+    {
+     "patent": "US11053246",
+     "gaps": 1,
+     "known": 0,
+     "asked": 1,
+     "adopted": 1,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 699,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US10722495",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US10710980",
+     "gaps": 3,
+     "known": 0,
+     "asked": 3,
+     "adopted": 3,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 3,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 704,
+     "escalations": [],
+     "rejections": [
+      {
+       "kind": "column_map",
+       "why": "rule yields 84 rows but the existing parser already gets 176 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      },
+      {
+       "kind": "column_map",
+       "why": "rule yields 84 rows but the existing parser already gets 440 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      },
+      {
+       "kind": "column_map",
+       "why": "rule yields 84 rows but the existing parser already gets 88 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      }
+     ]
+    },
+    {
+     "patent": "US10689373",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US10189840",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 2,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [
+      {
+       "capability": "ASSEMBLY DEFECT \u2014 not a layout gap",
+       "note": "TABLE-US-00005: assembly produced 47 header rows over 5 body row(s) \u2014 a header cannot be larger than the table it heads. Data rows were absorbed by the `_is_namelike` harvest in `assemble_block`, which is uncapped, after"
+      },
+      {
+       "capability": "PATENT YIELDED NOTHING",
+       "note": "US10189840 produced 0 usable measurements while its tables hold 182 measurement-shaped cells across 5 block(s). 0 gap(s) were raised and 1 assembly defect(s) found, so the per-table detectors may not have explained all o"
+      }
+     ],
+     "rejections": []
+    },
+    {
+     "patent": "US10125101",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    }
+   ],
+   "patches": [],
+   "library_by_kind": {
+    "bin_key": 19,
+    "escalate": 14,
+    "column_map": 28,
+    "not_assay": 4,
+    "value_pattern": 5
+   },
+   "values": {
+    "total": {
+     "agree": 671,
+     "refs": 842,
+     "variance": 50,
+     "no_record": 56,
+     "no_value": 14,
+     "range_contains": 51
+    },
+    "bad": {}
+   }
+  },
+  {
+   "model": "opus",
+   "model_id": "claude-opus-4-6",
+   "seconds": 1.7,
+   "cost_usd": 0.0,
+   "api_calls": 0,
+   "rules_forgotten": 8,
+   "compounds_before": {
+    "US9949975": 29,
+    "US9732088": 41,
+    "US11884671": 52,
+    "US11420968": 664,
+    "US11053246": 0,
+    "US10722495": 51,
+    "US10710980": 0,
+    "US10689373": 154,
+    "US10189840": 0,
+    "US10125101": 37
+   },
+   "compounds_after": {
+    "US9949975": 29,
+    "US9732088": 41,
+    "US11884671": 52,
+    "US11420968": 664,
+    "US11053246": 0,
+    "US10722495": 51,
+    "US10710980": 0,
+    "US10689373": 154,
+    "US10189840": 0,
+    "US10125101": 37
+   },
+   "compounds_gained": {},
+   "per_patent": [
+    {
+     "patent": "US9949975",
+     "gaps": 1,
+     "known": 0,
+     "asked": 1,
+     "adopted": 1,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 18,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US9732088",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US11884671",
+     "gaps": 2,
+     "known": 0,
+     "asked": 2,
+     "adopted": 1,
+     "rejected": 0,
+     "escalated": 1,
+     "over_objection": 1,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 416,
+     "escalations": [
+      {
+       "capability": "contested not_assay",
+       "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      }
+     ],
+     "rejections": [
+      {
+       "kind": "column_map",
+       "why": "rule yields 48 rows but the existing parser already gets 416 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      }
+     ]
+    },
+    {
+     "patent": "US11420968",
+     "gaps": 1,
+     "known": 0,
+     "asked": 1,
+     "adopted": 1,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 1,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 32,
+     "escalations": [],
+     "rejections": [
+      {
+       "kind": "column_map",
+       "why": "rule yields 13 rows but the existing parser already gets 27 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      }
+     ]
+    },
+    {
+     "patent": "US11053246",
+     "gaps": 1,
+     "known": 0,
+     "asked": 1,
+     "adopted": 1,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 699,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US10722495",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US10710980",
+     "gaps": 3,
+     "known": 0,
+     "asked": 3,
+     "adopted": 3,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 3,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 704,
+     "escalations": [],
+     "rejections": [
+      {
+       "kind": "column_map",
+       "why": "rule yields 84 rows but the existing parser already gets 176 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      },
+      {
+       "kind": "column_map",
+       "why": "rule yields 84 rows but the existing parser already gets 440 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      },
+      {
+       "kind": "column_map",
+       "why": "rule yields 84 rows but the existing parser already gets 88 \u2014 a repair must increase coverage, not reduce it",
+       "contract": false
+      }
+     ]
+    },
+    {
+     "patent": "US10689373",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US10189840",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 2,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [
+      {
+       "capability": "ASSEMBLY DEFECT \u2014 not a layout gap",
+       "note": "TABLE-US-00005: assembly produced 47 header rows over 5 body row(s) \u2014 a header cannot be larger than the table it heads. Data rows were absorbed by the `_is_namelike` harvest in `assemble_block`, which is uncapped, after"
+      },
+      {
+       "capability": "PATENT YIELDED NOTHING",
+       "note": "US10189840 produced 0 usable measurements while its tables hold 182 measurement-shaped cells across 5 block(s). 0 gap(s) were raised and 1 assembly defect(s) found, so the per-table detectors may not have explained all o"
+      }
+     ],
+     "rejections": []
+    },
+    {
+     "patent": "US10125101",
+     "gaps": 0,
+     "known": 0,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    }
+   ],
+   "patches": [],
+   "library_by_kind": {
+    "bin_key": 19,
+    "escalate": 14,
+    "column_map": 28,
+    "not_assay": 4,
+    "value_pattern": 5
+   },
+   "values": {
+    "total": {
+     "agree": 671,
+     "refs": 842,
+     "variance": 50,
+     "no_record": 56,
+     "no_value": 14,
+     "range_contains": 51
+    },
+    "bad": {}
+   }
+  }
+ ]
+}
