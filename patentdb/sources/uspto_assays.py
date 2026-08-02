@@ -738,6 +738,12 @@ def classify_column(header: str, samples: list[str]) -> Column:
     characters are ordinal potency bands (like +/++/+++). Columns whose data
     is predominantly these symbols are promoted to ASSAY the same way
     plus-bins and letter-grades are.
+
+    p-prefixed metrics: headers like "pIC50", "pEC50", "pKi", "pKd" are
+    negative-log10 potency values. The "p" prefix is directly attached to the
+    metric name with no word boundary, so standard assay-name regexes that
+    rely on \\b fail to match. These are recognised explicitly as assay
+    columns (dimensionless — no concentration unit).
     """
     h = (header or "").strip()
     low = h.lower()
@@ -762,7 +768,10 @@ def classify_column(header: str, samples: list[str]) -> Column:
     if _HEADER_SUBST.match(h):
         return Column(-1, h, SUBSTITUENT)
     if _HEADER_CID.search(low) and not _HEADER_ASSAY.search(low):
-        return Column(-1, h, CID)
+        # Also guard against p-prefixed metrics being swallowed by CID:
+        # "pIC50" should not match a CID pattern.
+        if not re.search(r'(?i)\bp?(?:ic|ec)\s*50|p(?:ki|kd|k_?i|k_?d)\b', low):
+            return Column(-1, h, CID)
 
     assay_lemmas, _, _ = _vocab()
     is_assay = bool(_HEADER_ASSAY.search(low)) or any(a in low for a in assay_lemmas if len(a) > 2)
@@ -770,6 +779,11 @@ def classify_column(header: str, samples: list[str]) -> Column:
     # These appear in headers like "MAGL % Inh 1 \u03bcM (mouse)" and are not
     # caught by the standard assay regex or lemma list.
     if not is_assay and re.search(r'%\s*inh', low):
+        is_assay = True
+    # p-prefixed potency metrics: "pIC50", "pEC50", "pKi", "pKd" etc.
+    # The 'p' is directly attached to the metric name so word-boundary-based
+    # patterns miss them. These are dimensionless (-log10 of a concentration).
+    if not is_assay and re.search(r'(?i)\bp\s*(?:ic|ec)\s*50\b|\bp\s*(?:ki|kd|k_?i|k_?d)\b', low):
         is_assay = True
     unit = _unit_from(h)
     if is_assay or (unit and unit != "%"):
@@ -1013,6 +1027,13 @@ def parse_value(cell: str) -> dict | None:
     (e.g. `**`, `###`) are ordinal potency bands used in patent tables where a
     bin_key legend maps them to numeric ranges. They are recorded as letter
     grades, analogous to `+`/`++`/`+++` and `A`/`B`/`C`.
+
+    Unicode normalization: scientific notation values often use typographic
+    characters — unicode minus (U+2212), en-dash (U+2013), non-breaking space
+    (U+00A0), or unicode comparison operators (≥ U+2265, ≤ U+2264, ≈ U+2248)
+    — that the main value regex cannot match. The cell text is normalized to
+    ASCII equivalents before regex matching so that e.g. '≥1.0e−005' parses
+    correctly.
     """
     s = (cell or "").strip()
     _, quals, nulls = _vocab()
@@ -1043,7 +1064,19 @@ def parse_value(cell: str) -> dict | None:
     sh = _STAR_HASH_BIN.fullmatch(s)
     if sh:
         return {"letter_grade": sh.group(1), "value_text": s}
-    m = _VALUE_PAT.match(s)
+    # Normalize unicode characters that are typographic variants of ASCII
+    # operators and signs before attempting the main value regex. This lets
+    # cells like `≥1.0e−005` match without complicating
+    # the regex itself. The original `s` is preserved for `value_text`.
+    s_norm = s.replace('\u2212', '-').replace('\u2013', '-').replace('\u2014', '-')
+    s_norm = s_norm.replace('\u00a0', ' ').replace('\u2009', ' ')
+    s_norm = s_norm.replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2248', '~')
+    s_norm = s_norm.replace('\u2267', '>=').replace('\u2266', '<=')
+    s_norm = s_norm.replace('\u2a7e', '>=').replace('\u2a7d', '<=')
+    m = _VALUE_PAT.match(s_norm)
+    if not m:
+        # Also try the original in case normalization broke something.
+        m = _VALUE_PAT.match(s)
     if not m:
         return None
     qual = m.group("qual")

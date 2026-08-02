@@ -684,7 +684,15 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
                     s = c.text.strip()
                     if s and (_SHAPED.match(s) or _GRADE.match(s)):
                         shaped += 1
-        if shaped >= 20:
+        # 10, and the number is measured rather than chosen. This floor exists
+        # so a patent with no assay data at all stays quiet, but the condition
+        # is already conjunctive — it only runs when NOTHING usable came out —
+        # so the floor was carrying almost no weight. Across 93 patents exactly
+        # one silent patent sits below 20 shaped cells (US9695181, at 18), and
+        # every threshold from 1 to 18 fires on the identical set. The old 20
+        # was a guess of mine, and its entire observable effect was to exclude
+        # one genuinely broken patent from the tier built to fix it.
+        if shaped >= 10:
             report.escalated += 1
             report.escalations.append({
                 "fingerprint": None, "patent": patent_id, "table": None,

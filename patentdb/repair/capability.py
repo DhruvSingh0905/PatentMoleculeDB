@@ -107,7 +107,7 @@ MAX_TARGETS = 3
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v4-assembler-patchable"
+PATCH_EPOCH = "v5-literal-glyphs"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
@@ -180,7 +180,15 @@ wrong function wastes a verification run and teaches us nothing.
 
 Your patch is applied to a scratch copy and run over the whole corpus and the \
 full test suite. It is rejected for one reason only: if it reads FEWER \
-compounds than the current code. Describe the fix; the harness decides."""
+compounds than the current code. Describe the fix; the harness decides.
+NEVER write a non-ASCII character as a `\\uXXXX` escape. Emit the literal
+character. Inside a string literal the two are equivalent, but inside a COMMENT
+`\\u2212` is not an escape — it is the six characters, and the comment is
+corrupted. This has happened twice on the same line, where the comment
+explaining that `float` cannot read a typesetter's minus had that very minus
+turned into `\\u2212`. Behaviour survived, the reasoning did not, and no test
+can see it.
+"""
 
 PATCH_TOOL = {
     "name": "propose_capability_patch",
