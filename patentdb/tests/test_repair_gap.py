@@ -652,3 +652,49 @@ def test_autoheal_respects_its_per_run_budget(tmp_path, monkeypatch):
     # queue rather than a loss.
     lines = (tmp_path / "esc.jsonl").read_text().splitlines()
     assert any("USB" in x for x in lines)
+
+
+def test_a_silent_patent_is_scoped_from_raw_rows_not_the_damaged_view(monkeypatch, tmp_path):
+    """Choosing WHICH table to show the model must not use the view that failed.
+
+    A patent yielding nothing raises no table-level gap — the defect destroys
+    the evidence a detector reads — so `collect_gaps` synthesises one and picks
+    the block carrying the most measurement-shaped cells.
+
+    The first version counted `body_rows` of the ASSEMBLED block. On US10189840,
+    whose data rows were filed as HEADER rows, that scored the real 94-row table
+    at 5 and picked a smaller decoy instead. Counting raw tgroup rows — header
+    and body alike — is the only measure a broken assembler cannot skew.
+    """
+    from patentdb.core import config
+    from patentdb.repair import capability
+
+    decoy = "".join(f"<row><entry>d{i}</entry><entry>{i}.5</entry></row>"
+                    for i in range(1, 13))
+    # The real table: ids on the first row of each group, blanks after, which is
+    # what pushes the fragment out of `kin` and into the header harvest.
+    real = "".join(
+        f"<row><entry/><entry>{i}</entry><entry>A</entry><entry>(e1)</entry></row>"
+        + "".join(f"<row><entry/><entry/><entry>B</entry><entry>(e{e})</entry></row>"
+                  for e in (2, 3, 4))
+        for i in range(1, 16))
+    xml = ('<us-patent-grant><description>'
+           '<tables id="TABLE-DECOY" num="1"><table><tgroup cols="2">'
+           f'<tbody>{decoy}</tbody></tgroup></table></tables>'
+           '<tables id="TABLE-REAL" num="2"><table>'
+           '<tgroup cols="3"><thead><row><entry>Ex</entry><entry>IC50</entry>'
+           '<entry/></row></thead><tbody><row><entry>99</entry><entry>A</entry>'
+           '<entry/></row></tbody></tgroup>'
+           f'<tgroup cols="4"><tbody>{real}</tbody></tgroup>'
+           '</table></tables></description></us-patent-grant>')
+
+    xd = tmp_path / "uspto_xml"
+    xd.mkdir(parents=True)
+    (xd / "USSILENT.xml").write_text(xml)
+    monkeypatch.setattr(config, "OUTPUT_DIR", tmp_path)
+
+    gaps = capability.collect_gaps(["USSILENT"])
+    assert len(gaps) == 1, "a patent that yields nothing must still be actionable"
+    assert gaps[0]["table"] == "TABLE-REAL", (
+        f"picked {gaps[0]['table']} — scoped from the damaged view, not the source")
+    assert "Assume the reader, not the layout" in gaps[0]["why"]

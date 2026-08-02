@@ -291,6 +291,88 @@ def propose_capability_patch(gap_info: dict, table, *,
     return out
 
 
+def _gap_from_a_silent_patent(patent_id: str, report) -> dict | None:
+    """A gap for a patent that failed too completely to produce one.
+
+    Every entry in `capability_gaps` is raised by a TABLE-level detector, and a
+    detector needs a parsed table to measure. When the defect is large enough to
+    destroy the parsed view, it destroys the evidence too: US9018217 filed its
+    data rows as header, produced zero records, raised zero gaps, and therefore
+    could not be handed to the tier built to fix exactly that. It reached
+    `maybe_escalate`, spent a budget slot, and `collect_gaps` returned nothing.
+
+    So when a patent yields nothing and no table can say why, the gap is the
+    PATENT. Pick the block carrying the most measurement-shaped cells — read off
+    raw cell text, so no classifier we might have broken is consulted — and let
+    the model see the raw CALS beside the functions that failed on it. That is
+    the stated fallback for this whole design: give it the source and our code.
+
+    Returns None whenever the patent produced anything at all, so this can never
+    compete with the precise signal.
+    """
+    from ..sources.uspto_assays import extract_from_patent
+    from ..sources.uspto_xml import assemble_blocks, parse_tables
+    from .gap import layout_fingerprint
+    from .loop import _GRADE, _SHAPED
+    from ..sources.uspto_assays import _header_rows_of, merge_header
+
+    blank = [e for e in getattr(report, "escalations", [])
+             if e.get("capability") == "PATENT YIELDED NOTHING"]
+    if not blank:
+        return None
+    xml_dir = config.OUTPUT_DIR / "uspto_xml"
+    try:
+        xml = (xml_dir / f"{patent_id}.xml").read_text(errors="ignore")
+        if any(r.is_usable for r in extract_from_patent(xml)):
+            return None                      # not silent; the precise signal owns it
+        raw = parse_tables(xml)
+        tables = {t.table_id: t for t in assemble_blocks(raw)}
+    except Exception:
+        return None
+
+    # Counted on the RAW tgroups, across header AND body rows.
+    #
+    # The first version counted `body_rows` of the ASSEMBLED block, which is the
+    # damaged view — the one the defect produced. On US10189840, whose data rows
+    # were filed as HEADER rows, that scored the real table at 5 rows and picked
+    # a 35-cell decoy instead of the 94-row block actually holding the assay
+    # data. Choosing which table to show the model from the view that failed is
+    # the mistake this file's own docstring warns about.
+    per_block: dict[str, int] = {}
+    for t in raw:
+        n = sum(1 for row in (t.header_rows + t.body_rows) for c in row
+                if c.text.strip()
+                and (_SHAPED.match(c.text.strip()) or _GRADE.match(c.text.strip())))
+        per_block[t.table_id] = per_block.get(t.table_id, 0) + n
+    if not per_block:
+        return None
+    best_id = max(per_block, key=lambda k: per_block[k])
+    best_n = per_block[best_id]
+    best = tables.get(best_id)
+    if best is None or best_n < 20:
+        return None
+    hdrs = merge_header(best, _header_rows_of(best)[0])
+    return {
+        "fingerprint": layout_fingerprint(best, hdrs),
+        "patent": patent_id, "table": best.table_id,
+        "rows_at_stake": blank[0].get("rows_at_stake") or best_n,
+        "rule_kind": None, "rule_payload": {},
+        "why": (f"{patent_id} produced NO usable measurement from any block, and "
+                f"no table-level detector could say why — the failure was large "
+                f"enough to destroy the evidence a detector reads. "
+                f"{best.table_id} carries {best_n} measurement-shaped cells and "
+                f"is the largest such block. Assume the reader, not the layout: "
+                f"compare the raw CALS against what our functions make of it."
+                + (" The assembler also reports that this patent's header "
+                   "outgrew its own body."
+                   if any(e.get("capability", "").startswith("ASSEMBLY DEFECT")
+                          for e in getattr(report, "escalations", [])) else "")),
+        "unparsed_examples": [
+            " | ".join(c.text.strip() for c in row)[:80]
+            for row in best.body_rows[:6] if any(c.text.strip() for c in row)],
+    }
+
+
 def collect_gaps(patent_ids: list[str] | None = None) -> list[dict]:
     """Every capability gap in the corpus, biggest first. Free — no model calls."""
     from .loop import repair_patent
@@ -306,6 +388,10 @@ def collect_gaps(patent_ids: list[str] | None = None) -> list[dict]:
             logger.warning("capability: %s raised %r", pid, e)
             continue
         out.extend(rep.capability_gaps)
+        if not rep.capability_gaps:
+            synth = _gap_from_a_silent_patent(pid, rep)
+            if synth is not None:
+                out.append(synth)
     # A gap with nothing at stake is not a gap. Once the code tier fixes a
     # layout, the deterministic parser reads it directly and the rule bought
     # for it becomes redundant — `apply_rule` returns nothing because there is
