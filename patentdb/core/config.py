@@ -149,6 +149,35 @@ PARSER_REPAIR_JOURNAL = OUTPUT_DIR / "parser_repair_journal.jsonl"
 RULE_GATES_ENFORCE = os.environ.get("RULE_GATES_ENFORCE", "0") == "1"
 RULE_JOURNAL = OUTPUT_DIR / "rule_adoption_journal.jsonl"
 
+# Does a patent that yields NOTHING escalate to the code-patch tier by itself?
+#
+# It did not, and that made "self-healing" a description of one tier out of
+# three. `process_patent` called the rule tier and stopped; `repair_capabilities`
+# — the only tier that can fix a layout no rule kind can express — was reachable
+# solely from two eval CLIs. So US10266548 (197 reference compounds) produced a
+# correct diagnosis naming its own failing table, and that diagnosis was
+# garbage-collected: `repair_report` is read for ONE field in the orchestrator
+# and dropped, and it reached no output file at all.
+#
+# The same trade as PARSER_REPAIR_APPLY, one tier up: a fix that waits on a
+# human is a queue, and the gap costs records while it waits. Safety is the
+# journal and the revert, not permission.
+REPAIR_AUTOHEAL = os.environ.get("REPAIR_AUTOHEAL", "1") == "1"
+
+# Distinct CAPABILITIES bought per process, not per patent. A capability patch
+# is keyed by layout fingerprint and cached by PATCH_EPOCH, so a corpus run buys
+# each shape once — but `baseline_counts()` rescans every patent on each call,
+# so an unbounded auto-fire would cost one full corpus scan per failing patent.
+# CLAUDE.md measures three capability gaps in the whole corpus; two per run is a
+# ceiling on damage, not a target.
+AUTOHEAL_MAX_PER_RUN = int(os.environ.get("AUTOHEAL_MAX_PER_RUN", "2"))
+
+# Every escalation the loop raises, appended. The rule tier already journals what
+# it ADOPTED; nothing recorded what it could not fix, which is the half a human
+# needs. Not a cache — it is the queue, and clearing it loses the record of
+# every unsolved layout.
+ESCALATION_JOURNAL = OUTPUT_DIR / "escalation_journal.jsonl"
+
 # Cost — global budget across all patents
 COST_THRESHOLDS = [50, 100, 150, 200]
 COST_CEILING = 200

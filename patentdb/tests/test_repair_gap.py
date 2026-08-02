@@ -564,3 +564,91 @@ def test_a_patent_that_yields_records_does_not_escalate_as_blank():
     _, report = repair_patent("USTEST0002", xml, max_calls=0, dry_run=True)
     assert not [e for e in report.escalations
                 if e["capability"] == "PATENT YIELDED NOTHING"]
+
+
+def test_a_zero_yield_patent_reaches_the_code_tier(tmp_path, monkeypatch):
+    """The wire that was missing: detection must reach the tier that can fix it.
+
+    All three tiers were built and only one was connected. `process_patent`
+    called the RULE tier and stopped; `repair_capabilities` was reachable from
+    two eval CLIs and nothing else. So US10266548 produced a correct diagnosis
+    naming its own failing table — 197 reference compounds at stake — and the
+    diagnosis was garbage-collected.
+
+    This asserts the handoff, not the patch: given a report that no rule can
+    close, the code tier is invoked exactly once and the escalation is durable.
+    """
+    from patentdb.core import config
+    from patentdb.repair import autoheal
+
+    monkeypatch.setattr(config, "ESCALATION_JOURNAL", tmp_path / "esc.jsonl")
+    monkeypatch.setattr(config, "REPAIR_AUTOHEAL", True)
+    monkeypatch.setattr(config, "AUTOHEAL_MAX_PER_RUN", 2)
+    autoheal.reset()
+
+    calls = []
+
+    def _fake(*, patent_ids=None, limit=None, **kw):
+        calls.append(list(patent_ids or []))
+        return {"gaps": 1, "applied": 1, "declined": 0, "results": []}
+
+    import patentdb.repair.capability as cap
+    monkeypatch.setattr(cap, "repair_capabilities", _fake)
+
+    class R:
+        escalations = [{"capability": "PATENT YIELDED NOTHING", "table": None,
+                        "fingerprint": None, "rows_at_stake": 1049,
+                        "note": "0 usable from 1049 shaped cells"}]
+        capability_gaps = [{"fingerprint": "abc123", "table": "TABLE-US-00048",
+                            "rows_at_stake": 197, "rule_kind": "value_pattern",
+                            "why": "validated but produced no records"}]
+        crashed = []
+
+    out = autoheal.maybe_escalate("US10266548", R())
+    assert out and out["applied"] == 1
+    assert calls == [["US10266548"]], "the code tier must be asked, exactly once"
+
+    # Durable: the queue survives the process that raised it.
+    lines = [__import__("json").loads(x)
+             for x in (tmp_path / "esc.jsonl").read_text().splitlines() if x.strip()]
+    assert {r["kind"] for r in lines} == {"escalation", "capability_gap"}
+    assert any(r["rows_at_stake"] == 197 for r in lines)
+
+    # A SECOND patent sharing the fingerprint must not buy the same patch again.
+    out2 = autoheal.maybe_escalate("US9999999", R())
+    assert out2 is None
+    assert calls == [["US10266548"]], "one capability, one purchase"
+
+
+def test_autoheal_respects_its_per_run_budget(tmp_path, monkeypatch):
+    """`baseline_counts()` rescans the whole corpus on every capability call, so
+    an uncapped auto-fire costs one full corpus scan per failing patent."""
+    from patentdb.core import config
+    from patentdb.repair import autoheal
+
+    monkeypatch.setattr(config, "ESCALATION_JOURNAL", tmp_path / "esc.jsonl")
+    monkeypatch.setattr(config, "REPAIR_AUTOHEAL", True)
+    monkeypatch.setattr(config, "AUTOHEAL_MAX_PER_RUN", 1)
+    autoheal.reset()
+
+    calls = []
+    import patentdb.repair.capability as cap
+    monkeypatch.setattr(cap, "repair_capabilities",
+                        lambda **kw: calls.append(kw.get("patent_ids")) or
+                        {"gaps": 1, "applied": 0, "declined": 1, "results": []})
+
+    def report(fp):
+        class R:
+            escalations = []
+            capability_gaps = [{"fingerprint": fp, "table": "T", "rows_at_stake": 9,
+                                "rule_kind": "column_map", "why": "nothing"}]
+            crashed = []
+        return R()
+
+    assert autoheal.maybe_escalate("USA", report("fp-a")) is not None
+    assert autoheal.maybe_escalate("USB", report("fp-b")) is None, "budget spent"
+    assert len(calls) == 1
+    # ...but the one that could not be bought is still journaled, so it is a
+    # queue rather than a loss.
+    lines = (tmp_path / "esc.jsonl").read_text().splitlines()
+    assert any("USB" in x for x in lines)

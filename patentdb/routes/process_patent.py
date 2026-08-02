@@ -1815,8 +1815,35 @@ def process_patent(
                     "n_runs": rec.n_runs,
                     "source": rec.source,
                 })
-            if repair_report.rows_recovered:
-                logger.info("repair: %s", repair_report.summary())
+            # UNCONDITIONAL. This used to be `if repair_report.rows_recovered:`,
+            # so a patent recovering 500 rows logged a summary and a patent
+            # recovering ZERO logged nothing at all — the louder the failure,
+            # the quieter the output. Every silent patent in this corpus was
+            # silent here first.
+            logger.info("repair: %s", repair_report.summary())
+            # ...and the report is no longer dropped on the floor. It carries
+            # the escalations and capability gaps naming what no rule could
+            # fix; `maybe_escalate` journals them and, when the blocker is
+            # below what a rule can reach, puts the patent to the code tier.
+            # Bounded per capability and per run — see repair/autoheal.
+            from ..repair.autoheal import maybe_escalate
+            healed = maybe_escalate(patent_id, repair_report)
+            if healed and healed.get("applied"):
+                # The reader changed underneath us. Re-extract so this patent
+                # benefits from the patch it just paid for, rather than the
+                # next run being the first to see it.
+                from ..sources.uspto_assays import extract_from_patent
+                for rec in extract_from_patent(_uspto_xml_for(patent_id)):
+                    if not rec.is_usable:
+                        continue
+                    assay_tables.setdefault(rec.cid, []).append({
+                        "assay_name": rec.assay_name,
+                        "value_numeric": rec.value_numeric,
+                        "unit": rec.unit,
+                        "qualifier": rec.qualifier,
+                        "n_runs": rec.n_runs,
+                        "source": "autoheal_" + (rec.source or "uspto_xml"),
+                    })
         except Exception as e:
             # Repair is additive. It must never be able to break a run that
             # would otherwise have produced results.
