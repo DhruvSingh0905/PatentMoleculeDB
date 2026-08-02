@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Batch 3 — ten fresh patents</title>
+<style>
+  :root{
+    --bg:#fbfaf8;--surface:#fff;--ink:#1c1b19;--ink2:#4a4844;--muted:#7c7873;
+    --line:#e5e1da;--accent:#3d5a80;--good:#3f6c51;--warn:#8a6d3b;--bad:#8c4a3f;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#16151a;--surface:#1e1d23;--ink:#eceaf0;--ink2:#c3c0c9;--muted:#8f8b97;
+          --line:#302e38;--accent:#8fb0d4;--good:#7fb894;--warn:#d0ab6d;--bad:#d9907f;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:2.5rem 1.25rem 5rem;background:var(--bg);color:var(--ink);
+       font:16px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;}
+  .wrap{max-width:62rem;margin:0 auto}
+  header{border-bottom:2px solid var(--line);padding-bottom:1.25rem;margin-bottom:2rem}
+  h1{font-size:1.9rem;line-height:1.2;margin:0 0 .4rem;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:.9rem}
+  .sub b{color:var(--ink2);font-weight:600}
+  h2{font-size:1.15rem;margin:2.5rem 0 .85rem;letter-spacing:-.01em;
+     padding-bottom:.4rem;border-bottom:1px solid var(--line)}
+  h3{font-size:.95rem;margin:1.75rem 0 .6rem;color:var(--ink2)}
+  p{margin:0 0 1rem;color:var(--ink2)}
+  .hero{display:flex;flex-wrap:wrap;gap:1rem;margin:0 0 1.5rem}
+  .stat{flex:1 1 12rem;background:var(--surface);border:1px solid var(--line);
+        border-radius:10px;padding:1rem 1.15rem}
+  .stat .lab{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;
+             color:var(--muted);font-weight:650;margin-bottom:.35rem}
+  .stat .val{font-size:1.75rem;font-weight:700;letter-spacing:-.02em;
+             font-variant-numeric:tabular-nums;line-height:1.1}
+  .stat .val.up{color:var(--good)}
+  .stat .sub2{font-size:.8rem;color:var(--muted);margin-top:.2rem;
+              font-family:var(--mono)}
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 0 1.25rem}
+  table{border-collapse:collapse;width:100%;min-width:36rem;background:var(--surface);
+        border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:.9rem}
+  th,td{padding:.55rem .75rem;text-align:left;border-bottom:1px solid var(--line)}
+  th{background:color-mix(in srgb,var(--accent) 8%,var(--surface));
+     font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--ink2);font-weight:650}
+  tbody tr:last-child td{border-bottom:none}
+  td.n,th.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+  td.pid{font-family:var(--mono);font-weight:600}
+  .ok{color:var(--good);font-weight:650}
+  .mid{color:var(--warn);font-weight:650}
+  .bad{color:var(--bad);font-weight:700}
+  tr.good td{background:color-mix(in srgb,var(--good) 7%,transparent)}
+  tr.fail td{background:color-mix(in srgb,var(--bad) 7%,transparent)}
+  .note{border-left:3px solid var(--accent);background:var(--surface);
+        padding:.85rem 1.1rem;border-radius:0 6px 6px 0;margin:0 0 1.25rem;font-size:.92rem}
+  .note.warn{border-left-color:var(--warn)}
+  .note.good{border-left-color:var(--good)}
+  .note strong{color:var(--ink)}
+  ul{margin:0 0 1.25rem;padding-left:1.3rem;color:var(--ink2)}
+  li{margin-bottom:.55rem}
+  code{font-family:var(--mono);font-size:.87em;background:color-mix(in srgb,var(--ink) 7%,transparent);
+       padding:.1em .38em;border-radius:3px}
+  .kicker{display:inline-block;font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;
+          color:var(--accent);font-weight:700;margin-bottom:.5rem}
+  footer{margin-top:3rem;padding-top:1.25rem;border-top:1px solid var(--line);
+         color:var(--muted);font-size:.82rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <span class="kicker">Corpus expansion · unseen patents</span>
+  <h1>Batch 3 — ten fresh patents</h1>
+  <p class="sub">2026-08-02 · seed <b>20260802</b> · pool of <b>3,298</b> unused BDB-covered
+     patents · reference <b>969</b> single-patent-attributed compounds (3,714 rows)</p>
+</header>
+
+<div class="hero">
+  <div class="stat"><div class="lab">Cold — parser alone</div>
+    <div class="val">20.85%</div><div class="sub2">202 / 969</div></div>
+  <div class="stat"><div class="lab">After the repair loop</div>
+    <div class="val up">53.25%</div><div class="sub2">516 / 969</div></div>
+  <div class="stat"><div class="lab">Usable records</div>
+    <div class="val">771 → 1,390</div><div class="sub2">+80%</div></div>
+  <div class="stat"><div class="lab">Crashes</div>
+    <div class="val">0</div><div class="sub2">11 gaps · 7 asked · 3 esc</div></div>
+</div>
+
+<p>The loop <strong>more than doubled</strong> coverage on patents it had never seen.</p>
+
+<h2>Per patent — and the split that matters</h2>
+<p>A single coverage number blends two failures that need opposite fixes. Separated:</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Patent</th><th class="n">Ref</th><th class="n">Ours</th>
+             <th class="n">Matched</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr class="good"><td class="pid">US10961236</td><td class="n">63</td><td class="n">63</td><td class="n">63</td><td class="ok">ok</td></tr>
+    <tr class="good"><td class="pid">US9328118</td><td class="n">123</td><td class="n">123</td><td class="n">123</td><td class="ok">ok</td></tr>
+    <tr class="good"><td class="pid">US11548900</td><td class="n">137</td><td class="n">137</td><td class="n">137</td><td class="ok">ok</td></tr>
+    <tr class="good"><td class="pid">US9670212</td><td class="n">189</td><td class="n">191</td><td class="n">189</td><td class="ok">ok</td></tr>
+    <tr><td class="pid">US12351648</td><td class="n">15</td><td class="n">147</td><td class="n">2</td><td class="mid">id mismatch</td></tr>
+    <tr><td class="pid">US11708332</td><td class="n">4</td><td class="n">59</td><td class="n">0</td><td class="mid">id mismatch</td></tr>
+    <tr class="fail"><td class="pid">US9265734</td><td class="n">196</td><td class="n">17</td><td class="n">2</td><td class="bad">under-extracted</td></tr>
+    <tr class="fail"><td class="pid">US10266548</td><td class="n">197</td><td class="n">0</td><td class="n">0</td><td class="bad">extracted nothing</td></tr>
+    <tr class="fail"><td class="pid">US10030020</td><td class="n">43</td><td class="n">0</td><td class="n">0</td><td class="bad">extracted nothing</td></tr>
+    <tr class="fail"><td class="pid">US9018217</td><td class="n">2</td><td class="n">0</td><td class="n">0</td><td class="bad">extracted nothing</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>Four of ten are perfect</strong> (512 of 969 references). The 53% headline is dominated
+by three patents that yielded nothing and one that read the wrong column.</p>
+
+<ul>
+  <li><strong>US9265734</strong> (196 refs) — we extract <code>HDAC5</code>, <code>HDAC6</code>,
+      <code>MS-275</code>, <code>Nuclear Extract</code> as compound ids while BindingDB expects
+      <code>R10</code>, <code>R100</code>, <code>R101</code>. The table is transposed: assay targets
+      across the top, R-numbered compounds down the side, and we read the header band as
+      identifiers. One layout, 196 compounds.</li>
+  <li><strong>US10266548</strong> (197 refs) — 242 records extracted, <em>all</em> missing
+      <code>unit</code>, so none is usable. Ids are hyphenated sub-indices
+      (<code>10-1</code>, <code>10-2</code>).</li>
+  <li><strong>US10030020</strong> (43 refs) — 447 measurement-shaped cells, 0 records.</li>
+  <li><strong>US12351648 / US11708332</strong> — we hold <em>more</em> compounds than the reference
+      does; they simply don't share numbering (<code>101e</code>/<code>145c</code> vs
+      <code>229I</code>/<code>246F</code>). Not extraction failures, and with 4 and 15 references
+      they carry little weight.</li>
+</ul>
+
+<div class="note good">
+  <strong>Both new invariants earned their keep on unseen data.</strong>
+  <code>ASSEMBLY DEFECT</code> and <code>PATENT YIELDED NOTHING</code>, added this morning, fired on
+  <strong>all three</strong> of batch 3's silent failures without anyone looking at the patents
+  first. Corpus-wide (93 patents) they raise 11 escalations across 8 patents — still a precise
+  signal, not noise.
+</div>
+
+<h2>Two defects the batch exposed</h2>
+
+<h3>The reference could never grow with the corpus</h3>
+<p><code>output/bindingdb/our_patents.tsv</code> was hardcoded in <code>value_check</code> and
+<code>reference_bench</code>, and <code>output/</code> is frozen v1, <strong>read-only</strong>. The
+ten new patents therefore had zero reference rows — and <code>reference_bench</code> <em>skips</em> a
+patent whose reference set is empty (<code>if not ref_all: continue</code>). A new batch scored not
+"0% coverage" but <strong>nothing at all</strong>, silently, while corpus totals looked unchanged.
+Now <code>config.BDB_REFERENCE_TSV</code>, preferring a writable copy under
+<code>OUTPUT_DIR</code> and falling back to the frozen path.</p>
+
+<h3><code>PATENT YIELDED NOTHING</code> could be silenced by cell formatting</h3>
+<div class="note warn">
+  The denominator required a cell to <em>be</em> a bare number. US10266548 answered
+  <code>shaped=0</code> while holding 1,049 numeric cells and extracting 242 records — its values
+  carry the unit inline (<code>12.3&nbsp;nM</code>). <strong>197 reference compounds went unreported
+  by the one check that is supposed to be unsuppressable</strong> — the same defect class the check
+  exists to catch, one level in.
+</div>
+<p>Now "short cell containing a digit". Breadth is safe because the condition is conjunctive: it only
+matters when the patent produced zero usable measurements. Over 83 patents, widening it adds exactly
+one — the one it was missing.</p>
+
+<h2>Caveats</h2>
+<ul>
+  <li><strong>Coverage here is compound-id overlap, not value correctness.</strong> The
+      value-agreement check (<code>value_check</code>) has not been run on batch 3.</li>
+  <li><strong><code>--patch</code> (the capability tier) was not run.</strong> US9265734 and
+      US10266548 both look like capability gaps rather than layout gaps, so the rule tier was never
+      going to fix them.</li>
+  <li><strong>BindingDB is not a gold standard.</strong> Only single-patent-attributed rows are
+      counted, but it still cites example numbers patents do not contain, and the two id-mismatch
+      patents may be that rather than our error.</li>
+</ul>
+
+<footer>
+  Corpus now 93 patents · 192 tests · 0 orphans ·
+  commits <code>f894177</code> · <code>3ef45b0</code> · <code>3e4d121</code>
+</footer>
+
+</div>
+</body>
+</html>
