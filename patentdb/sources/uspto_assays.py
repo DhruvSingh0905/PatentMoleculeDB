@@ -1345,6 +1345,12 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     ("4.", "5.") as compound identifiers. These are accepted as CIDs when the
     CID column was classified as such and the value matches a relaxed pattern
     (digits optionally followed by a period, or the standard _CID_PAT).
+
+    CID fill-down: when a compound has multiple sub-rows (e.g. enantiomers,
+    racemates, salt forms) the ID is printed only on the first sub-row and
+    left blank on the rest. The last-seen CID is carried forward so that
+    sub-rows with an empty CID cell still produce records. The carry resets
+    at each new table to avoid leaking across unrelated tables.
     """
     out: list[AssayRecord] = []
     last_header: dict[int, list[str]] = {}
@@ -1384,20 +1390,41 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
         if cid_col is None or not assay_cols:
             continue
 
+        # CID fill-down: carry the last-seen CID forward within one table so
+        # that sub-rows (enantiomers, racemates, salt forms) whose CID cell is
+        # blank still produce records.  Reset per table.
+        prev_cid: str | None = None
+
         for row in data_rows:
             if _is_spacer(row) or len(row) <= cid_col.index:
                 continue
             raw_cid = row[cid_col.index].text.strip()
-            if not raw_cid:
-                continue
-            # Accept standard CID patterns AND bare integers with optional
-            # trailing period ("4.", "12") that appear in tables where compound
-            # numbers are listed without a prefix letter.
-            if not (_CID_PAT.match(raw_cid) or _BARE_INT_CID.match(raw_cid)):
-                continue
-            cid = normalize_cid(raw_cid)
-            if not cid:
-                continue
+            if raw_cid:
+                # Accept standard CID patterns AND bare integers with optional
+                # trailing period ("4.", "12") that appear in tables where compound
+                # numbers are listed without a prefix letter.
+                if not (_CID_PAT.match(raw_cid) or _BARE_INT_CID.match(raw_cid)):
+                    continue
+                cid = normalize_cid(raw_cid)
+                if not cid:
+                    continue
+                prev_cid = cid
+            else:
+                # Empty CID cell — carry forward the last-seen CID.
+                # Only do this when the row has at least one parseable assay
+                # value, to avoid adopting spacer/annotation rows.
+                if prev_cid is None:
+                    continue
+                has_value = False
+                for c in assay_cols:
+                    if len(row) > c.index and row[c.index].text.strip():
+                        pv = parse_value(row[c.index].text)
+                        if pv:
+                            has_value = True
+                            break
+                if not has_value:
+                    continue
+                cid = prev_cid
 
             for c in assay_cols:
                 if len(row) <= c.index:

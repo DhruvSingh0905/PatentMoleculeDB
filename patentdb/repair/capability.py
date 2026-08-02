@@ -422,7 +422,20 @@ def _gap_from_a_silent_patent(patent_id: str, report) -> dict | None:
     best_id = max(per_block, key=lambda k: per_block[k])
     best_n = per_block[best_id]
     best = tables.get(best_id)
-    if best is None or best_n < 20:
+    # NO patent-level floor here. There was one — the same constant the caller
+    # uses — and it is the wrong UNIT at this point, not a wrong number.
+    #
+    # `loop` sums shaped cells across the whole patent to decide the document is
+    # worth reporting. This picks the single biggest BLOCK. US9695181 holds 18
+    # cells as 6 + 6 + 6, so it cleared the patent-level floor of 10, fired the
+    # invariant, reached `autoheal` — and then failed a per-block comparison
+    # against that same 10 and produced no gap at all. A patent that raises and
+    # cannot be collected is worse than one that never raised.
+    #
+    # By the time we are here the caller has already decided this document is
+    # worth looking at. The only question left is which block to show, and the
+    # answer is the biggest one, whatever its absolute size.
+    if best is None or best_n < 1:
         return None
     hdrs = merge_header(best, _header_rows_of(best)[0])
     return {

@@ -392,6 +392,14 @@ def _is_namelike(cells: list["Cell"], *, declared: bool = False) -> bool:
 
     `declared` means the row came out of a `<thead>`: the patent has already
     said it is a header, so the guesswork below is not ours to redo.
+
+    Long numeric lists: a cell that contains many space-separated tokens which
+    are all bare integers (e.g. "1 2 3 4 5 6 7 8 9 10 11 12 ...") is a
+    malformed header where example numbers were concatenated into one cell.
+    Such a row is not a usable column-name row — it would be treated as a
+    single header spanning one column, making the header "outgrow" the body.
+    Rows containing such cells are rejected unless they were declared in
+    <thead>.
     """
     texts = [c.text.strip() for c in cells if c.text.strip()]
     if len(texts) < 2:
@@ -415,6 +423,18 @@ def _is_namelike(cells: list["Cell"], *, declared: bool = False) -> bool:
             for op, cl in (("(", ")"), ("[", "]")):
                 if t.count(cl) > t.count(op):
                     return False
+    # Reject cells that are long runs of space-separated bare integers — these
+    # are malformed headers where example numbers were concatenated into one
+    # cell (e.g. "Ex. No. 1 2 3 4 5 ... 35"). Such a row is not a usable
+    # column-name row; treating it as header makes the header outgrow the body
+    # and prevents column classification from working.
+    if not declared:
+        for t in texts:
+            tokens = t.split()
+            # Only trigger on genuinely long runs — short sequences like
+            # "1 2" could be legitimate header content.
+            if len(tokens) >= 6 and all(re.fullmatch(r'\d+', tok) for tok in tokens):
+                return False
     # All-numeric rows are data, not headers.
     return not all(re.fullmatch(r"[\d.,;:<>=~\s-]+", t) for t in texts)
 

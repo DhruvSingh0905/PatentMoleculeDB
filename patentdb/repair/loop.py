@@ -692,7 +692,7 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
         # every threshold from 1 to 18 fires on the identical set. The old 20
         # was a guess of mine, and its entire observable effect was to exclude
         # one genuinely broken patent from the tier built to fix it.
-        if shaped >= 10:
+        if shaped >= config.SILENT_PATENT_MIN_CELLS:
             report.escalated += 1
             report.escalations.append({
                 "fingerprint": None, "patent": patent_id, "table": None,

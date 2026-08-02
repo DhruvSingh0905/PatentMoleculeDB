@@ -178,6 +178,16 @@ AUTOHEAL_MAX_PER_RUN = int(os.environ.get("AUTOHEAL_MAX_PER_RUN", "15"))
 # every unsolved layout.
 ESCALATION_JOURNAL = OUTPUT_DIR / "escalation_journal.jsonl"
 
+# How many measurement-shaped cells a patent must hold before "it yielded
+# nothing" is worth reporting. ONE constant, because it was two: `loop.py` and
+# `capability._gap_from_a_silent_patent` each carried their own 20, and moving
+# only the first left US9695181 (18 cells) firing the invariant and then
+# collecting no gap — it raised and could not be acted on.
+#
+# 10 is measured, not chosen: across 103 patents exactly one silent patent sits
+# below 20, and every threshold from 1 to 18 fires on the identical set.
+SILENT_PATENT_MIN_CELLS = int(os.environ.get("SILENT_PATENT_MIN_CELLS", "10"))
+
 # Cost — global budget across all patents
 COST_THRESHOLDS = [50, 100, 150, 200]
 COST_CEILING = 200
