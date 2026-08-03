@@ -96,6 +96,30 @@ PATCHABLE: dict[str, tuple[Path, str]] = {
     # could not propose because the responsible function was not on the menu.
     # It kept patching `extract_from_tables` instead, which was the only thing
     # nearby that it was allowed to touch.
+    # ── what the four remaining zero-yield patents actually stop at ──
+    # Each was blocked by something the model was not permitted to touch, so it
+    # patched the nearest allowed function instead and scored +0 four times.
+    #
+    #   US9695181    `_CID_PAT` rejects `IIa`/`IIb`/`IIc` — Roman-numeral ids
+    #   US9018217    `merge_header` returns `hyperactivity` for a header the
+    #                document splits as `% reversal of` / `PCP induced` /
+    #                `hyperactivity`, so no column classifies as an assay
+    #   US11059825   `_id_style` finds no id column; the ids are inside the
+    #                NMR prose cell (`Compound 1.001: 1H NMR ...`)
+    "_CID_PAT": (_SRC / "uspto_assays.py",
+                 "the regex deciding whether a cell IS a compound identifier — "
+                 "a module-level constant, so it was previously unreachable"),
+    "_CID_CORE": (_SRC / "uspto_assays.py",
+                  "the identifier shape `_CID_PAT` is built from"),
+    "normalize_cid": (_SRC / "uspto_assays.py",
+                      "turns a raw id cell into the canonical compound id"),
+    "merge_header": (_SRC / "uspto_assays.py",
+                     "collapses a multi-row header into one label per column; "
+                     "losing a row here costs the assay NAME and the column "
+                     "then classifies as unknown"),
+    "extract_inverted": (_SRC / "uspto_assays.py",
+                         "reads a TRANSPOSED table — one row per potency grade "
+                         "with a list of compound ids beside it"),
     "_unit_from": (_SRC / "uspto_assays.py",
                    "reads a concentration unit out of a header, legend or "
                    "caption; returns None when it recognises nothing"),
@@ -122,7 +146,7 @@ _MAX_OUTPUT = int(__import__("os").environ.get("CAPABILITY_MAX_OUTPUT", "64000")
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v10-unit-from-patchable"
+PATCH_EPOCH = "v11-constants-and-id-functions"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
@@ -147,8 +171,28 @@ MODEL_LADDER = (config.MODEL_SONNET, config.MODEL_OPUS)
 
 
 def _function_source(module: Path, name: str) -> str | None:
+    """The definition of `name`: a function, or a module-level CONSTANT.
+
+    Constants matter, and leaving them out was a structural blind spot rather
+    than an oversight. US9695181 yields nothing because `_CID_PAT` rejects
+    `IIa`/`IIb`/`IIc` — Roman-numeral compound codes — and `_CID_PAT` is a
+    module-level `re.compile`, not a `def`. This matched `^def name(` only, so
+    the one thing standing between that patent and its data could never be
+    offered, proposed or spliced. The model instead patched whatever function
+    was nearest and permitted, four times over.
+
+    Assignments are matched to the end of their statement, including the
+    parenthesised continuations a long regex is usually written across.
+    """
     src = module.read_text()
     m = re.search(rf"^def {re.escape(name)}\(.*?(?=\n(?:def |@|# ──|\Z))",
+                  src, re.S | re.M)
+    if m:
+        return m.group(0).rstrip()
+    # A module-level assignment: `_CID_PAT = re.compile(...)`, possibly spanning
+    # several lines. Ends at the first line that starts a new top-level
+    # statement, which is the same boundary the function branch uses.
+    m = re.search(rf"^{re.escape(name)}\s*=\s*.*?(?=\n(?:[A-Za-z_]\w*\s*=|def |@|class |# ──|\Z))",
                   src, re.S | re.M)
     return m.group(0).rstrip() if m else None
 
