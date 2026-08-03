@@ -101,22 +101,21 @@
  ],
  "candidates": [
   {
-   "label": "US9018217:_opens_with_id,assemble_block,extract_from_tables",
-   "target": "US9018217",
-   "diagnosis": "The diagnostic is identical across all three attempts: assembly still produces exactly 1 data row containing ['Compound', 'IC50(nM)'] \u2014 the header rows are not being separated from the body. The assembled table has header=[] and body=[['Compound','IC50(nM)']], so the word 'Compound' is the only CID candidate and fails _CID_PAT. The root cause is in `_header_rows_of`: the body rows ['', 'IC50'] and",
+   "label": "US9695181:_MEAN_SD,_VALUE_PAT,_CID_CORE",
+   "target": "US9695181",
+   "diagnosis": "The data rows are now correctly in the body (7 rows, 4 CID matches). The remaining failure is `parse_value` returning None for cells like \"3.0 \u00b1 1.0*\" and \"572**\". `_MEAN_SD` fails because the trailing `*` or `**` is not consumed (the pattern ends at `$` before the asterisks). `_VALUE_PAT` fails on \"572**\" for the same reason \u2014 the trailing `**` is outside the pattern. Both regexes need a trailing",
    "modules": [
-    "uspto_assays.py",
-    "uspto_xml.py"
+    "uspto_assays.py"
    ]
   }
  ],
  "outcomes": [
   {
-   "label": "US9018217:_opens_with_id,assemble_block,extract_from_tables",
+   "label": "US9695181:_MEAN_SD,_VALUE_PAT,_CID_CORE",
    "accepted": true,
-   "why": "target +122, corpus +122",
-   "target_gain": 122,
-   "corpus_gain": 122,
+   "why": "target +2, corpus +2",
+   "target_gain": 2,
+   "corpus_gain": 2,
    "worst_patent": "",
    "worst_loss": 0.0
   }
