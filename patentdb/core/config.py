@@ -170,7 +170,7 @@ REPAIR_AUTOHEAL = os.environ.get("REPAIR_AUTOHEAL", "1") == "1"
 # so an unbounded auto-fire would cost one full corpus scan per failing patent.
 # CLAUDE.md measures three capability gaps in the whole corpus; two per run is a
 # ceiling on damage, not a target.
-AUTOHEAL_MAX_PER_RUN = int(os.environ.get("AUTOHEAL_MAX_PER_RUN", "15"))
+AUTOHEAL_MAX_PER_RUN = int(os.environ.get("AUTOHEAL_MAX_PER_RUN", "40"))
 
 # Every escalation the loop raises, appended. The rule tier already journals what
 # it ADOPTED; nothing recorded what it could not fix, which is the half a human

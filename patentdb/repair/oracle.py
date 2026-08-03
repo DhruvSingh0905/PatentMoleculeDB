@@ -50,12 +50,19 @@ logger = logging.getLogger(__name__)
 # Bump when the prompt or the schema changes — same discipline as SYNTH_EPOCH
 # and PATCH_EPOCH. A stale answer to a question we no longer ask reads as the
 # model being wrong.
-ORACLE_EPOCH = "v3-bounded-rows"
+ORACLE_EPOCH = "v4-multi-block"
 
 # Enough of the block to read, not so much that a 1,700-row table is billed in
 # full. The head is where the header and the first data rows live, which is all
 # a reader needs to establish the pattern.
-_RAW_BUDGET = 14_000
+_RAW_BUDGET = 24_000
+
+# How many DISTINCT block shapes to read per patent. One was not a sample, it
+# was a guess: US10266548 has 49 blocks and we read the biggest, seeing 6.8% of
+# the patent's table XML. Blocks are grouped by layout fingerprint FIRST, so
+# this is a budget over distinct SHAPES — a patent whose 49 blocks share three
+# layouts costs three reads, not 49.
+_MAX_BLOCKS = int(__import__("os").environ.get("ORACLE_MAX_BLOCKS", "4"))
 
 # An oracle is a TARGET, not an extraction: thirty rows prove the data is there
 # and give a patch something to reproduce, and the thirty-first proves nothing
@@ -155,12 +162,86 @@ far more than volume."""
 
 
 def _raw_block(xml: str, table_id: str) -> str:
+    """The block's raw CALS, head AND tail when it must be cut.
+
+    Head-only truncation hid every defect that appears late in a block — a
+    footnote legend, a continuation tgroup, a unit stated once at the bottom.
+    `gap._sample_of` has carried head+tail for months; this did not.
+    """
     m = re.search(r"<tables\b[^>]*id=\"" + re.escape(table_id) + r"\".*?</tables>",
                   xml, re.S)
     if not m:
         return ""
     raw = m.group(0)
-    return raw if len(raw) <= _RAW_BUDGET else raw[:_RAW_BUDGET] + "\n<!-- truncated -->"
+    if len(raw) <= _RAW_BUDGET:
+        return raw
+    head = int(_RAW_BUDGET * 0.65)
+    tail = _RAW_BUDGET - head
+    return (raw[:head] + f"\n<!-- {len(raw) - _RAW_BUDGET} chars elided -->\n"
+            + raw[-tail:])
+
+
+def sample_patent(patent_id: str, xml: str, *, max_blocks: int | None = None,
+                  model: str | None = None) -> list[dict]:
+    """Read a REPRESENTATIVE of each distinct block shape in this patent.
+
+    The unit is the layout fingerprint, not the block, for the same reason the
+    rule tier keys on it: a patent that publishes 49 blocks of three shapes has
+    three problems, not 49, and reading one of each is a sample where reading
+    the biggest is a guess.
+
+    Returns one entry per shape read, biggest-first, each carrying its own rows
+    and the model's note on what is structurally unusual. The caller assembles
+    those into the pattern it shows the patch tier.
+    """
+    from .gap import layout_fingerprint
+    from ..sources.uspto_assays import _header_rows_of, merge_header
+    from ..sources.uspto_xml import assemble_blocks, parse_tables
+
+    max_blocks = max_blocks or _MAX_BLOCKS
+    try:
+        blocks = assemble_blocks(parse_tables(xml))
+    except Exception:
+        return []
+
+    # One representative per shape: the block with the most populated cells,
+    # because a bigger example of the same layout is a better sample of it.
+    by_fp: dict[str, tuple[int, object]] = {}
+    for t in blocks:
+        try:
+            hr, _ = _header_rows_of(t)
+            fp = layout_fingerprint(t, merge_header(t, hr))
+        except Exception:
+            continue
+        weight = sum(1 for r in t.body_rows for c in r if c.text.strip())
+        if fp not in by_fp or weight > by_fp[fp][0]:
+            by_fp[fp] = (weight, t)
+
+    ranked = sorted(by_fp.items(), key=lambda kv: -kv[1][0])[:max_blocks]
+    out: list[dict] = []
+    for fp, (weight, t) in ranked:
+        if weight < 3:
+            continue
+        got = read_block(patent_id, t.table_id, xml, fp, model=model)
+        if not got:
+            continue
+        got["table_id"] = t.table_id
+        got["fingerprint"] = fp
+        got["shares_shape_with"] = [b.table_id for b in blocks
+                                    if b.table_id != t.table_id
+                                    and _same_shape(b, fp)]
+        out.append(got)
+    return out
+
+
+def _same_shape(table, fp: str) -> bool:
+    from .gap import layout_fingerprint
+    from ..sources.uspto_assays import _header_rows_of, merge_header
+    try:
+        hr, _ = _header_rows_of(table)
+        return layout_fingerprint(table, merge_header(table, hr)) == fp
+    except Exception:
+        return False
 
 
 def read_block(patent_id: str, table_id: str, xml: str, fingerprint: str,

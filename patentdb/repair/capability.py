@@ -253,9 +253,31 @@ def _bad_values_now(patent_id: str) -> int:
         return 0
 
 
-def _sample_of_table(table) -> str:
+def _sample_of_table(table, xml: str = "") -> str:
+    """What we make of the block, beside what the block actually says.
+
+    Every field here except the last was OUR OUTPUT, and on the patents that
+    matter our output is the defect. Measured across the six patents still at
+    zero, this showed the model:
+
+        US9018217     2 rows of 254   (assembly had destroyed the rest)
+        US10189840    5 rows of 94    (89 were collapsed into the header STRING)
+        US9695181     3 rows of 9     (all three were footnotes)
+
+    — between 681 and 1,078 characters, against an 8,129-character block. The
+    models still diagnosed it correctly, from almost nothing, and then wrote
+    patches against the damage. That is this repo's own rule — never diagnose
+    from the parsed view — enforced for humans and broken for the model.
+
+    So the parsed view is still shown, because "what we currently believe" is
+    genuinely useful, but it is labelled as ours and the SOURCE follows it.
+    """
     from ..sources.uspto_assays import build_columns, merge_header
-    lines = [f"HEADER: {merge_header(table)}"]
+    from ..sources.uspto_xml import parse_tables
+
+    lines = ["=== WHAT OUR PARSER CURRENTLY MAKES OF THIS BLOCK ===",
+             "(this is our OUTPUT, not the document — where it looks wrong, it is)"]
+    lines.append(f"HEADER (our merge): {merge_header(table)}")
     lines.append("COLUMNS AS WE CLASSIFY THEM: "
                  + ", ".join(f"[{c.index}] {c.kind}" for c in build_columns(table)))
     if table.caption:
@@ -263,8 +285,32 @@ def _sample_of_table(table) -> str:
     prev = (getattr(table, "preceding", "") or "").strip()
     if prev:
         lines.append(f"TEXT BEFORE TABLE: ...{prev[-320:]}")
-    for r in table.body_rows[:6]:
-        lines.append("ROW: " + repr([c.text.strip()[:40] for c in r]))
+
+    body = [r for r in table.body_rows if any(c.text.strip() for c in r)]
+    # UNTRUNCATED. The 40-character cap cut US10227341's inverted table mid
+    # compound-list — `'2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, '` — which is
+    # precisely the payload that names the layout.
+    for r in body[:12]:
+        lines.append("ROW: " + repr([c.text.strip()[:200] for c in r]))
+    lines.append(f"(assembled: {len(table.header_rows)} header row(s), "
+                 f"{len(body)} body row(s))")
+
+    if xml:
+        raw = [t for t in parse_tables(xml) if t.table_id == table.table_id]
+        raw_rows = sum(len([r for r in t.body_rows if any(c.text.strip() for c in r)])
+                       for t in raw)
+        if raw_rows and raw_rows != len(body):
+            lines.append(
+                f"\n!! THE READER DISAGREES WITH ITS OWN SOURCE: the document "
+                f"declares {raw_rows} populated body row(s) across {len(raw)} "
+                f"tgroup(s), and assembly kept {len(body)}. The rows are not "
+                f"missing from the patent; they are missing from what you are "
+                f"shown above. Assume the reader is wrong before the layout is.")
+        from .oracle import _raw_block
+        block = _raw_block(xml, table.table_id)
+        if block:
+            lines.append("\n=== THE BLOCK AS THE PATENT PUBLISHES IT (OASIS/CALS) ===")
+            lines.append(block)
     return "\n".join(lines)
 
 
@@ -319,7 +365,7 @@ def propose_capability_patch(gap_info: dict, table, *,
     prompt = (
         f"TABLE {gap_info['table']} of {gap_info['patent']} holds "
         f"{gap_info['rows_at_stake']} rows we cannot turn into records.\n\n"
-        f"{_sample_of_table(table)}\n\n"
+        f"{_sample_of_table(table, gap_info.get('xml') or '')}\n\n"
         f"A `{gap_info['rule_kind']}` rule was already tried on this layout:\n"
         f"  {json.dumps(gap_info.get('rule_payload'))[:400]}\n"
         f"It produced NOTHING. {gap_info.get('why', '')}\n\n"
@@ -600,6 +646,7 @@ def repair_capabilities(*, apply: bool | None = None, limit: int | None = None,
         table = {t.table_id: t for t in assemble_blocks(parse_tables(xml))}.get(g["table"])
         if table is None:
             continue
+        g["xml"] = xml                           # so the prompt can show the SOURCE
         ladder = (model,) if model else MODEL_LADDER
         for attempt, use_model in enumerate(ladder, 1):
             outcome = _try_one(g, table, use_model, base, do_apply,
