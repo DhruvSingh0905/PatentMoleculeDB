@@ -70,9 +70,20 @@ def frozen_ids() -> set[str]:
     return {p.stem.upper() for p in SNAPSHOT_DIR.glob("*.json")}
 
 
-def freeze(patent_id: str, records) -> dict:
-    """Record this patent's result as final. Returns what was written."""
+def freeze(patent_id: str, records) -> dict | None:
+    """Record this patent's result as final. Returns what was written, or None.
+
+    A patent that produced NOTHING is not frozen. Freezing is for finished
+    work, and zero is not an answer — it is the open case the whole repair loop
+    exists for. Pinning it would mean a patch that finally reads the document
+    could never be seen downstream, because the snapshot would go on reporting
+    the failure it was taken during.
+    """
     recs = list(records)
+    if not any(getattr(r, "is_usable", False) for r in recs):
+        logger.info("snapshot: %s produced nothing — not freezing a failure",
+                    patent_id)
+        return None
     payload = {
         "patent": patent_id.upper(),
         "journal_head": _journal_head(),
