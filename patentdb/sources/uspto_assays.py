@@ -1343,6 +1343,92 @@ def _assay_name_from(text: str) -> str | None:
     return re.sub(r"\s+", " ", m.group(1)).strip() if m else None
 
 
+
+# How many candidate headers to remember per column width. A block usually
+# inherits from the one just above it; four covers a header that is separated
+# from its data by a few characterisation tables without holding the whole
+# document.
+_INHERIT_DEPTH = 4
+
+
+def _header_fit(table: "Table", headers: list[str], data_rows) -> int:
+    """How well would THIS header serve THIS block — scored, not assumed.
+
+    Returns the number of cells that would become readable measurements under
+    the given header. Zero when the header yields no compound-id column or no
+    assay column, because such a header cannot produce a record here whatever
+    else is true of it.
+
+    WHY THIS EXISTS, and what it does NOT fix.
+
+    Header inheritance was `last_header[n_cols] = headers`: document-global,
+    keyed on COLUMN COUNT ALONE, last-writer-wins, with no check that the header
+    had anything to do with the block receiving it. An LCMS characterisation
+    header and an assay header sharing a width were interchangeable. CLAUDE.md
+    records the resulting signature — US10071079's 982-row assay table "picked
+    up an LCMS characterisation header, classified as [cid, structure, ms, rt,
+    rt], found no assay column". That was treated as a detector bug and the
+    coupling was left in place. Scoring the candidates removes it.
+
+    It is a ROBUSTNESS guard, not a validated fix, and the distinction is worth
+    recording because I first justified it with a root cause that turned out to
+    be false. US10660877 loses all 860 compounds under one capability patch, and
+    the reason is NOT inheritance: TABLE-US-00036 declares no header at all, so
+    its `['', 'Ex. No.', 'TLR7 IC50 (nM)', ...]` comes from `_header_rows_of`
+    promoting its own leading body rows. Patching `_is_namelike` changed that
+    promotion and the block destroyed its own header — measured, no width-5
+    block produces an IC50 header afterwards, so there was nothing left for any
+    chooser to choose. The blast radius of `_is_namelike` is the block itself.
+
+    Measured on this corpus the change moves nothing (32,237 compounds before
+    and after), which is what a guard against a latent coupling should do.
+    """
+    if not any(headers):
+        return 0
+    try:
+        cols = build_columns(table, inherited=headers, data_rows=data_rows)
+    except Exception:                            # a bad candidate scores zero
+        return 0
+    kinds = [c.kind for c in cols]
+    if CID not in kinds or ASSAY not in kinds:
+        return 0
+    cid_i = kinds.index(CID)
+    assay_i = [c.index for c in cols if c.kind == ASSAY]
+    hits = 0
+    for row in list(data_rows)[:20]:
+        if len(row) <= cid_i or not _CID_PAT.match(row[cid_i].text.strip()):
+            continue
+        for i in assay_i:
+            if len(row) > i and parse_value(row[i].text):
+                hits += 1
+    return hits
+
+
+def _choose_inherited(candidates: list[list[str]], own_block: list[str] | None,
+                      table: "Table", data_rows) -> list[str] | None:
+    """The header a block should inherit: whichever actually reads its cells.
+
+    Same-block (`by_table_id`) candidates are tried alongside same-width ones
+    rather than after them, and the winner is the one that turns the most cells
+    into measurements. Ties keep the most recent, which is the old behaviour —
+    so a block with only one plausible header behaves exactly as before.
+    """
+    pool = [h for h in ([own_block] if own_block else []) + list(reversed(candidates)) if h]
+    if not pool:
+        return None
+    if len(pool) == 1:
+        return pool[0]
+    best, best_score = None, -1
+    for h in pool:
+        sc = _header_fit(table, h, data_rows)
+        if sc > best_score:
+            best, best_score = h, sc
+    # Every candidate scored zero: none of them can produce a record here, so
+    # this is not a choice between headers. Keep the most recent same-width one
+    # and let the gap detector report the block, exactly as before.
+    return best if best_score > 0 else pool[-1 if own_block is None else 0]
+
+
 def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     """Turn a patent's CALS tables into assay records.
 
@@ -1373,7 +1459,7 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     name only appears inside the characterisation data cell.
     """
     out: list[AssayRecord] = []
-    last_header: dict[int, list[str]] = {}
+    last_header: dict[int, list[list[str]]] = {}
     by_table_id: dict[str, list[str]] = {}
     unit_by_table_id: dict[str, str] = {}
 
@@ -1402,7 +1488,11 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
         if _u and _u != "%":
             unit_by_table_id[t.table_id] = _u
         if any(headers):
-            last_header[t.n_cols] = headers
+            # A LIST, not a slot. The single slot meant the most recent header
+            # of a given width silently claimed every later block of that
+            # width; see `_header_fit`.
+            last_header.setdefault(t.n_cols, []).append(headers)
+            del last_header[t.n_cols][:-_INHERIT_DEPTH]
             # Scope cross-width inheritance to the SAME `<tables>` element.
             # A patent splits one logical table into a header tgroup and a data
             # tgroup of different widths under a single id (US8952177: 3-column
@@ -1411,9 +1501,12 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
             # it stamped `CBP IC50` onto US11292791's `+`/`++` bins, which is
             # mislabelled data, strictly worse than no label at all.
             by_table_id[t.table_id] = headers
-        cols = build_columns(t, inherited=last_header.get(t.n_cols) or by_table_id.get(t.table_id),
-                             inherited_unit=unit_by_table_id.get(t.table_id),
-                             data_rows=data_rows)
+        cols = build_columns(
+            t,
+            inherited=_choose_inherited(last_header.get(t.n_cols) or [],
+                                        by_table_id.get(t.table_id), t, data_rows),
+            inherited_unit=unit_by_table_id.get(t.table_id),
+            data_rows=data_rows)
 
         cid_col = next((c for c in cols if c.kind == CID), None)
         assay_cols = [c for c in cols if c.kind == ASSAY]
@@ -1557,7 +1650,7 @@ def to_assay_tables(records: list[AssayRecord]) -> dict[str, list[dict]]:
 def column_report(tables: list[Table]) -> list[dict]:
     """What each column was classified as — for auditing a patent's parse."""
     rows: list[dict] = []
-    last_header: dict[int, list[str]] = {}
+    last_header: dict[int, list[list[str]]] = {}
     by_table_id: dict[str, list[str]] = {}
     unit_by_table_id: dict[str, str] = {}
     for t in tables:
@@ -1569,7 +1662,8 @@ def column_report(tables: list[Table]) -> list[dict]:
         if _u and _u != "%":
             unit_by_table_id[t.table_id] = _u
         if any(headers):
-            last_header[t.n_cols] = headers
+            last_header.setdefault(t.n_cols, []).append(headers)
+            del last_header[t.n_cols][:-_INHERIT_DEPTH]
             # Scope cross-width inheritance to the SAME `<tables>` element.
             # A patent splits one logical table into a header tgroup and a data
             # tgroup of different widths under a single id (US8952177: 3-column
@@ -1578,9 +1672,12 @@ def column_report(tables: list[Table]) -> list[dict]:
             # it stamped `CBP IC50` onto US11292791's `+`/`++` bins, which is
             # mislabelled data, strictly worse than no label at all.
             by_table_id[t.table_id] = headers
-        for c in build_columns(t, inherited=last_header.get(t.n_cols) or by_table_id.get(t.table_id),
-                             inherited_unit=unit_by_table_id.get(t.table_id),
-                               data_rows=data_rows):
+        for c in build_columns(
+                t,
+                inherited=_choose_inherited(last_header.get(t.n_cols) or [],
+                                            by_table_id.get(t.table_id), t, data_rows),
+                inherited_unit=unit_by_table_id.get(t.table_id),
+                data_rows=data_rows):
             rows.append({"table": t.table_id, "col": c.index,
                          "header": c.header[:60], "kind": c.kind, "unit": c.unit})
     return rows
