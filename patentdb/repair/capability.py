@@ -90,6 +90,15 @@ PATCHABLE: dict[str, tuple[Path, str]] = {
                        "decides whether a row begins with a compound identifier "
                        "— the test that separates a data fragment from an "
                        "annotation fragment"),
+    # The function that reads a unit off a header. Absent until US10266548
+    # turned out to be 242 records and 197 reference compounds behind
+    # `_unit_from` not knowing `[mol/l]` — a one-line vocabulary gap the model
+    # could not propose because the responsible function was not on the menu.
+    # It kept patching `extract_from_tables` instead, which was the only thing
+    # nearby that it was allowed to touch.
+    "_unit_from": (_SRC / "uspto_assays.py",
+                   "reads a concentration unit out of a header, legend or "
+                   "caption; returns None when it recognises nothing"),
     "_is_namelike": (_SRC / "uspto_xml.py",
                      "decides whether a row is column NAMES rather than data; a "
                      "false positive here files data rows as header"),
@@ -113,7 +122,7 @@ _MAX_OUTPUT = int(__import__("os").environ.get("CAPABILITY_MAX_OUTPUT", "64000")
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v9-show-header-rows"
+PATCH_EPOCH = "v10-unit-from-patchable"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
