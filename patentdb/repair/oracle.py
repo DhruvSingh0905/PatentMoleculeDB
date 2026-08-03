@@ -50,24 +50,34 @@ logger = logging.getLogger(__name__)
 # Bump when the prompt or the schema changes — same discipline as SYNTH_EPOCH
 # and PATCH_EPOCH. A stale answer to a question we no longer ask reads as the
 # model being wrong.
-ORACLE_EPOCH = "v4-multi-block"
+ORACLE_EPOCH = "v5-breadth-first"
 
 # Enough of the block to read, not so much that a 1,700-row table is billed in
 # full. The head is where the header and the first data rows live, which is all
 # a reader needs to establish the pattern.
-_RAW_BUDGET = 24_000
+# PER BLOCK, and small on purpose. The budget belongs to BREADTH, not depth:
+# three rows establish how a block encodes ids and values, and the ninety-fourth
+# row of the same shape says nothing the third did not. Spending the same tokens
+# on ten blocks instead of one buys ten structures.
+#
+# Measured on the six still-zero patents: 67 blocks, 60 distinct shapes, and
+# US10266548 alone publishes 49 blocks with 49 DIFFERENT fingerprints — so
+# grouping by shape saves nothing there and reading one block saw 6.8% of it.
+# At ~4k chars and 3 rows a block costs ~$0.004, so ten of them cost less than
+# one block did at 24k.
+_RAW_BUDGET = 5_000
 
 # How many DISTINCT block shapes to read per patent. One was not a sample, it
 # was a guess: US10266548 has 49 blocks and we read the biggest, seeing 6.8% of
 # the patent's table XML. Blocks are grouped by layout fingerprint FIRST, so
 # this is a budget over distinct SHAPES — a patent whose 49 blocks share three
 # layouts costs three reads, not 49.
-_MAX_BLOCKS = int(__import__("os").environ.get("ORACLE_MAX_BLOCKS", "4"))
+_MAX_BLOCKS = int(__import__("os").environ.get("ORACLE_MAX_BLOCKS", "10"))
 
 # An oracle is a TARGET, not an extraction: thirty rows prove the data is there
 # and give a patch something to reproduce, and the thirty-first proves nothing
 # further. Bounding the ASK is what keeps the answer inside `_MAX_TOKENS`.
-_MAX_ROWS = 30
+_MAX_ROWS = 4
 # 4,096 was not enough. The first real call ran out mid-`rows` on a 94-row
 # table, the tool JSON truncated after its first key, and the caller read that
 # as "this block contains nothing" — a truncated answer and an empty table are
@@ -90,13 +100,13 @@ _TOOL = {
             },
             "rows": {
                 "type": "array",
-                "description": (f"One entry per measurement actually printed in "
-                                f"the block shown, up to {_MAX_ROWS} — this is a "
-                                f"TARGET for a parser, not an extraction, so a "
-                                f"representative sample of the first rows is "
-                                f"exactly as useful as all of them. Do NOT infer, "
-                                f"interpolate or continue a pattern beyond what "
-                                f"is written."),
+                "description": (f"The FIRST {_MAX_ROWS} measurements printed in "
+                                f"the block, no more. This is a TARGET for a "
+                                f"parser and a sample of the block's SHAPE — "
+                                f"three rows show how ids and values are encoded "
+                                f"and the fiftieth shows nothing further. Do NOT "
+                                f"infer, interpolate or continue a pattern beyond "
+                                f"what is written."),
                 "items": {
                     "type": "object",
                     "properties": {
@@ -158,7 +168,11 @@ be wrong about.
 
 Your rows are a TEST FIXTURE. They will be used to check whether our parser is
 broken, and they will never be stored as data. Accuracy on a few rows is worth
-far more than volume."""
+far more than volume.
+
+REPORT THE SHAPE, NOT THE CONTENTS. A handful of rows and a precise sentence in
+`why_we_might_miss_them` about how this block encodes its identifiers and values
+is the whole answer. Do not attempt to transcribe the table."""
 
 
 def _raw_block(xml: str, table_id: str) -> str:

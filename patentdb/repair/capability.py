@@ -43,7 +43,7 @@ from pathlib import Path
 
 from ..core import config
 from . import value_check
-from .oracle import diff, read_block, target_note
+from .oracle import diff, sample_patent, target_note
 from .parser_repair import journal_append, verify_patch
 
 logger = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ MAX_TARGETS = 3
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v5-literal-glyphs"
+PATCH_EPOCH = "v6-raw-cals-in-prompt"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
@@ -592,24 +592,45 @@ def _attach_oracle(g: dict, xml: str) -> None:
         records = list(extract_from_patent(xml))
         if any(r.is_usable for r in records):
             return                               # not a silent patent
-        oracle = read_block(g["patent"], g["table"], xml, g["fingerprint"])
-        if not oracle:
+        # BREADTH. `sample_patent` reads several blocks shallowly rather than
+        # one block deeply — the failing block is rarely the only broken one,
+        # and a defect is far easier to name from three structures than from
+        # ninety rows of one. The gap's own block is read first regardless.
+        samples = sample_patent(g["patent"], xml)
+        if not samples:
             return
-        g["oracle"] = oracle
-        if not oracle.get("holds_assay_data"):
-            g["oracle_note"] = target_note(oracle, {})
-            logger.warning("oracle: %s %s reports NO assay data — %s",
-                           g["patent"], g["table"],
-                           str(oracle.get("why_we_might_miss_them"))[:120])
+        # Put the gap's own block at the front if the sampler reached it.
+        samples.sort(key=lambda o: 0 if o.get("table_id") == g["table"] else 1)
+        g["oracle_samples"] = samples
+
+        notes, total_missing = [], 0
+        for o in samples:
+            tid = o.get("table_id")
+            if not o.get("holds_assay_data"):
+                notes.append(f"[{tid}] an independent read finds NO assay data: "
+                             f"{str(o.get('why_we_might_miss_them'))[:200]}")
+                continue
+            d = diff(o, records, tid)
+            total_missing += d["n_missing_row"] + d["n_missing_value"] + d["n_missing_unit"]
+            if tid == g["table"]:
+                g["oracle"] = o
+                g["oracle_diff"] = d
+            notes.append(target_note(o, d).rstrip()
+                         + f"\n  (block {tid}"
+                         + (f", same shape as {len(o.get('shares_shape_with') or [])} other(s)"
+                            if o.get("shares_shape_with") else "") + ")")
+            logger.warning("oracle: %s %s — %d row(s) present, we produce %d; "
+                           "missing row/value/unit = %d/%d/%d",
+                           g["patent"], tid, d["oracle_rows"], d["we_produced"],
+                           d["n_missing_row"], d["n_missing_value"],
+                           d["n_missing_unit"])
+        if not notes:
             return
-        d = diff(oracle, records, g["table"])
-        g["oracle_diff"] = d
-        g["oracle_note"] = target_note(oracle, d)
-        logger.warning("oracle: %s %s — %d row(s) present, we produce %d; "
-                       "missing row/value/unit = %d/%d/%d",
-                       g["patent"], g["table"], d["oracle_rows"],
-                       d["we_produced"], d["n_missing_row"],
-                       d["n_missing_value"], d["n_missing_unit"])
+        g["oracle_note"] = (
+            f"INDEPENDENT READS OF {len(samples)} BLOCK(S) IN THIS PATENT.\n"
+            f"These are a TARGET and a description of SHAPE — never data to "
+            f"store. Where several blocks fail the same way, fix the cause "
+            f"once.\n\n" + "\n\n".join(notes) + "\n\n")
     except Exception as e:                       # never break a run
         logger.warning("oracle: skipped for %s (%r)", g.get("patent"), e)
 
