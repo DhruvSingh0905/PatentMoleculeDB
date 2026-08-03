@@ -1826,8 +1826,13 @@ def process_patent(
             # fix; `maybe_escalate` journals them and, when the blocker is
             # below what a rule can reach, puts the patent to the code tier.
             # Bounded per capability and per run — see repair/autoheal.
-            from ..repair.autoheal import maybe_escalate
+            from ..repair.autoheal import freeze_result, maybe_escalate
             healed = maybe_escalate(patent_id, repair_report)
+            # Pin the answer. From here a patch bought for another document
+            # cannot re-derive this one — see repair/snapshot.
+            from ..sources.uspto_assays import extract_from_patent as _efp
+            freeze_result(patent_id,
+                          list(_efp(_uspto_xml_for(patent_id))) + list(repaired))
             if healed and healed.get("applied"):
                 # The reader changed underneath us. Re-extract so this patent
                 # benefits from the patch it just paid for, rather than the

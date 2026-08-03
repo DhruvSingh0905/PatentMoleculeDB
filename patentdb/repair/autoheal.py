@@ -126,6 +126,28 @@ def _wants_code_tier(report) -> list[dict]:
             if str(e.get("capability", "")).startswith("IMPLAUSIBLE:")]
 
 
+def freeze_result(patent_id: str, records) -> None:
+    """Pin this patent's answer so a later patch cannot move it.
+
+    Called once the patent has been through the loop. Everything after this
+    point — a capability patch bought for some other document, a widened
+    predicate, a new rule — is judged against patents that are NOT yet frozen,
+    because those are the only ones it can still help or harm.
+
+    Measured, this is the coupling that stopped every patch landing: one
+    `_is_namelike` change cost US10660877 all 860 of its compounds without
+    touching a row of it, by changing how a block derived its own header.
+    """
+    from .snapshot import freeze, is_frozen
+
+    if is_frozen(patent_id):
+        return
+    try:
+        freeze(patent_id, records)
+    except Exception as e:                       # freezing must never break a run
+        logger.warning("autoheal: could not freeze %s (%r)", patent_id, e)
+
+
 def maybe_escalate(patent_id: str, report) -> dict | None:
     """Journal what failed, and put it to the code tier if a rule cannot fix it.
 

@@ -754,3 +754,59 @@ def test_a_potency_is_flagged_only_when_no_scale_could_make_it_one():
         def __init__(self):
             super().__init__(1e9, "nM"); self.assay_name = "Selectivity Ratio"
     assert check_potency_out_of_range("USTEST", "", [Ratio()]) == []
+
+
+def test_a_frozen_patent_is_not_re_derived_by_a_later_patch(tmp_path, monkeypatch):
+    """The decoupling. A patch adopted later must not move finished work.
+
+    Every capability patch was a global code change, so improving one patent
+    silently re-extracted the other 102 — and measured, one `_is_namelike`
+    patch cost US10660877 all 860 of its compounds without touching a row of
+    it. A patch cannot be asked to be non-destructive across a corpus it
+    cannot see; the answer is to stop re-deriving what is already done.
+    """
+    from patentdb.core import config
+    from patentdb.repair import snapshot
+
+    monkeypatch.setattr(snapshot, "SNAPSHOT_DIR", tmp_path / "snap")
+
+    class R:
+        def __init__(self, cid):
+            self.cid, self.assay_name, self.unit = cid, "IC50", "nM"
+            self.value_numeric, self.n_runs = 1.0, None
+            self.range_lo = self.range_hi = self.letter_grade = None
+            self.table_id, self.column_header = "T", ""
+            self.value_text, self.source = "1.0", "x"
+            self.is_usable = True
+
+    snapshot.freeze("USTEST9", [R("1"), R("2"), R("3")])
+    assert snapshot.is_frozen("USTEST9")
+    assert snapshot.compounds("USTEST9") == {"1", "2", "3"}
+
+    # The code now produces something WORSE. The frozen answer must not move.
+    snap, was_frozen = snapshot.records_for("USTEST9", "<xml/>")
+    assert was_frozen is True
+    assert set(snap["compounds"]) == {"1", "2", "3"}
+
+    # ...and the escape hatch works, because freezing must be reversible.
+    assert snapshot.thaw("USTEST9") is True
+    assert not snapshot.is_frozen("USTEST9")
+
+
+def test_greedy_refuses_to_empty_one_patent_for_a_better_total():
+    """A corpus total is an average over patents, and an average cannot see one
+    being annihilated. US10660877 went 860 -> 0 under a patch whose corpus
+    arithmetic looked survivable."""
+    from patentdb.repair.greedy import MAX_PATENT_LOSS, judge
+
+    before = {"A": 860, "B": 100, "C": 100}
+    after = {"A": 0, "B": 500, "C": 600}         # total UP by 140
+    ok, why, tg, cg, worst, loss = judge(before, after, "C")
+    assert not ok and worst == "A" and loss == 1.0
+    assert "cannot see one patent being emptied" in why
+    assert cg > 0, "the total really did rise; that is the point"
+
+    # A modest re-interpretation is allowed through.
+    ok2, _, _, _, _, l2 = judge({"A": 100}, {"A": 100 - int(100 * MAX_PATENT_LOSS)},
+                                "A")
+    assert l2 <= MAX_PATENT_LOSS
