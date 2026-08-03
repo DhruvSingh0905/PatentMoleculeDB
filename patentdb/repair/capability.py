@@ -108,7 +108,7 @@ MAX_TARGETS = 3
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v6-raw-cals-in-prompt"
+PATCH_EPOCH = "v7-16k-output"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
@@ -394,13 +394,35 @@ def propose_capability_patch(gap_info: dict, table, *,
     from ..core.api_client import resilient_client
     client = resilient_client()
     resp = client.messages.create(
-        model=model, max_tokens=4000, temperature=0,
+        # 16,000, and the number is load-bearing. At 4,000 this tier was not
+        # refusing to write code — it was being budget-constrained into
+        # choosing a function it could AFFORD to rewrite instead of the one
+        # that was broken. Measured on US10189840, same prompt and temperature:
+        #
+        #   max_tokens= 4000 -> patches `_opens_with_id`   (1,912 chars)
+        #   max_tokens=16000 -> patches `assemble_block`  (10,007 chars)
+        #
+        # `assemble_block` alone is ~2,500 tokens before JSON escaping, and
+        # MAX_TARGETS allows three complete functions. Asking for three
+        # rewrites inside a budget that cannot hold one large one is why every
+        # diagnosis was right and every patch was small, wrong, or absent.
+        # `stop_reason` was never checked either, so a truncated answer would
+        # have read as a decline — the same defect the oracle had.
+        model=model, max_tokens=16_000, temperature=0,
         system=[{"type": "text", "text": PATCH_SYSTEM,
                  "cache_control": {"type": "ephemeral"}}],
         tools=[PATCH_TOOL], tool_choice={"type": "tool", "name": PATCH_TOOL["name"]},
         messages=[{"role": "user", "content": prompt}])
     cost_tracker.record(resp.usage.input_tokens, resp.usage.output_tokens, model,
                         patent_id=gap_info.get("patent", ""), cost_category="lm")
+    if resp.stop_reason == "max_tokens":
+        # A truncated tool call parses cleanly and reports whatever keys
+        # arrived first, so it reads as a model that declined. Never infer a
+        # refusal from an answer that ran out of room.
+        logger.warning("capability: %s hit the output ceiling — discarding the "
+                       "partial answer rather than reading it as a decline",
+                       gap_info.get("patent"))
+        return None
     call = next((b for b in resp.content if getattr(b, "type", "") == "tool_use"), None)
     if call is None:
         return None
