@@ -102,13 +102,18 @@ PATCHABLE: dict[str, tuple[Path, str]] = {
 # verifier has to cover and a human has to read.
 MAX_TARGETS = 3
 
+# The model's ceiling, not ours. See the note at the `messages.create` call:
+# a budget below what three rewrites need does not truncate the answer, it
+# changes which function the model is willing to attempt.
+_MAX_OUTPUT = int(__import__("os").environ.get("CAPABILITY_MAX_OUTPUT", "64000"))
+
 # Bump whenever the tool schema, the system prompt or the candidate list
 # changes. The API cache is keyed by fingerprint and model, and neither moves
 # when the QUESTION does: widening the tool from one target to a list of three
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v7-16k-output"
+PATCH_EPOCH = "v9-show-header-rows"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
@@ -295,6 +300,28 @@ def _sample_of_table(table, xml: str = "") -> str:
     lines.append(f"(assembled: {len(table.header_rows)} header row(s), "
                  f"{len(body)} body row(s))")
 
+    # SHOW THE HEADER ROWS AS ROWS when there are absurdly many of them.
+    #
+    # The single most misleading thing this prompt did. `merge_header` renders
+    # them as one string, so a block whose data rows were misfiled as header
+    # appears to the model as a short table with a long header label — and it
+    # concludes, reasonably, that the extractor is skipping rows.
+    #
+    # Measured on US10189840: 89 data rows sit in `header_rows`, 5 in the body,
+    # and `extract_from_tables` walks the 5. The model chose to patch
+    # `extract_from_tables` on four separate runs. No edit to that function can
+    # ever work, because the rows are not in the collection it iterates. It was
+    # patching downstream of where the data was lost and had no way to know.
+    if len(table.header_rows) > max(4, len(body)):
+        lines.append(
+            f"\n!! {len(table.header_rows)} HEADER ROWS vs {len(body)} BODY ROWS. "
+            f"`extract_from_tables` only ever walks the BODY, so whatever is "
+            f"below is invisible to it — a patch there cannot reach these rows. "
+            f"They were classified as header by `_is_namelike` during "
+            f"`assemble_block`, which is where this has to be fixed:")
+        for r in table.header_rows[:14]:
+            lines.append("  HEADER-ROW: " + repr([c.text.strip()[:60] for c in r]))
+
     if xml:
         raw = [t for t in parse_tables(xml) if t.table_id == table.table_id]
         raw_rows = sum(len([r for r in t.body_rows if any(c.text.strip() for c in r)])
@@ -394,21 +421,24 @@ def propose_capability_patch(gap_info: dict, table, *,
     from ..core.api_client import resilient_client
     client = resilient_client()
     resp = client.messages.create(
-        # 16,000, and the number is load-bearing. At 4,000 this tier was not
-        # refusing to write code — it was being budget-constrained into
-        # choosing a function it could AFFORD to rewrite instead of the one
-        # that was broken. Measured on US10189840, same prompt and temperature:
+        # UNCAPPED, to the model's maximum. `max_tokens` is a ceiling, not a
+        # target, so raising it costs nothing unless the answer needs the room —
+        # and when it did not have the room the effect was not truncation but
+        # SELF-CENSORSHIP. Measured on US10189840, same prompt and temperature,
+        # stop_reason `tool_use` at both settings so nothing was ever cut off:
         #
-        #   max_tokens= 4000 -> patches `_opens_with_id`   (1,912 chars)
-        #   max_tokens=16000 -> patches `assemble_block`  (10,007 chars)
+        #   max_tokens= 4000 -> patches `_opens_with_id`    1,912 chars
+        #   max_tokens=16000 -> patches `assemble_block`   10,007 chars
         #
-        # `assemble_block` alone is ~2,500 tokens before JSON escaping, and
-        # MAX_TARGETS allows three complete functions. Asking for three
-        # rewrites inside a budget that cannot hold one large one is why every
-        # diagnosis was right and every patch was small, wrong, or absent.
-        # `stop_reason` was never checked either, so a truncated answer would
-        # have read as a decline — the same defect the oracle had.
-        model=model, max_tokens=16_000, temperature=0,
+        # The ceiling was choosing the function. `extract_from_tables` is ~2,500
+        # tokens before JSON escaping and MAX_TARGETS allows three complete
+        # rewrites, so any budget that cannot hold three large functions is
+        # quietly picking the patch for us.
+        #
+        # The cost to watch is the INPUT: every call ships all nine candidate
+        # functions, 46,389 chars / ~11,600 tokens, whether or not the answer
+        # touches them.
+        model=model, max_tokens=_MAX_OUTPUT, temperature=0,
         system=[{"type": "text", "text": PATCH_SYSTEM,
                  "cache_control": {"type": "ephemeral"}}],
         tools=[PATCH_TOOL], tool_choice={"type": "tool", "name": PATCH_TOOL["name"]},
