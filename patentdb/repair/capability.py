@@ -146,7 +146,7 @@ _MAX_OUTPUT = int(__import__("os").environ.get("CAPABILITY_MAX_OUTPUT", "64000")
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v12-where-it-stops"
+PATCH_EPOCH = "v13-header-holds-the-data"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
@@ -448,9 +448,26 @@ def _where_it_stops(table) -> str:
         out.append(f"   assay cells `parse_value` reads: {vals}")
         if not idok:
             ex = [r[ci].text.strip() for r in data[:4] if len(r) > ci][:4]
-            out.append(f"   >>> `_CID_PAT` REJECTS EVERY IDENTIFIER, e.g. {ex}. "
-                       f"That regex is on the candidate list and is very "
-                       f"probably what has to change.")
+            merged = merge_header(table, hr)
+            # Does the HEADER already contain the ids and values, concatenated?
+            # If so the rows were classified as header before anything reached
+            # `_CID_PAT`, and changing that regex fixes nothing. Measured on
+            # US9695181: header `['', 'Compound IIa IIb IIc', 'IC50 (nM) 3.0 ±
+            # 1.0*']`, body = three footnotes. Widening `_CID_PAT` to accept
+            # `IIa` changes 0 records, because there is no row to match against.
+            crowded = [h for h in merged if len(h.split()) >= 4]
+            if crowded:
+                out.append(
+                    f"   >>> NO id matches `_CID_PAT`, BUT THE HEADER ALREADY "
+                    f"CONTAINS THE DATA: {crowded[:2]}. The rows were filed as "
+                    f"HEADER and `merge_header` concatenated them into a label, "
+                    f"so there is no row left for `_CID_PAT` to reject. Widening "
+                    f"that regex changes nothing — this is `_is_namelike` / "
+                    f"`assemble_block` / `merge_header`.")
+            else:
+                out.append(f"   >>> `_CID_PAT` matches none of {ex}. That regex "
+                           f"is on the candidate list, but CHECK FIRST that "
+                           f"these are real data rows and not header remnants.")
         elif not vals:
             out.append("   >>> `parse_value` reads NONE of the assay cells; the "
                        "value format is what has to change.")
