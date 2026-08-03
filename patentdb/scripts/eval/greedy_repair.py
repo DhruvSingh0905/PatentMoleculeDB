@@ -76,6 +76,24 @@ def _candidates(pids: list[str] | None, limit: int) -> list[Candidate]:
                 continue
             edits[str(module)] = src.replace(old, body)
             names.append(name)
+        # The splice must PARSE. One proposal produced
+        # `.replace('\u2266', '<=').n    s_norm = ...` — a newline collapsed
+        # into the letter `n` — and the candidate reached `measure()`, threw
+        # SyntaxError on import, and was scored as a patch that found nothing.
+        # A candidate that cannot be imported is not a bad patch, it is not a
+        # patch, and it must never cost a measurement round.
+        import ast
+        broken = []
+        for mod, text in edits.items():
+            try:
+                ast.parse(text)
+            except SyntaxError as e:
+                broken.append(f"{Path(mod).name}:{e.lineno} {e.msg}")
+        if broken:
+            logger.warning("greedy: %s — splice does not parse (%s); dropped",
+                           g["patent"], "; ".join(broken)[:160])
+            edits = {}
+
         if edits:
             out.append(Candidate(
                 label=f"{g['patent']}:{','.join(names)}",
