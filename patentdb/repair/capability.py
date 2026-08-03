@@ -146,7 +146,7 @@ _MAX_OUTPUT = int(__import__("os").environ.get("CAPABILITY_MAX_OUTPUT", "64000")
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v13-header-holds-the-data"
+PATCH_EPOCH = "v14-unit-gate"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
@@ -471,6 +471,23 @@ def _where_it_stops(table) -> str:
         elif not vals:
             out.append("   >>> `parse_value` reads NONE of the assay cells; the "
                        "value format is what has to change.")
+        else:
+            # Values parse and ids match, so the block is READ — and still
+            # yields nothing. The remaining gate is the usability contract, and
+            # in practice that means a missing unit. `_unit_from` is on the
+            # candidate list. Measured on US10266548: 242 records, every one
+            # missing `unit`, header `median IC50 [mol/l]`, values `6.7e-009` —
+            # `_unit_from` knows nM/uM/mM/pM and neither `mol/l` nor `[M]`.
+            unitless = [c for c in cols if c.kind == ASSAY and not c.unit]
+            if unitless:
+                out.append(
+                    f"   >>> ids and values BOTH read, so the rows are fine. "
+                    f"{len(unitless)} assay column(s) carry NO UNIT: "
+                    f"{[(c.header or '')[:50] for c in unitless][:3]}. A record "
+                    f"without a unit is not usable, so this block produces "
+                    f"nothing. `_unit_from` decides that and is on the "
+                    f"candidate list — check what unit the header states and "
+                    f"whether that function recognises it.")
     return "\n".join(out) + "\n"
 
 

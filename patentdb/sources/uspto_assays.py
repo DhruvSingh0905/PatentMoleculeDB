@@ -60,13 +60,6 @@ NON_ASSAY = {NMR, MS, MW, RT, STRUCTURE, SUBSTITUENT, CID, NRUNS, UNKNOWN}
 _UNIT_PAT = re.compile(
     r"\(\s*(n[mM]|[μuµ][mM]|m[mM]|p[mM]|nmol|µg/mL|ug/mL|%|percent)\s*\)|"
     r"\b(nM|µM|μM|uM|mM|pM)\b|"
-    # MOLAR, written out or bare. US10266548 heads 242 measurements
-    # `Biological Assay 1: Bub1 kinase assay median IC50 [mol/l]` with values
-    # like `6.7e-009`, and every one of them was unusable for want of a unit —
-    # 197 BindingDB reference compounds behind a vocabulary gap. Bracketed only,
-    # because a bare `M` in free header text is far more often a molecule, a
-    # method or a mass than a molarity.
-    r"[\[(]\s*(mol/[lL]|M)\s*[\])]|"
     # Spelled-out units. Patents routinely state the unit in a table legend as
     # a word — "IC50's are micromolar." — rather than as a symbol in the
     # header. Missing these left correctly-read values unitless, which is the
@@ -703,10 +696,8 @@ def _unit_from(text: str) -> str | None:
     m = _UNIT_PAT.search(text or "")
     if not m:
         return None
-    raw = (m.group(1) or m.group(2) or m.group(3) or m.group(4) or "").strip()
+    raw = (m.group(1) or m.group(2) or m.group(3) or "").strip()
     low = raw.lower()
-    if low in ("mol/l", "m"):
-        return "M"
     if low in _SPELLED_UNIT:
         return _SPELLED_UNIT[low]
     return {"um": "uM", "µm": "uM", "μm": "uM", "nm": "nM", "mm": "mM",
