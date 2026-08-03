@@ -146,7 +146,7 @@ _MAX_OUTPUT = int(__import__("os").environ.get("CAPABILITY_MAX_OUTPUT", "64000")
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v11-constants-and-id-functions"
+PATCH_EPOCH = "v12-where-it-stops"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
@@ -394,6 +394,69 @@ def _sample_of_table(table, xml: str = "") -> str:
     return "\n".join(lines)
 
 
+def _where_it_stops(table) -> str:
+    """The first gate this block fails, named, with counts. Free and exact.
+
+    The loop could always compute this and never told the model. Measured on
+    the four remaining zero-yield patents, each stops at a DIFFERENT gate:
+
+        US9695181    0 of 8 ids match `_CID_PAT`  (IIa/IIb/IIc)
+        US9018217    no column classifies as an assay — the header merged to
+                     `hyperactivity` alone
+        US11059825   no column classifies as a compound id
+        US10227341   `parse_value` reads none of the assay cells
+
+    Without it the model infers the stop point from the table, and infers
+    wrong: given the menu including `_CID_PAT`, US9695181 still chose
+    `_is_namelike` and `parse_value`. A diagnosis it has to guess at is a
+    diagnosis it will sometimes guess wrong, and every one of those costs a
+    full verification run.
+    """
+    from ..sources.uspto_assays import (
+        ASSAY, CID, _CID_PAT, _header_rows_of, build_columns, merge_header,
+        parse_value,
+    )
+
+    hr, data = _header_rows_of(table)
+    data = [r for r in data if any(c.text.strip() for c in r)]
+    if not data:
+        return ("\n!! WHERE EXTRACTION STOPS: this block has no data rows at "
+                "all after assembly — the failure is upstream, in "
+                "`assemble_block` / `_is_namelike` / `_opens_with_id`.\n")
+    cols = build_columns(table, data_rows=data)
+    kinds = [c.kind for c in cols]
+    out = [f"\n!! WHERE EXTRACTION STOPS (computed, not guessed). "
+           f"{len(data)} data row(s); columns classify as {kinds}."]
+    if CID not in kinds:
+        out.append("   NO COLUMN CLASSIFIES AS A COMPOUND ID. Decided by "
+                   "`classify_column` (and `_id_style` inside it). Nothing "
+                   "downstream can run: `extract_from_tables` skips a table "
+                   "with no id column, so patching it CANNOT help.")
+    if ASSAY not in kinds:
+        out.append("   NO COLUMN CLASSIFIES AS AN ASSAY. Decided by "
+                   "`classify_column`, on the merged header "
+                   f"{merge_header(table, hr)!r} — if that header lost a row, "
+                   "the fault is in `merge_header`, not in the classifier.")
+    if CID in kinds and ASSAY in kinds:
+        ci = kinds.index(CID)
+        ai = [c.index for c in cols if c.kind == ASSAY]
+        idok = sum(1 for r in data
+                   if len(r) > ci and _CID_PAT.match(r[ci].text.strip()))
+        vals = sum(1 for r in data for i in ai
+                   if len(r) > i and parse_value(r[i].text))
+        out.append(f"   ids matching `_CID_PAT`      : {idok} of {len(data)}")
+        out.append(f"   assay cells `parse_value` reads: {vals}")
+        if not idok:
+            ex = [r[ci].text.strip() for r in data[:4] if len(r) > ci][:4]
+            out.append(f"   >>> `_CID_PAT` REJECTS EVERY IDENTIFIER, e.g. {ex}. "
+                       f"That regex is on the candidate list and is very "
+                       f"probably what has to change.")
+        elif not vals:
+            out.append("   >>> `parse_value` reads NONE of the assay cells; the "
+                       "value format is what has to change.")
+    return "\n".join(out) + "\n"
+
+
 def _retry_note(gap_info: dict) -> str:
     """What the LAST patch for this layout did, when there was one.
 
@@ -445,7 +508,8 @@ def propose_capability_patch(gap_info: dict, table, *,
     prompt = (
         f"TABLE {gap_info['table']} of {gap_info['patent']} holds "
         f"{gap_info['rows_at_stake']} rows we cannot turn into records.\n\n"
-        f"{_sample_of_table(table, gap_info.get('xml') or '')}\n\n"
+        f"{_sample_of_table(table, gap_info.get('xml') or '')}\n"
+        f"{_where_it_stops(table)}\n"
         f"A `{gap_info['rule_kind']}` rule was already tried on this layout:\n"
         f"  {json.dumps(gap_info.get('rule_payload'))[:400]}\n"
         f"It produced NOTHING. {gap_info.get('why', '')}\n\n"
