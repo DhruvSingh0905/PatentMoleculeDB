@@ -146,7 +146,7 @@ _MAX_OUTPUT = int(__import__("os").environ.get("CAPABILITY_MAX_OUTPUT", "64000")
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v14-unit-gate"
+PATCH_EPOCH = "v15-untruncated-header"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
@@ -483,7 +483,13 @@ def _where_it_stops(table) -> str:
                 out.append(
                     f"   >>> ids and values BOTH read, so the rows are fine. "
                     f"{len(unitless)} assay column(s) carry NO UNIT: "
-                    f"{[(c.header or '')[:50] for c in unitless][:3]}. A record "
+                    # NOT truncated. This asked the model to "check what unit
+                    # the header states" and then showed it the header cut at
+                    # 50 characters — which on US10266548 severs the `[mol/l]`
+                    # it is asking about, leaving `median IC50 [`. A diagnostic
+                    # that hides the evidence it names is worse than no
+                    # diagnostic.
+                    f"{[c.header for c in unitless][:3]}. A record "
                     f"without a unit is not usable, so this block produces "
                     f"nothing. `_unit_from` decides that and is on the "
                     f"candidate list — check what unit the header states and "
