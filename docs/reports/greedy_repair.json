@@ -101,51 +101,9 @@
  ],
  "candidates": [
   {
-   "label": "US10189840:_is_namelike,extract_from_tables",
-   "target": "US10189840",
-   "diagnosis": "The table has a repeating structure where the compound ID (Ex. No.) is printed only on the first sub-row of a group, and subsequent sub-rows (distinguished by tags like (e1), (e2), (rac), (DM)) leave the ID cell blank. The current code in `_is_namelike` rejects rows with long runs of space-separated integers (e.g., \"1 2 3 4 5 ... 35\"), but this rejection is too broad: it catches the header row \"Ex",
-   "modules": [
-    "uspto_assays.py",
-    "uspto_xml.py"
-   ]
-  },
-  {
-   "label": "US9018217:extract_from_tables",
-   "target": "US9018217",
-   "diagnosis": "The table splits compound names across consecutive XML rows: each compound name spans two `<row>` elements, with the IC50 value appearing only in the first row's second column and the second row's second column left blank. The parser treats each XML row independently, so it either skips the continuation row (losing the full name) or reads it as a separate record with no value. The fix must merge c",
-   "modules": [
-    "uspto_assays.py"
-   ]
-  },
-  {
-   "label": "US11059825:classify_column,extract_from_tables",
-   "target": "US11059825",
-   "diagnosis": "The table has a multi-row header where \"Bind Avg\" and \"Ser Avg\" span two rows above \"IC50\" and \"(nM)\", creating a hierarchical structure. The compound identifiers are embedded in the NMR/MS text column (e.g., \"Compound 1.001: ...\") rather than in a dedicated CID column, which is empty. The assay values are ordinal grades (+, ++, +++) in the \"Ser Avg IC50\" column. The current code cannot express th",
-   "modules": [
-    "uspto_assays.py"
-   ]
-  },
-  {
-   "label": "US10266548:extract_from_tables,build_columns",
+   "label": "US10266548:_unit_from,extract_from_tables,merge_header",
    "target": "US10266548",
-   "diagnosis": "The table has a multi-row header where assay names and units are split across rows, and the data rows themselves are split across multiple XML rows when a compound has multiple sub-assays or cell lines. The first row of a compound holds the ID and some assay values; continuation rows have a blank ID but hold additional assay values for the same compound. The current code skips blank-ID rows entire",
-   "modules": [
-    "uspto_assays.py"
-   ]
-  },
-  {
-   "label": "US9695181:_is_namelike,parse_value",
-   "target": "US9695181",
-   "diagnosis": "The table has a two-tgroup structure: a 1-column title tgroup (\"Inhibition rate to the activity of VEGFR2 tyrosine kinase(%)\") followed by a 3-column data tgroup with an offset column, compound IDs (IIa, IIb, IIc, IId), and IC50 values. The rows \"IIa 3.0 \u00b1 1.0*\", \"IIb 2.2 \u00b1 0.9*\", etc. are being classified as header rows by `_is_namelike` because they have exactly two non-empty cells (the compound",
-   "modules": [
-    "uspto_assays.py",
-    "uspto_xml.py"
-   ]
-  },
-  {
-   "label": "US10227341:extract_from_tables",
-   "target": "US10227341",
-   "diagnosis": "The table is inverted: the assay grade (\u2020, \u2020\u2020, \u2020\u2020\u2020) appears in the left column, and the right column holds a comma-separated list of compound numbers that all share that grade. The current parser expects one compound per row with its assay value in the same row. This table requires unpacking: each compound ID in the comma-separated list must be paired with the grade from its row's left cell, and t",
+   "diagnosis": "The header row contains compound IDs and assay values concatenated with the column labels in a single cell (e.g., \"Example Nr. 2-1-1 2-1-3\" and \"Biological Assay 1: Bub1 kinase assay median IC50 [mol/l] 2.6e\u2212009 1.2e\u2212007\"). This is a \"wide\" layout where the header itself embeds multiple data values that should be split into separate rows. The parser correctly identifies the assay columns but canno",
    "modules": [
     "uspto_assays.py"
    ]
@@ -153,52 +111,7 @@
  ],
  "outcomes": [
   {
-   "label": "US10189840:_is_namelike,extract_from_tables",
-   "accepted": false,
-   "why": "no gain: target +0, corpus +0",
-   "target_gain": 0,
-   "corpus_gain": 0,
-   "worst_patent": "",
-   "worst_loss": 0.0
-  },
-  {
-   "label": "US9018217:extract_from_tables",
-   "accepted": false,
-   "why": "no gain: target +0, corpus +0",
-   "target_gain": 0,
-   "corpus_gain": 0,
-   "worst_patent": "",
-   "worst_loss": 0.0
-  },
-  {
-   "label": "US11059825:classify_column,extract_from_tables",
-   "accepted": false,
-   "why": "no gain: target +0, corpus +0",
-   "target_gain": 0,
-   "corpus_gain": 0,
-   "worst_patent": "",
-   "worst_loss": 0.0
-  },
-  {
-   "label": "US10266548:extract_from_tables,build_columns",
-   "accepted": false,
-   "why": "no gain: target +0, corpus +0",
-   "target_gain": 0,
-   "corpus_gain": 0,
-   "worst_patent": "",
-   "worst_loss": 0.0
-  },
-  {
-   "label": "US9695181:_is_namelike,parse_value",
-   "accepted": false,
-   "why": "extraction RAISES on 5 patent(s): US10189840, US10266548, US11059825, US9018217",
-   "target_gain": -1,
-   "corpus_gain": -5,
-   "worst_patent": "US10189840",
-   "worst_loss": 1.0
-  },
-  {
-   "label": "US10227341:extract_from_tables",
+   "label": "US10266548:_unit_from,extract_from_tables,merge_header",
    "accepted": false,
    "why": "no gain: target +0, corpus +0",
    "target_gain": 0,
