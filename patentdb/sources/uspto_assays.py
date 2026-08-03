@@ -58,8 +58,8 @@ UNKNOWN = "unknown"
 NON_ASSAY = {NMR, MS, MW, RT, STRUCTURE, SUBSTITUENT, CID, NRUNS, UNKNOWN}
 
 _UNIT_PAT = re.compile(
-    r"\(\s*(n[mM]|[μuµ][mM]|m[mM]|p[mM]|nmol|µg/mL|ug/mL|%|percent)\s*\)|"
-    r"\b(nM|µM|μM|uM|mM|pM)\b|"
+    r"\(\s*(n[mM]|[μuµ][mM]|m[mM]|p[mM]|nmol|µg/mL|ug/mL|%|percent|mol/[lL]|[μuµ]mol/[lL]|nmol/[lL])\s*\)|"  
+    r"\b(nM|µM|μM|uM|mM|pM|mol/L|mol/l)\b|"  
     # Spelled-out units. Patents routinely state the unit in a table legend as
     # a word — "IC50's are micromolar." — rather than as a symbol in the
     # header. Missing these left correctly-read values unitless, which is the
@@ -700,6 +700,23 @@ def _unit_from(text: str) -> str | None:
     low = raw.lower()
     if low in _SPELLED_UNIT:
         return _SPELLED_UNIT[low]
+    # mol/l and its prefixed variants: normalise to the canonical symbol used
+    # throughout the corpus. Patents like US10266548 state the unit as
+    # "mol/l" (or "mol/L") in the column header; without this mapping the
+    # unit comes back as the raw string and the assay column gets no unit,
+    # causing every record to be dropped as unusable.
+    _mol_map = {
+        "mol/l": "mol/L",
+        "mol/l": "mol/L",
+        "umol/l": "uM",
+        "µmol/l": "uM",
+        "μmol/l": "uM",
+        "nmol/l": "nM",
+        "mmol/l": "mM",
+        "pmol/l": "pM",
+    }
+    if low in _mol_map:
+        return _mol_map[low]
     return {"um": "uM", "µm": "uM", "μm": "uM", "nm": "nM", "mm": "mM",
             "pm": "pM", "percent": "%"}.get(low, raw)
 

@@ -101,9 +101,9 @@
  ],
  "candidates": [
   {
-   "label": "US10266548:_unit_from,extract_from_tables,merge_header",
+   "label": "US10266548:_UNIT_PAT,_unit_from",
    "target": "US10266548",
-   "diagnosis": "The header row contains compound IDs and assay values concatenated with the column labels in a single cell (e.g., \"Example Nr. 2-1-1 2-1-3\" and \"Biological Assay 1: Bub1 kinase assay median IC50 [mol/l] 2.6e\u2212009 1.2e\u2212007\"). This is a \"wide\" layout where the header itself embeds multiple data values that should be split into separate rows. The parser correctly identifies the assay columns but canno",
+   "diagnosis": "The merged header for the assay columns contains the column label concatenated with the first data values from the header tgroup (e.g. \"Biological Assay 1: Bub1 kinase assay median IC50 [mol/l] 2.6e\u2212009 1.2e\u2212007\"). The unit is `mol/l` but `_unit_from` only recognises `nM`, `uM`, `pM`, `mM`, `M`, `ng/mL`, `ug/mL`, `mg/mL` \u2014 not `mol/l`. So `_unit_from` returns None, the assay columns get no unit, a",
    "modules": [
     "uspto_assays.py"
    ]
@@ -111,11 +111,11 @@
  ],
  "outcomes": [
   {
-   "label": "US10266548:_unit_from,extract_from_tables,merge_header",
-   "accepted": false,
-   "why": "no gain: target +0, corpus +0",
-   "target_gain": 0,
-   "corpus_gain": 0,
+   "label": "US10266548:_UNIT_PAT,_unit_from",
+   "accepted": true,
+   "why": "target +118, corpus +118",
+   "target_gain": 118,
+   "corpus_gain": 118,
    "worst_patent": "",
    "worst_loss": 0.0
   }

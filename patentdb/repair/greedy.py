@@ -32,6 +32,7 @@ cannot see one being annihilated.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from ..core import config
@@ -66,6 +67,33 @@ class Outcome:
     corpus_gain: int = 0
     worst_patent: str = ""
     worst_loss: float = 0.0
+
+
+@contextmanager
+def applied(edits: dict):
+    """Run the body with `edits` spliced into the tree, then put it back.
+
+    Every measurement in this loop is a real extraction against real modules —
+    there is no way to evaluate a patch to `_is_namelike` short of importing
+    it. So the tree is written, reloaded, measured and restored, and the
+    restore is in a `finally` because a candidate that raises must not leave
+    the working tree patched.
+
+    Shared with `iterate`, which needs exactly this to let a model observe its
+    own patch. Two copies of a write/reload/restore is one copy too many.
+    """
+    from pathlib import Path
+
+    saved = {Path(p): Path(p).read_text() for p in edits}
+    try:
+        for path, text in edits.items():
+            Path(path).write_text(text)
+        _reload()
+        yield
+    finally:
+        for path, text in saved.items():
+            path.write_text(text)
+        _reload()
 
 
 def measure(pids: list[str], *, xml_dir=None) -> dict[str, int]:
@@ -153,18 +181,11 @@ def select(candidates: list[Candidate], *, apply: bool = True,
         best: tuple | None = None
 
         for cand in remaining:
-            saved = {Path(p): Path(p).read_text() for p in cand.edits}
             try:
-                for path, text in cand.edits.items():
-                    Path(path).write_text(text)
-                _reload()
-                after = measure(pids, xml_dir=xml_dir)
+                with applied(cand.edits):
+                    after = measure(pids, xml_dir=xml_dir)
             except Exception as e:
                 after, _ = {}, logger.warning("greedy: %s raised: %r", cand.label, e)
-            finally:
-                for path, text in saved.items():
-                    path.write_text(text)
-                _reload()
             ok, why, tg, cg, wp, wl = judge(before, after, cand.target_patent)
             logger.info("greedy: %s -> %s (%s)", cand.label,
                         "accept" if ok else "reject", why)

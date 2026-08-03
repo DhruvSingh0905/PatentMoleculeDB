@@ -146,7 +146,7 @@ _MAX_OUTPUT = int(__import__("os").environ.get("CAPABILITY_MAX_OUTPUT", "64000")
 # replayed a cached single-target answer, which now parses as an empty
 # `patches` list and reads as the model declining. Same failure `SYNTH_EPOCH`
 # exists to prevent one tier up — a stale answer to a question we no longer ask.
-PATCH_EPOCH = "v15-untruncated-header"
+PATCH_EPOCH = "v17-derived-constants"
 
 # Tried in order until one patch VERIFIES. Deliberately not Haiku-first, and
 # the reason is that this tier's economics are the opposite of the rule tier's.
@@ -195,6 +195,88 @@ def _function_source(module: Path, name: str) -> str | None:
     m = re.search(rf"^{re.escape(name)}\s*=\s*.*?(?=\n(?:[A-Za-z_]\w*\s*=|def |@|class |# ──|\Z))",
                   src, re.S | re.M)
     return m.group(0).rstrip() if m else None
+
+
+_DERIVED: dict[str, tuple[Path, str]] | None = None
+
+
+def _worth_offering(rhs: str) -> bool:
+    """Is this constant VOCABULARY, or is it a sentinel?
+
+    Deriving targets from what the patchable functions read finds 39 names, and
+    a third of them are `CID = "cid"` — the tags `classify_column` returns.
+    Rewriting one of those is not a fix, it is a rename that breaks every
+    comparison in the module, and each costs prompt tokens on every call
+    whether or not anything ever wants it.
+
+    Vocabulary is what has a pattern, a table or a list inside it: a compiled
+    regex, a dict of spellings, a set of header words. A bare string or number
+    is a name for a thing, not a description of one.
+    """
+    r = rhs.strip()
+    return (r.startswith(("re.compile", "{", "[", "(", "frozenset", "set("))
+            or "|" in r or len(r) > 60)
+
+
+def all_targets() -> dict[str, tuple[Path, str]]:
+    """`PATCHABLE`, plus every module-level constant those functions READ.
+
+    Hand-listing the targets left a blind spot with a shape, and the shape
+    repeated. A function on the list is often a ten-line dispatcher over a
+    constant that is not:
+
+        _unit_from   is `_UNIT_PAT.search(text)` and a `_SPELLED_UNIT` lookup
+        _CID_PAT     was itself the thing US9695181 needed, and was invisible
+                     until `_function_source` learned to match assignments
+
+    Given `_unit_from` and told the header states `[mol/l]`, the model
+    diagnosed it exactly — "`_UNIT_PAT` does not match `mol/l`" — and then had
+    to express that fix by rewriting the dispatcher around a regex it could not
+    touch. Three rounds, right answer every time, no way to write it down.
+
+    So the offer is DERIVED rather than curated: parse each patchable function,
+    collect the names it references, and offer any that resolve to a
+    module-level assignment in the same file. A constant read by a function we
+    already permit is inside the same blast radius — it cannot reach further
+    than its only caller.
+    """
+    global _DERIVED
+    if _DERIVED is not None:
+        return _DERIVED
+    import ast
+
+    out = dict(PATCHABLE)
+    per_module: dict[Path, dict[str, str]] = {}
+    for name, (module, _what) in PATCHABLE.items():
+        consts = per_module.get(module)
+        if consts is None:
+            consts = {}
+            try:
+                tree = ast.parse(module.read_text())
+            except (OSError, SyntaxError):
+                tree = None
+            for node in (tree.body if tree else []):
+                if isinstance(node, ast.Assign):
+                    for t in node.targets:
+                        if isinstance(t, ast.Name):
+                            consts[t.id] = ast.unparse(node.value)[:60]
+            per_module[module] = consts
+        src = _function_source(module, name)
+        if not src or not src.startswith("def "):
+            continue
+        try:
+            body = ast.parse(src)
+        except SyntaxError:
+            continue
+        for node in ast.walk(body):
+            if not isinstance(node, ast.Name) or node.id in out:
+                continue
+            if node.id in consts and _worth_offering(consts[node.id]):
+                out[node.id] = (module, f"the module-level constant `{node.id}` "
+                                        f"that `{name}` reads — currently "
+                                        f"`{consts[node.id]}`")
+    _DERIVED = out
+    return out
 
 
 PATCH_SYSTEM = """You are widening an extraction CODEBASE, not describing a table.
@@ -247,9 +329,30 @@ corrupted. This has happened twice on the same line, where the comment
 explaining that `float` cannot read a typesetter's minus had that very minus
 turned into `\\u2212`. Behaviour survived, the reasoning did not, and no test
 can see it.
+
+YOU MAY BE ASKED MORE THAN ONCE. Your patch is spliced into the real modules,
+a real patent is extracted with it, and the measured result comes back to you:
+how many compounds it produced, which of your edits were byte-identical to the
+source and therefore did nothing, any syntax error verbatim, and the same
+"where extraction stops" diagnostic recomputed against the block as YOUR code
+now assembles it. Those numbers are observations, not opinions — nothing is
+arguing with your patch, it was run.
+
+When that happens, read what MOVED. A failure that shifted to a later gate
+means your edit worked and the fix has another part; a diagnostic that reads
+exactly as before means the function you chose is not the one that decides.
+Each round is judged from the ORIGINAL tree — the previous patch is reverted
+before yours is applied — so always return the complete set of functions you
+want in the tree, including ones you already edited and still want changed.
 """
 
-PATCH_TOOL = {
+def patch_tool() -> dict:
+    """Built at call time, because the target list is DERIVED (`all_targets`).
+
+    A hand-written enum froze the menu at whatever was curated; this one widens
+    itself the moment a patchable function starts reading a new constant.
+    """
+    return {
     "name": "propose_capability_patch",
     "description": ("Widen one to three functions so a currently-unreadable "
                     "layout parses."),
@@ -272,7 +375,8 @@ PATCH_TOOL = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "target": {"type": "string", "enum": [*PATCHABLE]},
+                        "target": {"type": "string",
+                                   "enum": [*all_targets()]},
                         "function_source": {
                             "type": "string",
                             "description": ("The complete corrected function, from "
@@ -527,9 +631,53 @@ def _retry_note(gap_info: dict) -> str:
     return "\n".join(lines)
 
 
+def _messages(prompt: str, turns: list[dict]) -> list[dict]:
+    """The conversation, with cache breakpoints where the prefix stops moving.
+
+    Two, and each is placed on the last block that is byte-identical to the
+    previous request — which is what a breakpoint is for. Anthropic's caching
+    rules give 4 per request and the system prompt already holds one:
+
+      OPENING TURN — all fifteen candidate functions, the CALS block, the
+      diagnostic. ~11,600 tokens, unchanged on every round of a refinement, and
+      unchanged across every gap sharing this model. Without this breakpoint an
+      `iterate` loop pays that in full three times and round 2 costs more than
+      round 1.
+
+      LAST COMPLETED TURN — the moving one. Round 3 sends round 1's patch and
+      round 2's observation again; marking the final block of the prefix means
+      those are read from cache rather than re-billed. Only worth a slot once
+      there is a prefix to reuse, so it is not placed on round 1.
+
+    The rest of the request is deliberately held still, because `tools` and
+    `tool_choice` invalidate the message cache when they move and this call
+    changes neither between rounds.
+    """
+    msgs: list[dict] = [{"role": "user", "content": [
+        {"type": "text", "text": prompt,
+         "cache_control": {"type": "ephemeral"}}]}]
+    for i, t in enumerate(turns):
+        content = t["content"]
+        block = [{"type": "text", "text": content}] if isinstance(content, str) \
+            else list(content)
+        if i == len(turns) - 1 and block:
+            block[-1] = {**block[-1], "cache_control": {"type": "ephemeral"}}
+        msgs.append({"role": t["role"], "content": block})
+    return msgs
+
+
 def propose_capability_patch(gap_info: dict, table, *,
-                             model: str | None = None) -> dict | None:
-    """One paid question per LAYOUT FINGERPRINT, cached like every other."""
+                             model: str | None = None,
+                             history: list[dict] | None = None) -> dict | None:
+    """One paid question per LAYOUT FINGERPRINT, cached like every other.
+
+    `history` turns the single question into a CONVERSATION: alternating
+    assistant turns (the patch it wrote) and user turns (what that patch
+    measurably did — see `iterate.observe`). The opening prompt is identical
+    either way, so the expensive part of the input is shared across rounds and
+    the model is answering with its own last attempt in front of it rather than
+    re-deriving from the table.
+    """
     import anthropic
 
     from ..core.api_cache import get_cached, store_cached
@@ -537,7 +685,7 @@ def propose_capability_patch(gap_info: dict, table, *,
 
     model = model or config.MODEL_HAIKU
     offered = []
-    for name, (module, what) in PATCHABLE.items():
+    for name, (module, what) in all_targets().items():
         src = _function_source(module, name)
         if src:
             offered.append(f"### `{name}` in {module.name} — {what}\n"
@@ -562,9 +710,20 @@ def propose_capability_patch(gap_info: dict, table, *,
     # would be proposed again, verbatim, for ever. `retry` is derived from the
     # journal, so it survives the process that recorded it.
     retry = int(gap_info.get("retry") or 0)
+    # The ROUND is in the key too, and by the content of the feedback rather
+    # than its number: round 2 is a different question from round 1 only
+    # because the observation differs, and two runs that observed the same
+    # thing should share the answer.
+    turns = list(history or [])
+    round_key = ""
+    if turns:
+        import hashlib
+        h = hashlib.sha1(json.dumps(turns, default=str, sort_keys=True).encode())
+        round_key = f"::r{len(turns)}-{h.hexdigest()[:10]}"
     key = (f"capability::{PATCH_EPOCH}::{gap_info['fingerprint']}::{model}"
            + (f"::retry{retry}" if retry else "")
-           + ("::oracle" if gap_info.get("oracle_note") else ""))
+           + ("::oracle" if gap_info.get("oracle_note") else "")
+           + round_key)
     cached = get_cached(model, key)
     if cached is not None:
         try:
@@ -598,8 +757,9 @@ def propose_capability_patch(gap_info: dict, table, *,
         model=model, max_tokens=_MAX_OUTPUT, temperature=0,
         system=[{"type": "text", "text": PATCH_SYSTEM,
                  "cache_control": {"type": "ephemeral"}}],
-        tools=[PATCH_TOOL], tool_choice={"type": "tool", "name": PATCH_TOOL["name"]},
-        messages=[{"role": "user", "content": prompt}])
+        tools=[patch_tool()],
+        tool_choice={"type": "tool", "name": patch_tool()["name"]},
+        messages=_messages(prompt, turns))
     cost_tracker.record(resp.usage.input_tokens, resp.usage.output_tokens, model,
                         patent_id=gap_info.get("patent", ""), cost_category="lm")
     if resp.stop_reason == "max_tokens":

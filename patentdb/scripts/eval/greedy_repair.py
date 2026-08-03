@@ -35,12 +35,20 @@ from ...repair.greedy import Candidate, select
 logger = logging.getLogger(__name__)
 
 
-def _candidates(pids: list[str] | None, limit: int) -> list[Candidate]:
-    """One proposal per open capability gap, as an editable candidate."""
-    from ...repair.capability import (
-        MAX_TARGETS, PATCHABLE, _attach_oracle, _function_source, collect_gaps,
-        propose_capability_patch,
-    )
+def _candidates(pids: list[str] | None, limit: int,
+                rounds: int | None = None) -> list[Candidate]:
+    """One candidate per open capability gap — REFINED, not asked once.
+
+    Each gap goes through `iterate.refine`: propose a patch, splice it, run a
+    real extraction, feed the measured result back, propose again. What arrives
+    here is the best attempt of that conversation, which `greedy` then scores
+    against the corpus exactly as before. The two loops answer different
+    questions — `refine` asks "does this patch read the patent it was written
+    for", `greedy` asks "is it worth having in the tree" — and neither
+    substitutes for the other.
+    """
+    from ...repair.capability import _attach_oracle, collect_gaps
+    from ...repair.iterate import refine
     from ...sources.uspto_xml import assemble_blocks, parse_tables
 
     xml_dir = config.OUTPUT_DIR / "uspto_xml"
@@ -53,54 +61,25 @@ def _candidates(pids: list[str] | None, limit: int) -> list[Candidate]:
             continue
         g["xml"] = xml
         _attach_oracle(g, xml)
-        prop = propose_capability_patch(g, table)
-        patches = (prop or {}).get("patches") or []
-        if not patches:
-            logger.warning("greedy: %s — model proposed nothing (%s)",
-                           g["patent"], str((prop or {}).get("diagnosis"))[:120])
+        best, attempts = refine(g, table, rounds=rounds)
+        for a in attempts:
+            print(f"  round {a.round_no}: {g['patent']} "
+                  f"{a.target_before} -> {a.target_after} compounds  "
+                  f"edited={a.names or '-'} noop={a.noop or '-'}"
+                  + (f"  BROKEN {a.broken[:60]}" if a.broken else ""),
+                  file=sys.stderr)
+        if best is None:
+            logger.warning("greedy: %s — %d round(s), nothing runnable",
+                           g["patent"], len(attempts))
             continue
-        # Splice every target into its module IN MEMORY: two targets can live in
-        # one file, so edits must accumulate per module rather than each being
-        # applied to the on-disk text.
-        edits: dict[str, str] = {}
-        names = []
-        for patch in patches[:MAX_TARGETS]:
-            name = patch.get("target")
-            body = (patch.get("function_source") or "").rstrip()
-            if name not in PATCHABLE or not body:
-                continue
-            module = PATCHABLE[name][0]
-            src = edits.get(str(module)) or module.read_text()
-            old = _function_source(module, name)
-            if not old or old not in src:
-                continue
-            edits[str(module)] = src.replace(old, body)
-            names.append(name)
-        # The splice must PARSE. One proposal produced
-        # `.replace('\u2266', '<=').n    s_norm = ...` — a newline collapsed
-        # into the letter `n` — and the candidate reached `measure()`, threw
-        # SyntaxError on import, and was scored as a patch that found nothing.
-        # A candidate that cannot be imported is not a bad patch, it is not a
-        # patch, and it must never cost a measurement round.
-        import ast
-        broken = []
-        for mod, text in edits.items():
-            try:
-                ast.parse(text)
-            except SyntaxError as e:
-                broken.append(f"{Path(mod).name}:{e.lineno} {e.msg}")
-        if broken:
-            logger.warning("greedy: %s — splice does not parse (%s); dropped",
-                           g["patent"], "; ".join(broken)[:160])
-            edits = {}
-
-        if edits:
-            out.append(Candidate(
-                label=f"{g['patent']}:{','.join(names)}",
-                target_patent=g["patent"], edits=edits,
-                diagnosis=str(prop.get("diagnosis", ""))[:400],
-                fingerprint=str(g.get("fingerprint")),
-                meta={"rows_at_stake": g.get("rows_at_stake")}))
+        out.append(Candidate(
+            label=f"{g['patent']}:{','.join(best.names)}",
+            target_patent=g["patent"], edits=best.edits,
+            diagnosis=best.diagnosis,
+            fingerprint=str(g.get("fingerprint")),
+            meta={"rows_at_stake": g.get("rows_at_stake"),
+                  "rounds": len(attempts), "round_kept": best.round_no,
+                  "target_after": best.target_after}))
     return out
 
 
@@ -109,6 +88,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--patents", help="comma-separated; default = every open gap")
     ap.add_argument("--limit", type=int, default=8, help="max candidates to buy")
+    ap.add_argument("--rounds", type=int, default=None,
+                    help="observe-and-adjust rounds per gap (default "
+                         f"{__import__('os').environ.get('CAPABILITY_ROUNDS', 3)})")
     ap.add_argument("--apply", action="store_true",
                     help="write the winning set to the tree (default: measure only)")
     ap.add_argument("--json", default="docs/reports/greedy_repair.json")
@@ -118,7 +100,7 @@ def main() -> int:
     frozen = snapshot.frozen_ids()
     print(f"frozen patents (out of scope): {len(frozen)}", file=sys.stderr)
 
-    cands = _candidates(pids, a.limit)
+    cands = _candidates(pids, a.limit, a.rounds)
     print(f"candidates: {len(cands)}", file=sys.stderr)
     for c in cands:
         print(f"  {c.label:44s} rows_at_stake={c.meta.get('rows_at_stake')}",

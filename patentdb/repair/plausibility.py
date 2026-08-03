@@ -145,6 +145,55 @@ def check_potency_out_of_range(patent_id: str, xml: str, records) -> list[Flag]:
                 f"measurement the patent reports."))]
 
 
+def check_unconvertible_unit(patent_id: str, xml: str, records) -> list[Flag]:
+    """Potencies carrying a unit nothing downstream can put on a scale.
+
+    `_nm` returns None for a unit outside `_TO_NM`, and every check that reads
+    it then SKIPS the record. So a patent can carry hundreds of potencies in a
+    unit no consumer understands and pass the magnitude check by not being
+    examined — a clean report that means "not looked at", which is the shape of
+    nearly every defect in this system's history.
+
+    Found by the repair loop itself. Given `_UNIT_PAT` to widen, it taught
+    `_unit_from` to read `[mol/l]` off US10266548's header and recovered 118
+    compounds that had been dropped as unusable. The records are TRUE — the
+    patent states `median IC50 [mol/l]` and `2.4e-09` — but `mol/L` is not in
+    `_TO_NM`, not in `_CONC_UNIT`, and 2.4e-09 read as nanomolar is wrong by
+    nine orders of magnitude. The value needs rescaling to go with the unit,
+    which `_unit_from` cannot do because it never sees the value.
+
+    So this is not a complaint about the patch. It is the signal that the patch
+    finished half a job, aimed at the tier that can finish it: `parse_value`
+    and `extract_from_tables` are both on the candidate list and both hold the
+    value and the unit at the same moment.
+    """
+    odd: dict[str, list] = {}
+    for r in records:
+        if not r.is_usable or not _POTENCY.search(r.assay_name or ""):
+            continue
+        if r.value_numeric is None or not r.unit or r.unit in _TO_NM:
+            continue
+        odd.setdefault(r.unit, []).append(r)
+    if not odd:
+        return []
+    out = []
+    for unit, rs in sorted(odd.items(), key=lambda kv: -len(kv[1])):
+        out.append(Flag(
+            kind="unconvertible_unit", patent_id=patent_id,
+            table_id=rs[0].table_id, rows_at_stake=len(rs),
+            examples=[f"{r.cid}: {r.value_numeric} {r.unit} "
+                      f"({r.assay_name or '?'})" for r in rs[:4]],
+            detail=(f"{len(rs)} potency record(s) carry the unit {unit!r}, which "
+                    f"is not one of {sorted(_TO_NM)}. Nothing downstream can "
+                    f"place them on a concentration scale: the magnitude check "
+                    f"skips them rather than passing them, and a comparison "
+                    f"against a reference in nM will mis-scale or drop them. "
+                    f"Either convert the value to a known unit where the value "
+                    f"and the unit are read together, or state why this scale "
+                    f"has no nanomolar equivalent.")))
+    return out
+
+
 def check_unnamed_assay(patent_id: str, xml: str, records) -> list[Flag]:
     """Usable measurements nobody can say the meaning of.
 
@@ -224,7 +273,8 @@ def check_same_assay_disagrees(patent_id: str, xml: str, records) -> list[Flag]:
 
 
 CHECKS = (check_n_runs_dropped, check_potency_out_of_range,
-          check_unnamed_assay, check_same_assay_disagrees)
+          check_unconvertible_unit, check_unnamed_assay,
+          check_same_assay_disagrees)
 
 
 def audit(patent_id: str, xml: str, records) -> list[Flag]:
