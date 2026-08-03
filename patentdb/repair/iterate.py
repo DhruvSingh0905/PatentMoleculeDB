@@ -274,8 +274,20 @@ def refine(gap_info: dict, table, *, rounds: int | None = None,
     history: list[dict] = []
     attempts: list[Attempt] = []
     for i in range(1, rounds + 1):
-        prop = propose_capability_patch(gap_info, table, model=model,
-                                        history=history or None)
+        # An API failure ENDS THE ROUNDS, it does not end the run. Measured:
+        # a 400 on the fifth gap's second round propagated out of `refine`,
+        # out of `_candidates`, and killed the process before `select` had
+        # applied anything — discarding a verified +122 that a previous gap
+        # had already won. Rounds already observed are real work and are
+        # returned; the caller decides what to do with a short conversation.
+        try:
+            prop = propose_capability_patch(gap_info, table, model=model,
+                                            history=history or None)
+        except Exception as e:
+            logger.warning("iterate: %s round %d — asking failed (%s); keeping "
+                           "the %d round(s) already observed",
+                           patent_id, i, type(e).__name__, len(attempts))
+            break
         if not prop:
             logger.warning("iterate: %s round %d — no answer", patent_id, i)
             break

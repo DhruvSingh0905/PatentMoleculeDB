@@ -1474,6 +1474,16 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     like "Compound 1.001: ...", the CID is extracted from that cell. This
     handles tables where the structure/image column is empty and the compound
     name only appears inside the characterisation data cell.
+
+    Wrapped-name rows: some tables (e.g. US9018217 TABLE-US-00001) use the
+    full IUPAC compound name as the identifier, split across two consecutive
+    XML rows. The first row has the name fragment in col 0 and the value in
+    col 1; the second has the name continuation in col 0 and col 1 blank.
+    When the CID column cell does not match any short-id pattern but is a long
+    chemical name string, the cell text is used as the CID directly (name-as-id).
+    Consecutive rows where the assay columns are all blank are treated as
+    name-continuation rows and their col-0 text is appended to the preceding
+    name to form the full compound name.
     """
     out: list[AssayRecord] = []
     last_header: dict[int, list[list[str]]] = {}
@@ -1492,9 +1502,23 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     _EMBEDDED_CID = _re.compile(
         r'(?:Compound|Cpd|Cmpd|Example|Ex\.?)'
         r'[\s.#\-]*'
-        r'(\d+(?:[\._]\d+)?(?:[a-zA-Z])?)',
+        r'(\d+(?:[\._ ]\d+)?(?:[a-zA-Z])?)',
         _re.IGNORECASE,
     )
+
+    # Chemical-name pattern: used to detect name-as-id tables where the full
+    # IUPAC name is used as the compound identifier.
+    _CHEM_NAME = _re.compile(
+        r'(?:yl|phenyl|methyl|imidazol|pyrimidin|morpholin|triazol|'
+        r'chloro|bromo|fluoro|ethyl|propyl|cyclo|oxo|amino|nitro|'
+        r'benz|piperid|piperaz|pyridine|pyrazol|oxazol|thiazol)',
+        _re.IGNORECASE)
+
+    def _is_chem_name(s: str) -> bool:
+        """Does this string look like a chemical/IUPAC compound name?"""
+        return (len(s) > 15
+                and (bool(_CHEM_NAME.search(s))
+                     or (s.count('-') + s.count('[') + s.count('(')) >= 3))
 
     for t in tables:
         hdr_rows, data_rows = _header_rows_of(t)
@@ -1535,10 +1559,91 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
         # blank still produce records.  Reset per table.
         prev_cid: str | None = None
 
+        # Wrapped-name state: buffer for name-as-id tables where the compound
+        # name spans two XML rows. prev_name_parts accumulates name fragments;
+        # prev_name_value holds the parsed value from the first fragment row;
+        # prev_name_assay_col holds the assay column for that value.
+        prev_name_parts: list[str] = []
+        prev_name_value: dict | None = None
+        prev_name_assay_col = None
+
+        def _flush_wrapped(table_id=t.table_id):
+            """Emit any buffered wrapped-name record and reset the buffer."""
+            nonlocal prev_name_parts, prev_name_value, prev_name_assay_col
+            if prev_name_parts and prev_name_value is not None and prev_name_assay_col is not None:
+                full_name = " ".join(prev_name_parts).strip()
+                c = prev_name_assay_col
+                parsed = prev_name_value
+                out.append(AssayRecord(
+                    cid=full_name,
+                    assay_name=c.assay_name or c.header or "unnamed assay",
+                    value_numeric=parsed.get("value_numeric"),
+                    qualifier=parsed.get("qualifier"),
+                    unit=parsed.get("unit") or c.unit,
+                    n_runs=parsed.get("n_runs"),
+                    letter_grade=parsed.get("letter_grade"),
+                    value_text=parsed.get("value_text", ""),
+                    table_id=table_id,
+                    column_header=c.header,
+                ))
+            prev_name_parts = []
+            prev_name_value = None
+            prev_name_assay_col = None
+
+        # Detect name-as-id table: CID column holds long chemical names rather
+        # than short alphanumeric ids. Check the first populated CID cells.
+        _name_as_id = False
+        _sample_cid_vals = [
+            r[cid_col.index].text.strip()
+            for r in data_rows
+            if not _is_spacer(r) and len(r) > cid_col.index
+            and r[cid_col.index].text.strip()
+        ][:20]
+        if _sample_cid_vals:
+            _long = sum(1 for v in _sample_cid_vals if _is_chem_name(v))
+            _short = sum(1 for v in _sample_cid_vals
+                         if _CID_PAT.match(v) or _BARE_INT_CID.match(v))
+            if _long > 0 and _short == 0:
+                _name_as_id = True
+
         for row in data_rows:
             if _is_spacer(row) or len(row) <= cid_col.index:
                 continue
             raw_cid = row[cid_col.index].text.strip()
+
+            # --- Name-as-id (wrapped compound name) handling ---
+            # When the table uses full IUPAC names as identifiers, the name may
+            # wrap across two consecutive XML rows. The first row has the name
+            # fragment and the value; the second has the name continuation and
+            # a blank value cell. We buffer fragments and emit when we see a new
+            # name fragment with a value (or at end of table).
+            if _name_as_id:
+                # Check if any assay column has a parseable value in this row
+                row_value_parsed = None
+                row_value_col = None
+                for c in assay_cols:
+                    if len(row) > c.index and row[c.index].text.strip():
+                        pv = parse_value(row[c.index].text)
+                        if pv:
+                            row_value_parsed = pv
+                            row_value_col = c
+                            break
+
+                if raw_cid and row_value_parsed is not None:
+                    # New compound: flush any buffered name, start new buffer
+                    _flush_wrapped()
+                    prev_name_parts = [raw_cid]
+                    prev_name_value = row_value_parsed
+                    prev_name_assay_col = row_value_col
+                elif raw_cid and row_value_parsed is None:
+                    # Continuation row: append name fragment to buffer
+                    if prev_name_parts:
+                        prev_name_parts.append(raw_cid)
+                    # else: orphan continuation row with no preceding name, ignore
+                # blank raw_cid rows in name-as-id tables are spacers, skip
+                continue
+            # --- End name-as-id handling ---
+
             if raw_cid:
                 # Accept standard CID patterns AND bare integers with optional
                 # trailing period ("4.", "12") that appear in tables where compound
@@ -1645,6 +1750,10 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
                         table_id=t.table_id,
                         column_header=c.header,
                     ))
+
+        # Flush any buffered wrapped-name record at end of table
+        _flush_wrapped()
+
     return out
 
 

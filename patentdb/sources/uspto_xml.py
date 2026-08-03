@@ -378,8 +378,46 @@ _ID_CELL = re.compile(r"(?:(?:Ex(?:ample)?\.?|Cpd|Compound)\s*)?[A-Za-z]{0,3}[-�
 
 
 def _opens_with_id(cells: list["Cell"]) -> bool:
+    """Does this row begin with a compound identifier?
+
+    The standard test checks for a short alphanumeric id (e.g. "1", "12a",
+    "A-7", "Ex. 203") via `_ID_CELL`. This separates data rows from
+    interleaved annotation rows in most tables.
+
+    Extended for name-as-id tables (e.g. US9018217): some tables use the full
+    IUPAC compound name as the identifier in column 0, with the assay value in
+    column 1. The name often wraps across two XML rows — the first row has the
+    name fragment and the value, the second has the name continuation and a
+    blank value cell. Both rows must be recognised as data rows so that
+    `assemble_block` includes the tgroup in `kin`.
+
+    A row is treated as opening with an id if:
+      - its first non-empty cell matches `_ID_CELL` (short alphanumeric id), OR
+      - it has 1 or 2 non-empty cells and the first is a long string (>15 chars)
+        containing chemical-name characters (hyphens, brackets, 'yl', etc.) —
+        this covers both the value row (2 cells) and the continuation row
+        (1 cell, col-1 blank).
+    """
     texts = [c.text.strip() for c in cells if c.text.strip()]
-    return bool(texts) and bool(_ID_CELL.fullmatch(texts[0]))
+    if not texts:
+        return False
+    if _ID_CELL.fullmatch(texts[0]):
+        return True
+    # Name-as-id: long chemical name in col 0, with or without a value in col 1.
+    # Covers both the first fragment row (name + value) and the continuation
+    # row (name fragment only, value cell blank) that appear in tables like
+    # US9018217 TABLE-US-00001 where the full IUPAC name is the compound id.
+    if 1 <= len(texts) <= 2:
+        name = texts[0]
+        if (len(name) > 15
+                and (re.search(
+                    r'(?:yl|phenyl|methyl|imidazol|pyrimidin|morpholin|triazol|'
+                    r'chloro|bromo|fluoro|ethyl|propyl|cyclo|oxo|amino|nitro|'
+                    r'benz|piperid|piperaz|pyridine|pyrazol|oxazol|thiazol)',
+                    name, re.IGNORECASE)
+                     or (name.count('-') + name.count('[') + name.count('(')) >= 3)):
+            return True
+    return False
 
 
 def _row_key(cells: list["Cell"]) -> tuple[str, ...]:
@@ -544,6 +582,13 @@ def assemble_block(tables: list["Table"], table_id: str) -> "Table | None":
     # with a trailing value omitted. Selecting one width discards 190 of 359.
     # So classify each fragment by whether its rows open with a compound id, and
     # keep every fragment that does, at whatever width.
+    #
+    # Name-as-id tables (e.g. US9018217): the compound identifier is the full
+    # IUPAC name, which wraps across two XML rows. The first row has the name
+    # fragment and the value; the second has the name continuation and a blank
+    # value cell. `_opens_with_id` recognises both as data rows (long chemical
+    # name string). The tgroup containing these rows must be included in `kin`
+    # even though neither row carries a short alphanumeric id.
     kin, filled = [], 0
     for t in same:
         n = sum(1 for r in t.body_rows if any(c.text.strip() for c in r))

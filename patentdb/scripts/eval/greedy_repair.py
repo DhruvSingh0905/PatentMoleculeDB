@@ -60,8 +60,20 @@ def _candidates(pids: list[str] | None, limit: int,
         if table is None:
             continue
         g["xml"] = xml
-        _attach_oracle(g, xml)
-        best, attempts = refine(g, table, rounds=rounds)
+        # One gap must not be able to end the run. The oracle and the refine
+        # loop both make paid calls, and a 400 on the fifth gap took down a
+        # process that had already won a verified +122 on the fourth -- the
+        # candidates are collected here and only APPLIED by `select` below, so
+        # anything that escapes this loop discards completed work rather than
+        # merely skipping the gap that failed.
+        try:
+            _attach_oracle(g, xml)
+            best, attempts = refine(g, table, rounds=rounds)
+        except Exception as e:
+            logger.warning("greedy: %s raised (%s: %s); skipping this gap and "
+                           "keeping the %d candidate(s) already found",
+                           g["patent"], type(e).__name__, str(e)[:160], len(out))
+            continue
         for a in attempts:
             print(f"  round {a.round_no}: {g['patent']} "
                   f"{a.target_before} -> {a.target_after} compounds  "

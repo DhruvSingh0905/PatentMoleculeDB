@@ -101,21 +101,22 @@
  ],
  "candidates": [
   {
-   "label": "US10266548:_UNIT_PAT,_unit_from",
-   "target": "US10266548",
-   "diagnosis": "The merged header for the assay columns contains the column label concatenated with the first data values from the header tgroup (e.g. \"Biological Assay 1: Bub1 kinase assay median IC50 [mol/l] 2.6e\u2212009 1.2e\u2212007\"). The unit is `mol/l` but `_unit_from` only recognises `nM`, `uM`, `pM`, `mM`, `M`, `ng/mL`, `ug/mL`, `mg/mL` \u2014 not `mol/l`. So `_unit_from` returns None, the assay columns get no unit, a",
+   "label": "US9018217:_opens_with_id,assemble_block,extract_from_tables",
+   "target": "US9018217",
+   "diagnosis": "The diagnostic is identical across all three attempts: assembly still produces exactly 1 data row containing ['Compound', 'IC50(nM)'] \u2014 the header rows are not being separated from the body. The assembled table has header=[] and body=[['Compound','IC50(nM)']], so the word 'Compound' is the only CID candidate and fails _CID_PAT. The root cause is in `_header_rows_of`: the body rows ['', 'IC50'] and",
    "modules": [
-    "uspto_assays.py"
+    "uspto_assays.py",
+    "uspto_xml.py"
    ]
   }
  ],
  "outcomes": [
   {
-   "label": "US10266548:_UNIT_PAT,_unit_from",
+   "label": "US9018217:_opens_with_id,assemble_block,extract_from_tables",
    "accepted": true,
-   "why": "target +118, corpus +118",
-   "target_gain": 118,
-   "corpus_gain": 118,
+   "why": "target +122, corpus +122",
+   "target_gain": 122,
+   "corpus_gain": 122,
    "worst_patent": "",
    "worst_loss": 0.0
   }
