@@ -89,22 +89,39 @@ _SPELLED_UNIT = {
 # The minus may be ASCII `-`, U+2212 MINUS or an en dash; typesetting picks.
 _EXP = r"(?:\s*[Ee]\s*[-−–+]?\s*\d{1,3})?"
 _VALUE_PAT = re.compile(
-    r"^\s*(?P<qual>[<>~≈≥≤≦≧⩽⩾]|>=|<=)?\s*"
+    r"^\s*(?P<qual>[<>~\u2248\u2265\u2264\u2266\u2267\u2a7e\u2a7d]|>=|<=)?\s*"
     r"(?P<num>(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)" + _EXP + r")"
-    r"\s*(?P<unit>nM|µM|μM|uM|mM|pM|%)?"
-    r"(?:\s*\(\s*(?P<paren>[^)]{1,12}?)\s*\))?\s*$")
-
+    r"\s*(?P<unit>nM|\u00b5M|\u03bcM|uM|mM|pM|%)?"
+    r"(?:\s*\(\s*(?P<paren>[^)]{1,12}?)\s*\))?\s*"
+    # Trailing footnote markers (* ** *** # ## ###) appear in patent tables to
+    # encode replicate count or significance (e.g. '572**', '1194**').
+    # They must not cause the cell to be rejected — the measurement is valid.
+    # US9695181 writes '572**' and '1194**' for single-experiment IC50 values.
+    r"[*#]*\s*$")
 # `1680 ± 150 (n = 4)` / `0.00275 ± 0.00046, n = 3`. The value is the mean and
 # the second number is its spread, which we do not store — but rejecting the
 # whole cell loses the measurement too. 147 assay cells across four patents,
 # and on US11649247 it lost the potency while keeping the `>20.0` ceiling from
 # the neighbouring column, so the compound read as inactive when the patent
 # reports it at 2.75 nM.
+#
+# RESTORED BY HAND. A capability patch that correctly taught this pattern to
+# accept trailing footnote markers rewrote the whole assignment and dropped
+# this block with it. Coverage rose, the reasoning vanished, and no test could
+# see the difference — which is why the standing rule is to read every applied
+# patch even when every automated check is green. Note also that a net comment
+# COUNT is not evidence of preservation: this file gained eight comment lines
+# in the same patch that deleted these six.
 _MEAN_SD = re.compile(
-    r"^\s*(?P<qual>[<>~≈≥≤])?\s*(?P<num>\d+(?:,\d{3})*(?:\.\d+)?)\s*"
-    r"(?:±|\+/-|\+-)\s*\d+(?:,\d{3})*(?:\.\d+)?\s*"
-    r"(?P<unit>nM|µM|μM|uM|mM|pM|%)?"
-    r"[\s,;]*(?:\(?\s*n\s*=\s*(?P<n>\d{1,3})\s*\)?)?[\s,;]*$", re.I)
+    r"^\s*(?P<qual>[<>~\u2248\u2265\u2264])?\s*(?P<num>\d+(?:,\d{3})*(?:\.\d+)?)\s*"
+    r"(?:\u00b1|\+/-|\+-)\s*\d+(?:,\d{3})*(?:\.\d+)?\s*"
+    r"(?P<unit>nM|\u00b5M|\u03bcM|uM|mM|pM|%)?"
+    r"[\s,;]*(?:\(?\s*n\s*=\s*(?P<n>\d{1,3})\s*\)?)?[\s,;]*"
+    # Trailing footnote markers (* ** *** # ## ###) are common in patent tables
+    # to encode replicate count or significance. They must not cause the cell to
+    # be rejected — the measurement is still valid. US9695181 writes
+    # '3.0 ± 1.0*' and '2.2 ± 0.9*'; without this suffix the whole cell fails.
+    r"[*#]*\s*$", re.I)
 
 _NRUNS_ONLY = re.compile(r"^\s*\(\s*(\d{1,3})\s*\)\s*$")
 _LETTER_BIN = re.compile(r"^\s*([A-E])\s*$")
@@ -132,7 +149,19 @@ _CID_LABEL = re.compile(
 # `323-2`. Capped at two digits and only after a bare number, so a value column
 # of ranges (`0.5-1.0`, `100-200 nM`) cannot be mistaken for identifiers — the
 # decimal point and the unit both fall outside the pattern.
-_CID_CORE = r"(?:[A-Za-z]{1,3}[-–]?)?\d{1,5}(?:[-–]?[a-zA-Z]{1,2})?(?:[-–]\d{1,2})?"
+_CID_CORE = (
+    r"(?:"
+    # Standard form: optional short letter prefix, required digits, optional letter suffix
+    r"(?:[A-Za-z]{1,3}[-\u2013]?)?\d{1,5}(?:[-\u2013]?[a-zA-Z]{1,2})?(?:[-\u2013]\d{1,2})?"
+    r"|"
+    # Roman-numeral / all-letter ids with no digits: IIa, IIb, IIIc, IVd, etc.
+    # US9695181 labels compounds IIa/IIb/IIc/IId — all uppercase letters
+    # optionally followed by a single lowercase suffix letter. At least 2 chars
+    # to avoid matching single-letter column headers like 'R' or 'X'.
+    # Must be anchored by the surrounding _CID_PAT so it does not swallow prose.
+    r"[A-Z]{2,4}[a-z]?"
+    r")"
+)
 _CID_PAT = re.compile(rf"^\s*(?:{_CID_LABEL.pattern[2:]})?{_CID_CORE}\s*$", re.I)
 
 

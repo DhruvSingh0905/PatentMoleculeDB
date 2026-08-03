@@ -84,6 +84,42 @@ class Attempt:
         return self.target_after > self.target_before
 
 
+# Escapes a model writes for characters it could have typed. Inside a string
+# literal `±` and `±` are the same thing; inside a COMMENT the escape is
+# six literal characters and the sentence is corrupted.
+# The characters a model escapes instead of typing. Built at RUNTIME from
+# the codepoints, never written as literal pairs: an editor that helpfully
+# turns "\\u00b1" into the character collapses such a table into an identity
+# map that silently does nothing, which is exactly what happened here on the
+# first attempt at this function.
+_ESCAPED = "\u00b1\u2014\u2013\u2248\u2265\u2264\u00b5\u03bc\u2212" \
+           "\u2266\u2267\u2a7e\u2a7d\u00b0\u00d7\u2032\u2033"
+_ESCAPES = {"\\u%04x" % ord(c): c for c in _ESCAPED}
+
+
+def deescape_comments(src: str) -> str:
+    """Turn `\\uXXXX` back into the character it names — COMMENT LINES ONLY.
+
+    PATCH_SYSTEM has forbidden this in words since the second occurrence and
+    it has now happened a third time, on `'3.0 \\u00b1 1.0*'` in a comment the
+    model wrote to explain the very footnote-marker fix it was making. An
+    instruction that has failed three times is not a control.
+
+    Scoped to comments on purpose. In a string literal the two forms are
+    identical to the interpreter, and rewriting a regex nobody asked us to
+    touch is a behaviour change smuggled in as tidying; in a comment the
+    escape is not an escape at all, just six characters where a symbol should
+    be, and no test can ever see it.
+    """
+    out = []
+    for line in src.split("\n"):
+        if line.lstrip().startswith("#"):
+            for esc, ch in _ESCAPES.items():
+                line = line.replace(esc, ch)
+        out.append(line)
+    return "\n".join(out)
+
+
 def splice(patches: list, *, max_targets: int | None = None) -> tuple[dict, list, list, str]:
     """Patches -> (edits per module, names, no-op names, parse error).
 
@@ -104,7 +140,7 @@ def splice(patches: list, *, max_targets: int | None = None) -> tuple[dict, list
     noop: list[str] = []
     for patch in (patches or [])[:max_targets]:
         name = patch.get("target")
-        body = (patch.get("function_source") or "").rstrip()
+        body = deescape_comments((patch.get("function_source") or "").rstrip())
         if name not in targets or not body:
             continue
         module = targets[name][0]
