@@ -198,9 +198,29 @@ def select(candidates: list[Candidate], *, apply: bool = True,
             break
         cand, tg, cg, why = best
         if apply:
+            saved_tree = {Path(p): Path(p).read_text() for p in cand.edits}
             for path, text in cand.edits.items():
                 Path(path).write_text(text)
             _reload()
+            # Confirm from COLD before keeping it. In-process measurement has
+            # now twice reported a gain a fresh interpreter could not
+            # reproduce, and the second time it wrote a module that raised
+            # NameError on import for the whole corpus.
+            fresh = verify_fresh(sorted(before), xml_dir=xml_dir)
+            broke = [p for p, v in fresh.items() if v < 0]
+            lost = sum(max(0, before[p] - fresh.get(p, 0)) for p in before)
+            if broke or (fresh.get(cand.target_patent, 0) <= before.get(
+                    cand.target_patent, 0) and lost):
+                for path, text in saved_tree.items():
+                    Path(path).write_text(text)
+                _reload()
+                why = ("REVERTED: a fresh interpreter cannot import it "
+                       f"({len(broke)} patent(s) raise)" if broke else
+                       "REVERTED: a fresh interpreter does not reproduce the gain")
+                outcomes.append(Outcome(cand.label, False, why, tg, cg))
+                logger.warning("greedy: %s reverted — %s", cand.label, why)
+                remaining = [c for c in remaining if c is not cand]
+                continue
         outcomes.append(Outcome(cand.label, True, why, tg, cg))
         logger.warning("greedy: ACCEPTED %s — %s", cand.label, why)
         # Everything rejected this round is retried next round against the new
@@ -210,11 +230,65 @@ def select(candidates: list[Candidate], *, apply: bool = True,
     return outcomes
 
 
+_RELOADABLE = ("patentdb.sources.bin_legend", "patentdb.sources.uspto_xml",
+               "patentdb.sources.uspto_assays")
+
+
 def _reload() -> None:
+    """PURGE and re-import. `importlib.reload` is not safe for this.
+
+    reload() re-executes the new source INTO THE EXISTING module dict, so any
+    name the patch DELETED stays bound from the previous execution. Measured:
+    a patch to `_ID_CELL` removed the `_HEADER_POTENCY` constant, reload left
+    the old binding in place, extraction ran, the candidate measured +53 and
+    was accepted — and a fresh process then raised `NameError` on every patent
+    in the corpus with 64 tests failing.
+
+    A measurement that a fresh interpreter cannot reproduce is not a
+    measurement. Dropping the modules from `sys.modules` first means the
+    re-import builds a new namespace containing only what the patched source
+    actually defines, which is what the next process will see.
+    """
     import importlib
     import sys
-    for name in ("patentdb.sources.bin_legend", "patentdb.sources.uspto_xml",
-                 "patentdb.sources.uspto_assays"):
-        mod = sys.modules.get(name)
-        if mod is not None:
-            importlib.reload(mod)
+    for name in _RELOADABLE:
+        sys.modules.pop(name, None)
+    for name in _RELOADABLE:
+        importlib.import_module(name)
+
+
+def verify_fresh(pids: list[str], *, xml_dir=None) -> dict[str, int]:
+    """Re-measure in a SEPARATE INTERPRETER. The only fully trustworthy count.
+
+    Even with the purge above, this process has already executed the unpatched
+    source once and holds references handed out by earlier imports. A
+    subprocess shares none of that, so it is the check that a patch about to be
+    kept can actually be imported from cold.
+    """
+    import json
+    import subprocess
+    import sys
+
+    xml_dir = str(xml_dir or (config.OUTPUT_DIR / "uspto_xml"))
+    code = (
+        "import json,sys\n"
+        "from pathlib import Path\n"
+        "from patentdb.sources.uspto_assays import extract_from_patent\n"
+        "out={}\n"
+        "for pid in sys.argv[2:]:\n"
+        "    f=Path(sys.argv[1])/(pid+'.xml')\n"
+        "    if not f.exists(): continue\n"
+        "    try:\n"
+        "        rs=extract_from_patent(f.read_text(errors='ignore'))\n"
+        "        out[pid]=len({r.cid for r in rs if r.is_usable and r.cid})\n"
+        "    except Exception:\n"
+        "        out[pid]=-1\n"
+        "print(json.dumps(out))\n")
+    try:
+        p = subprocess.run([sys.executable, "-c", code, xml_dir, *pids],
+                           capture_output=True, text=True, timeout=1800,
+                           cwd=str(config.REPO_ROOT))
+        return json.loads(p.stdout.strip().splitlines()[-1])
+    except Exception as e:
+        logger.warning("greedy: fresh-process verification failed: %r", e)
+        return {p: -1 for p in pids}
