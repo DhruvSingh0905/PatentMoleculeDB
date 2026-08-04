@@ -780,8 +780,16 @@ def propose_capability_patch(gap_info: dict, table, *,
     return out
 
 
-def _gap_from_a_silent_patent(patent_id: str, report) -> dict | None:
-    """A gap for a patent that failed too completely to produce one.
+# How many layouts of one silent patent may be bought in a single pass. A
+# silent patent has 4-5 distinct fingerprints (measured: US10730863 10 blocks /
+# 5, US10570116 4 / 4, US10227341 6 / 4), so returning ONE gap capped recovery
+# at a fifth of the document before patch quality was even a factor. Six is
+# above every count observed and still bounds the spend on a pathological file.
+SILENT_MAX_GAPS = 6
+
+
+def _gaps_from_a_silent_patent(patent_id: str, report) -> list[dict]:
+    """Gaps for a patent that failed too completely to produce one — ONE PER LAYOUT.
 
     Every entry in `capability_gaps` is raised by a TABLE-level detector, and a
     detector needs a parsed table to measure. When the defect is large enough to
@@ -796,7 +804,21 @@ def _gap_from_a_silent_patent(patent_id: str, report) -> dict | None:
     the model see the raw CALS beside the functions that failed on it. That is
     the stated fallback for this whole design: give it the source and our code.
 
-    Returns None whenever the patent produced anything at all, so this can never
+    ONE PER DISTINCT FINGERPRINT, not one per patent. This returned a single
+    gap — the block with the most measurement-shaped cells — and that is a
+    quarter of the evidence in a typical silent document. Measured on the
+    zero-yield set: US10730863 has 10 blocks across 5 layouts, US10570116 4
+    across 4, US10227341 6 across 4, and each was handed exactly one. Worse,
+    "most shaped cells" picked US10730863's TABLE-US-00009, a SINGLETON layout,
+    over the four-block group beside it.
+
+    Grouping by fingerprint is the same economics the rest of the loop runs on:
+    one paid question per layout, reused wherever that shape appears. A patch
+    often generalises anyway — US10730863 went 0 -> 428 from one gap because
+    `extract_from_tables` is shared — but that is luck, not design, and it is
+    not available when two layouts fail for different reasons.
+
+    Returns [] whenever the patent produced anything at all, so this can never
     compete with the precise signal.
     """
     from ..sources.uspto_assays import extract_from_patent
@@ -808,16 +830,16 @@ def _gap_from_a_silent_patent(patent_id: str, report) -> dict | None:
     blank = [e for e in getattr(report, "escalations", [])
              if e.get("capability") == "PATENT YIELDED NOTHING"]
     if not blank:
-        return None
+        return []
     xml_dir = config.OUTPUT_DIR / "uspto_xml"
     try:
         xml = (xml_dir / f"{patent_id}.xml").read_text(errors="ignore")
         if any(r.is_usable for r in extract_from_patent(xml)):
-            return None                      # not silent; the precise signal owns it
+            return []                        # not silent; the precise signal owns it
         raw = parse_tables(xml)
         tables = {t.table_id: t for t in assemble_blocks(raw)}
     except Exception:
-        return None
+        return []
 
     # Counted on the RAW tgroups, across header AND body rows.
     #
@@ -834,45 +856,55 @@ def _gap_from_a_silent_patent(patent_id: str, report) -> dict | None:
                 and (_SHAPED.match(c.text.strip()) or _GRADE.match(c.text.strip())))
         per_block[t.table_id] = per_block.get(t.table_id, 0) + n
     if not per_block:
-        return None
-    best_id = max(per_block, key=lambda k: per_block[k])
-    best_n = per_block[best_id]
-    best = tables.get(best_id)
-    # NO patent-level floor here. There was one — the same constant the caller
-    # uses — and it is the wrong UNIT at this point, not a wrong number.
-    #
-    # `loop` sums shaped cells across the whole patent to decide the document is
-    # worth reporting. This picks the single biggest BLOCK. US9695181 holds 18
-    # cells as 6 + 6 + 6, so it cleared the patent-level floor of 10, fired the
-    # invariant, reached `autoheal` — and then failed a per-block comparison
-    # against that same 10 and produced no gap at all. A patent that raises and
-    # cannot be collected is worse than one that never raised.
-    #
-    # By the time we are here the caller has already decided this document is
-    # worth looking at. The only question left is which block to show, and the
-    # answer is the biggest one, whatever its absolute size.
-    if best is None or best_n < 1:
-        return None
-    hdrs = merge_header(best, _header_rows_of(best)[0])
-    return {
-        "fingerprint": layout_fingerprint(best, hdrs),
-        "patent": patent_id, "table": best.table_id,
-        "rows_at_stake": blank[0].get("rows_at_stake") or best_n,
-        "rule_kind": None, "rule_payload": {},
-        "why": (f"{patent_id} produced NO usable measurement from any block, and "
-                f"no table-level detector could say why — the failure was large "
-                f"enough to destroy the evidence a detector reads. "
-                f"{best.table_id} carries {best_n} measurement-shaped cells and "
-                f"is the largest such block. Assume the reader, not the layout: "
-                f"compare the raw CALS against what our functions make of it."
-                + (" The assembler also reports that this patent's header "
-                   "outgrew its own body."
-                   if any(e.get("capability", "").startswith("ASSEMBLY DEFECT")
-                          for e in getattr(report, "escalations", [])) else "")),
-        "unparsed_examples": [
-            " | ".join(c.text.strip() for c in row)[:80]
-            for row in best.body_rows[:6] if any(c.text.strip() for c in row)],
-    }
+        return []
+
+    # Group the blocks by LAYOUT and keep the richest instance of each. One
+    # paid question per shape, exactly as the rule tier does it — two blocks of
+    # the same fingerprint fail for the same reason and one answer covers both.
+    by_fp: dict[str, tuple[str, int]] = {}
+    for tid, n in per_block.items():
+        t = tables.get(tid)
+        if t is None or n < 1:
+            continue
+        try:
+            fp = layout_fingerprint(t, merge_header(t, _header_rows_of(t)[0]))
+        except Exception:
+            continue
+        cur = by_fp.get(fp)
+        if cur is None or n > cur[1]:
+            by_fp[fp] = (tid, n)
+    if not by_fp:
+        return []
+
+    assembly = any(e.get("capability", "").startswith("ASSEMBLY DEFECT")
+                   for e in getattr(report, "escalations", []))
+    out: list[dict] = []
+    for fp, (tid, n) in sorted(by_fp.items(), key=lambda kv: -kv[1][1])[:SILENT_MAX_GAPS]:
+        b = tables[tid]
+        out.append({
+            "fingerprint": fp,
+            "patent": patent_id, "table": b.table_id,
+            # Per-BLOCK now, not the patent-wide figure. With one gap the
+            # document total was the honest stake; with one gap per layout it
+            # would report the same number several times over and rank a
+            # 2-cell layout level with a 200-cell one.
+            "rows_at_stake": n,
+            "rule_kind": None, "rule_payload": {},
+            "why": (f"{patent_id} produced NO usable measurement from any block, "
+                    f"and no table-level detector could say why — the failure "
+                    f"was large enough to destroy the evidence a detector "
+                    f"reads. {b.table_id} carries {n} measurement-shaped cells. "
+                    f"It is one of {len(by_fp)} distinct layout(s) in this "
+                    f"silent document, each asked about separately. Assume the "
+                    f"reader, not the layout: compare the raw CALS against what "
+                    f"our functions make of it."
+                    + (" The assembler also reports that this patent's header "
+                       "outgrew its own body." if assembly else "")),
+            "unparsed_examples": [
+                " | ".join(c.text.strip() for c in row)[:80]
+                for row in b.body_rows[:6] if any(c.text.strip() for c in row)],
+        })
+    return out
 
 
 def _annotate_prior_attempts(gaps: list[dict]) -> None:
@@ -919,9 +951,7 @@ def collect_gaps(patent_ids: list[str] | None = None) -> list[dict]:
             continue
         out.extend(rep.capability_gaps)
         if not rep.capability_gaps:
-            synth = _gap_from_a_silent_patent(pid, rep)
-            if synth is not None:
-                out.append(synth)
+            out.extend(_gaps_from_a_silent_patent(pid, rep))
     # A gap with nothing at stake is not a gap. Once the code tier fixes a
     # layout, the deterministic parser reads it directly and the rule bought
     # for it becomes redundant — `apply_rule` returns nothing because there is
