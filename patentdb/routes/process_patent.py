@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..core import config
+from ..core.name_boundary import terminate_name
 from ..core.cost_tracker import cost_tracker
 from ..core.patent_text import load_patent_description
 from ..core.route_classifier import classify_route, RouteDecision
@@ -181,20 +182,20 @@ def _merge_example_iupacs_from_gp_description(
         ).strip()
         if not iupac_chunk or len(iupac_chunk) < 20:
             continue
-        # The IUPAC ends at the first phrase boundary that's clearly
-        # post-name material: "was purified", "MS (ESI)", "Method",
-        # "Step", "The title compound", "racemic" mid-sentence (these
-        # are synthesis-description boilerplate).
-        end_re = re.compile(
-            r"\b(?:was\s+(?:prepared|purified|obtained|synthesized)"
-            r"|MS\s*\(ESI\)|1H\s*NMR|Method\s+[0-9A-Z]|Step\s+[A-Z]\b"
-            r"|The\s+title\s+compound|To\s+a\s+(?:stirred|solution)"
-            r"|prepared\s+using|using\s+(?:similar|analogous))",
-            re.IGNORECASE,
-        )
-        em = end_re.search(iupac_chunk)
-        if em:
-            iupac_chunk = iupac_chunk[:em.start()].strip()
+        # The IUPAC ends where the synthesis paragraph begins. This was a list
+        # of nine literal phrases and enumerating prose is a losing game — it
+        # missed `To 3,3-difluorocyclobutyl-1-amine`, `A solution of LiHMDS`,
+        # `Intermediate 132A:` and `was suspended in` on the first five
+        # patents that were looked at, storing 466-791 characters of procedure
+        # as `iupac_name`. `terminate_name` cuts on grammar instead: a prose
+        # verb, a capitalised sentence opener, characterisation data, or a
+        # reagent quantity — none of which a systematic name can contain. It
+        # also repairs UTF-8-read-as-Latin-1 (`Î¼l` -> `μl`).
+        #
+        # Measured over the 14,921 stored names, batched through OPSIN:
+        # 41 names rescued, ZERO broken. Small, and the zero is the point —
+        # a terminator that clips a good name costs more than the prose does.
+        iupac_chunk = terminate_name(iupac_chunk)
         # Trim trailing "racemic ..." continuations that are actually
         # the next sentence in synthesis prose.
         iupac_chunk = re.sub(r"\s+racemic\s+.*$", "", iupac_chunk, flags=re.IGNORECASE)
