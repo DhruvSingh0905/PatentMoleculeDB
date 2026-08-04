@@ -111,17 +111,32 @@ def terminate_name(chunk: str, *, min_len: int = 12) -> str:
     s = demojibake((chunk or "").strip())
     if not s:
         return s
-    cut = len(s)
+    cut, found = len(s), False
     for rx in (_PROSE_RE, _OPENER_RE, _ANALYTICAL_RE, _AMOUNT_RE, _SENTENCE_RE):
         m = rx.search(s)
         if m and m.start() < cut:
-            cut = m.start()
-    # Never cut into nothing. A boundary inside the first few characters means
-    # the chunk was prose from the start (a Scheme description that picked up
-    # an example number), and the caller's own length check rejects it — but
-    # truncating to two characters first would hide why.
-    if cut < min_len:
-        return s
+            cut, found = m.start(), True
+    # A boundary inside the first few characters means the chunk was never a
+    # name: it is prose from character zero, a Scheme description that picked
+    # up an example number —
+    #
+    #   ") can be treated with base to give the acids 37, followed by
+    #    reduction to the aldehydes 38. Enamine formation with optimally
+    #    substituted amines ..."
+    #
+    # Returning the whole string here (the first version did) leaves 791
+    # characters of narrative in `iupac_name`, where OPSIN fails on it and the
+    # LLM cascade is then paid to "clean" prose into a plausible-but-wrong
+    # structure. Return EMPTY instead, which is the caller's existing signal to
+    # skip the chunk entirely.
+    #
+    # `found` matters. Without it this tested the CUT POSITION, and for a string
+    # containing no boundary at all that is simply its length — so the short
+    # REAL names `pyrene`, `chrysene`, `anthracene`, `as-indacene` and
+    # `9H-fluorene` were thrown away for being under twelve characters. A short
+    # name is not prose; only an early BOUNDARY means prose.
+    if found and cut < min_len:
+        return ""
     out = s[:cut].strip()
     # A name never ends on an open bracket or a joining hyphen.
     while out and out[-1] in "([{-,;:":
