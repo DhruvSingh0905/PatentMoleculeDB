@@ -697,9 +697,18 @@ def test_a_silent_patent_is_scoped_from_raw_rows_not_the_damaged_view(monkeypatc
     monkeypatch.setattr(config, "OUTPUT_DIR", tmp_path)
 
     gaps = capability.collect_gaps(["USSILENT"])
-    assert len(gaps) == 1, "a patent that yields nothing must still be actionable"
+    assert gaps, "a patent that yields nothing must still be actionable"
+    # One gap PER LAYOUT now, so the decoy earns its own question — a silent
+    # document has several distinct shapes and asking about one of them capped
+    # recovery at a fraction of the evidence. What must not change is the
+    # RANKING: the block scoped from the raw rows has to come first, because
+    # the decoy is bigger in the damaged view and would win on any measure
+    # taken from it.
     assert gaps[0]["table"] == "TABLE-REAL", (
         f"picked {gaps[0]['table']} — scoped from the damaged view, not the source")
+    assert gaps[0]["rows_at_stake"] > 0
+    assert len({g["fingerprint"] for g in gaps}) == len(gaps), (
+        "one question per layout means no two gaps may share a fingerprint")
     assert "Assume the reader, not the layout" in gaps[0]["why"]
 
 
