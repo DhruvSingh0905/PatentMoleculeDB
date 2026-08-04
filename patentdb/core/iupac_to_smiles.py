@@ -364,6 +364,32 @@ def _try_opsin(
     """
     import warnings
 
+    # A MULTI-COMPONENT name — PubChem's `;` notation for a substance whose
+    # parts are not bonded to one another: `dicesium;carbonate` is Cs2CO3,
+    # `palladium;tetrakis(triphenylphosphane)` is Pd(PPh3)4. OPSIN expects ONE
+    # connected name and fails on the list, which is 652 of the corpus's name
+    # failures.
+    #
+    # Each component is resolved separately and the results are joined with
+    # `.`, NOT with `;`. `.` is SMILES' own separator for disconnected
+    # components, so the join produces one valid multi-component structure with
+    # one InChIKey — which is the point, since the substance IS one substance.
+    # A `;`-joined string would not parse as SMILES at all. Component ORDER is
+    # preserved so the structure reads in the same sequence as the name.
+    #
+    # All-or-nothing: if any component fails, the whole name fails. A partial
+    # join would silently record Cs2CO3 as "carbonate".
+    if ";" in name:
+        parts = [p.strip() for p in name.split(";") if p.strip()]
+        if len(parts) > 1:
+            out = []
+            for p in parts:
+                smi, err = _try_opsin(p, strict=strict, relaxed=relaxed)
+                if not smi:
+                    return None, f"multi-component: {p[:40]!r} failed ({err})"
+                out.append(smi)
+            return ".".join(out), ""
+
     if strict:
         # Pre-filter: reject obvious OCR/markup pollution in the input
         if _OPSIN_INPUT_GARBAGE_PAT.search(name):

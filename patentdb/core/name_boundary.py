@@ -84,6 +84,30 @@ _SENTENCE_RE = re.compile(r"(?<=[a-z\)\]])\.\s+(?=[A-Z])")
 
 _MOJIBAKE = re.compile(r"Ã.|Â.|â€.|î.|Î¼")
 
+# NMR and MS readouts captured where a name should be. A systematic name never
+# contains a chemical shift, a coupling constant, a multiplicity or a spectro-
+# meter frequency, so any of these is proof the chunk is characterisation data:
+#
+#   `1H-NMR (DMSO-d6,400 MHz) δ (ppm): 7.66-7.64 (m,1H),7.55-7.49 (m,2H)`
+#
+# `terminate_name` alone could not reject these. It cuts TRAILING prose, and
+# these are spectra from character zero with nothing in front to keep — 130 of
+# the 310 compounds that have a name and no structure are this exact shape,
+# 125 of them in one patent.
+_SPECTRA_RE = re.compile(
+    r"\bNMR\b|δ|\(ppm\)|\bMHz\b|\bm/z\b|\bHz\b"
+    r"|\((?:m|s|d|t|q|dd|dt|br\s?s),\s*\d+\s*H\)|\bJ\s*=", re.IGNORECASE)
+
+# A systematic name is lowercase-dominant: locants and brackets aside, it is
+# built from lowercase morphemes. An all-caps token run is a column header or
+# an abbreviation list (`QC- ACN- TFA- XB`), never a name.
+_HAS_WORD = re.compile(r"[a-z]{3}")
+
+
+def looks_like_spectra(text: str) -> bool:
+    """Is this characterisation data rather than a chemical name?"""
+    return bool(text) and bool(_SPECTRA_RE.search(text))
+
 
 def demojibake(text: str) -> str:
     """Undo UTF-8 that was decoded as Latin-1 — `Î¼l` -> `μl`, `â78Â°` -> `−78°`.
@@ -102,43 +126,53 @@ def demojibake(text: str) -> str:
     return fixed if len(_MOJIBAKE.findall(fixed)) < len(_MOJIBAKE.findall(text)) else text
 
 
-def terminate_name(chunk: str, *, min_len: int = 12) -> str:
+def terminate_name(chunk: str) -> str:
     """The chemical name at the front of `chunk`, without the prose after it.
 
-    Returns the whole (stripped, de-mojibaked) chunk when no boundary is
-    found — a name this cannot cut is one it must not mangle.
+    Returns "" when nothing name-like survives — the caller's existing signal
+    to skip the chunk. Returns the whole (stripped, de-mojibaked) chunk when no
+    boundary is found: a name this cannot cut is one it must not mangle.
+
+    There is deliberately NO minimum length. An earlier version rejected a cut
+    shorter than twelve characters as "prose from the start", which threw away
+    `Benzamide` out of `Benzamide MS (ESI) m/z 435.2` and, before that, the
+    bare names `pyrene`, `chrysene` and `9H-fluorene`. Short is not the same as
+    wrong; what matters is whether the surviving text READS like a name, which
+    is tested at the end.
     """
     s = demojibake((chunk or "").strip())
     if not s:
         return s
+    # NOT tested here. Checking for spectra BEFORE the cut throws away every
+    # legitimate name that happens to be followed by its own MS or NMR line —
+    # `...carboxamide MS (ESI) m/z 435.2` is a name plus data, and the whole
+    # point of this function is to keep the first part. The test is applied to
+    # what SURVIVES the cut, at the end.
+    if not _HAS_WORD.search(s):
+        return ""
     cut, found = len(s), False
     for rx in (_PROSE_RE, _OPENER_RE, _ANALYTICAL_RE, _AMOUNT_RE, _SENTENCE_RE):
         m = rx.search(s)
         if m and m.start() < cut:
             cut, found = m.start(), True
-    # A boundary inside the first few characters means the chunk was never a
-    # name: it is prose from character zero, a Scheme description that picked
-    # up an example number —
-    #
-    #   ") can be treated with base to give the acids 37, followed by
-    #    reduction to the aldehydes 38. Enamine formation with optimally
-    #    substituted amines ..."
-    #
-    # Returning the whole string here (the first version did) leaves 791
-    # characters of narrative in `iupac_name`, where OPSIN fails on it and the
-    # LLM cascade is then paid to "clean" prose into a plausible-but-wrong
-    # structure. Return EMPTY instead, which is the caller's existing signal to
-    # skip the chunk entirely.
-    #
-    # `found` matters. Without it this tested the CUT POSITION, and for a string
-    # containing no boundary at all that is simply its length — so the short
-    # REAL names `pyrene`, `chrysene`, `anthracene`, `as-indacene` and
-    # `9H-fluorene` were thrown away for being under twelve characters. A short
-    # name is not prose; only an early BOUNDARY means prose.
-    if found and cut < min_len:
-        return ""
     out = s[:cut].strip()
     # A name never ends on an open bracket or a joining hyphen.
     while out and out[-1] in "([{-,;:":
         out = out[:-1].rstrip()
-    return out or s
+    if not out:
+        return ""
+    # What survived the cut must still look like a NAME. A chunk that was
+    # spectra from the start has no boundary to cut at — `1H-NMR (DMSO-d6,400
+    # MHz) δ (ppm): 7.66-7.64 (m,1H)` survives whole — so this is where it is
+    # caught. Applied AFTER the cut so `...carboxamide MS (ESI) m/z 435.2`
+    # keeps its name instead of being discarded with its data.
+    # ...and it must OPEN like one. A name starts with a letter, a locant
+    # digit, or an opening bracket — never with a closing bracket or a comma.
+    # `") can be treated with base to give the acids 37 ..."` cuts down to
+    # `") can be"`, which has a lowercase word and no spectra and would
+    # otherwise survive as a name.
+    if out[0] not in "([{" and not out[0].isalnum():
+        return ""
+    if looks_like_spectra(out) or not _HAS_WORD.search(out):
+        return ""
+    return out

@@ -920,3 +920,55 @@ def test_name_terminator_cuts_prose_and_never_a_real_name():
     # UTF-8 read as Latin-1, and a clean string left alone.
     assert demojibake("Î¼l") == "μl"
     assert demojibake(macro) == macro
+
+
+def test_spectra_and_junk_are_not_names_but_short_names_are():
+    """The three ways this rejected things it should have kept.
+
+    Each was caught by re-running the OPSIN sweep, never by reasoning:
+
+      a MINIMUM LENGTH threw away `Benzamide` out of
+      `Benzamide MS (ESI) m/z 435.2`, and before that the bare names
+      `pyrene`, `chrysene` and `9H-fluorene`;
+
+      testing for spectra BEFORE the cut discarded every legitimate name
+      that is followed by its own MS line, name and data together;
+
+      and a chunk cut down to `") can be"` has a lowercase word, no spectra,
+      and is still not a name — it does not OPEN like one.
+    """
+    from patentdb.core.name_boundary import terminate_name
+
+    assert terminate_name("Benzamide MS (ESI) m/z 435.2") == "Benzamide"
+    assert terminate_name("pyrene") == "pyrene"
+    assert terminate_name("(2R)-2-amino-3-phenylpropanoic acid") == \
+        "(2R)-2-amino-3-phenylpropanoic acid"
+
+    for junk in ("1H-NMR (DMSO-d6,400 MHz) δ (ppm): 7.66-7.64 (m,1H)",
+                 "7.58-7.45 (m,2H),7.38-7.15 (m,5H)",
+                 ") can be treated with base to give the acids 37",
+                 "QC- ACN- TFA- XB"):
+        assert terminate_name(junk) == "", f"kept junk: {junk!r}"
+
+
+def test_opsin_resolves_a_multi_component_name_component_by_component():
+    """PubChem's `;` joins parts of ONE substance that are not bonded.
+
+    `dicesium;carbonate` is Cs2CO3. OPSIN expects one connected name and fails
+    on the list, which is 652 of this corpus's name failures. Components are
+    resolved separately and joined with `.` — SMILES' own separator for
+    disconnected parts — so the result is one structure with one InChIKey.
+    A `;`-joined string would not be valid SMILES at all.
+    """
+    from rdkit import Chem
+
+    from patentdb.core.iupac_to_smiles import _try_opsin
+
+    smi, _err = _try_opsin("benzene;toluene", strict=False)
+    assert smi and "." in smi, f"expected a joined multi-component SMILES, got {smi!r}"
+    m = Chem.MolFromSmiles(smi)
+    assert m is not None and len(Chem.GetMolFrags(m)) == 2
+
+    # All-or-nothing: a partial join would record Cs2CO3 as "carbonate".
+    bad, err = _try_opsin("benzene;notachemicalnameatall", strict=False)
+    assert bad is None and "multi-component" in err
