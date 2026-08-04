@@ -64,6 +64,13 @@ MAX_PATENT_LOSS = 0.50
 # through as noise.
 NEVER_EMPTY = True
 
+# How much of the corpus's EXACT-number yield a patch may cost. Small on
+# purpose: a real fix changes which rows are read, not what a read row means,
+# so a patch that turns thousands of measurements into brackets is doing
+# something other than what it claims. 2% leaves room for a genuine
+# re-interpretation of one layout without leaving room for US11365191's 57%.
+MAX_EXACT_LOSS = 0.02
+
 
 @dataclass
 class Candidate:
@@ -130,6 +137,45 @@ def measure(pids: list[str], *, xml_dir=None) -> dict[str, int]:
         except Exception:
             out[pid] = -1                        # a crash is a loss, not a skip
     return out
+
+
+def exact_values(pids: list[str], *, xml_dir=None) -> int:
+    """How many usable records carry an EXACT number rather than a bracket.
+
+    Compounds are the coverage signal and cannot be argued with, but they are
+    not the only thing a patch can change, and counting them alone let through
+    the worst patch this loop has produced.
+
+    US11365191's patch raised the corpus by 485 compounds and closed a zero,
+    and converted exact measurements into ranges wholesale. Against BindingDB:
+
+        agree           14,275 -> 4,918
+        range_contains   2,621 -> 11,731
+        range_misses         0 -> 198      <- ranges that EXCLUDE the true value
+
+    Nine thousand values went from "IC50 is 4.7 nM" to "IC50 is somewhere in a
+    bracket", and 198 became simply wrong, while every count this loop watched
+    went UP. That is the founding rule of the module inverted: a missing assay
+    is recoverable, a wrong one is not.
+
+    So this is measured alongside compounds. It needs no reference database —
+    it asks only whether the number the patent printed survived as a number.
+    """
+    from ..sources.uspto_assays import extract_from_patent
+
+    xml_dir = xml_dir or (config.OUTPUT_DIR / "uspto_xml")
+    n = 0
+    for pid in pids:
+        f = xml_dir / f"{pid}.xml"
+        if not f.exists():
+            continue
+        try:
+            n += sum(1 for r in extract_from_patent(f.read_text(errors="ignore"))
+                     if getattr(r, "is_usable", False)
+                     and getattr(r, "value_numeric", None) is not None)
+        except Exception:
+            return -1
+    return n
 
 
 def scorable_patents(target: str, *, xml_dir=None) -> list[str]:
@@ -209,15 +255,28 @@ def select(candidates: list[Candidate], *, apply: bool = True,
         pids = sorted({p for c in remaining
                        for p in scorable_patents(c.target_patent, xml_dir=xml_dir)})
         before = measure(pids, xml_dir=xml_dir)
+        exact_before = exact_values(pids, xml_dir=xml_dir)
         best: tuple | None = None
 
         for cand in remaining:
+            exact_after = exact_before
             try:
                 with applied(cand.edits):
                     after = measure(pids, xml_dir=xml_dir)
+                    exact_after = exact_values(pids, xml_dir=xml_dir)
             except Exception as e:
                 after, _ = {}, logger.warning("greedy: %s raised: %r", cand.label, e)
             ok, why, tg, cg, wp, wl = judge(before, after, cand.target_patent)
+            # A patch may not pay for compounds with NUMBERS. See `exact_values`:
+            # the case behind this raised coverage 485 and turned 9,357 exact
+            # measurements into brackets, 198 of which excluded the true value.
+            if ok and exact_before > 0:
+                drop = (exact_before - exact_after) / exact_before
+                if drop > MAX_EXACT_LOSS:
+                    ok = False
+                    why = (f"{exact_before - exact_after} exact value(s) become "
+                           f"ranges or vanish ({drop:.0%} of {exact_before}); "
+                           f"a patch may not buy compounds with numbers")
             logger.info("greedy: %s -> %s (%s)", cand.label,
                         "accept" if ok else "reject", why)
             if ok and (best is None or (tg, cg) > (best[1], best[2])):

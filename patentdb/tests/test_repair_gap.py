@@ -863,3 +863,27 @@ def test_a_function_capture_stops_at_the_next_module_level_constant():
         assert not stowaways, (
             f"the capture for {name} in {module.name} also contains "
             f"{stowaways[:4]} — replacing it would DELETE them")
+
+
+def test_a_patch_may_not_buy_compounds_with_numbers():
+    """Coverage is not the only thing a patch can change.
+
+    US11365191's patch raised the corpus 485 compounds and closed a zero, and
+    paid for it by turning exact measurements into brackets. Against
+    BindingDB: agree 14,275 -> 4,918, range_contains 2,621 -> 11,731, and 198
+    ranges that EXCLUDE the true value where there had been none. Every count
+    the loop watched went up.
+
+    The guard needs no reference database: it asks only whether the number the
+    patent printed survived as a number.
+    """
+    from patentdb.repair.greedy import MAX_EXACT_LOSS
+
+    exact_before, exact_after = 87470, 37000          # the measured 57% collapse
+    drop = (exact_before - exact_after) / exact_before
+    assert drop > MAX_EXACT_LOSS, (
+        "a patch that converts more than half the corpus's exact values into "
+        "ranges must be refused")
+
+    # A genuine one-layout re-interpretation stays under the bar.
+    assert (87470 - 86800) / 87470 <= MAX_EXACT_LOSS
