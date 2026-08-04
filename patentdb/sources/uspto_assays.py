@@ -1513,6 +1513,15 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     Consecutive rows where the assay columns are all blank are treated as
     name-continuation rows and their col-0 text is appended to the preceding
     name to form the full compound name.
+
+    Embedded-assay extraction: some tables (e.g. US10730863 TABLE-US-00009)
+    bundle NMR, EC50 and MS data into a single free-text cell in a column
+    whose header contains "NMR". The column classifies as NMR and is skipped
+    by the normal assay-column loop. After that loop, any column typed NMR
+    (or MS) is scanned for substrings of the form
+    "[assay_name] (unit) = value" (e.g. "FXR EC50 (nM) = 1497") and records
+    are emitted for each match. This is a general convention — the same
+    pattern appears in every table of this patent and recurs across the corpus.
     """
     out: list[AssayRecord] = []
     last_header: dict[int, list[list[str]]] = {}
@@ -1532,6 +1541,24 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
         r'(?:Compound|Cpd|Cmpd|Example|Ex\.?)'
         r'[\s.#\-]*'
         r'(\d+(?:[\._ ]\d+)?(?:[a-zA-Z])?)',
+        _re.IGNORECASE,
+    )
+
+    # Pattern to extract embedded assay values from free-text NMR/MS cells.
+    # Matches substrings like:
+    #   "FXR EC50 (nM) = 1497"
+    #   "EC50 (nM) = 167"
+    #   "IC50 (uM) = 0.045"
+    # The assay name is captured as group 1, the unit as group 2, and the
+    # numeric value as group 3. This is a general convention in patent tables
+    # that bundle characterisation data into a single prose cell.
+    _EMBEDDED_ASSAY = _re.compile(
+        r'([A-Za-z][A-Za-z0-9 _/-]{0,30}?'
+        r'(?:IC|EC|ED|GI|CC|LC)\s*50'
+        r'[A-Za-z0-9 _/-]{0,10}?)'
+        r'\s*\(\s*([a-zA-Z%/]+)\s*\)'
+        r'\s*=\s*'
+        r'(\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?)',
         _re.IGNORECASE,
     )
 
@@ -1580,7 +1607,11 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
 
         cid_col = next((c for c in cols if c.kind == CID), None)
         assay_cols = [c for c in cols if c.kind == ASSAY]
-        if cid_col is None or not assay_cols:
+        # Columns typed NMR or MS may contain embedded assay values in
+        # free-text prose cells (e.g. "FXR EC50 (nM) = 1497"). Collect them
+        # for the embedded-assay scan below.
+        prose_cols = [c for c in cols if c.kind in (NMR, MS)]
+        if cid_col is None or (not assay_cols and not prose_cols):
             continue
 
         # CID fill-down: carry the last-seen CID forward within one table so
@@ -1716,6 +1747,14 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
                             if pv:
                                 has_value = True
                                 break
+                    # Also check prose columns for embedded assay values when
+                    # there are no dedicated assay columns.
+                    if not has_value and not assay_cols:
+                        for c in prose_cols:
+                            if len(row) > c.index and row[c.index].text.strip():
+                                if _EMBEDDED_ASSAY.search(row[c.index].text):
+                                    has_value = True
+                                    break
                     if not has_value:
                         continue
                     cid = prev_cid
@@ -1779,6 +1818,47 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
                         table_id=t.table_id,
                         column_header=c.header,
                     ))
+
+            # --- Embedded-assay scan for NMR/MS prose columns ---
+            # When a column is typed NMR or MS (because its header contains
+            # "NMR", "MS", "ESI", etc.) but its cells contain embedded assay
+            # values of the form "FXR EC50 (nM) = 1497", extract those values
+            # and emit records. This is a general convention in patent tables
+            # that bundle characterisation data into a single prose cell.
+            # The assay name is taken from the matched substring (e.g.
+            # "FXR EC50"), stripped of leading/trailing whitespace.
+            for c in prose_cols:
+                if len(row) <= c.index:
+                    continue
+                cell_text = row[c.index].text
+                if not cell_text:
+                    continue
+                for m in _EMBEDDED_ASSAY.finditer(cell_text):
+                    raw_name = m.group(1).strip()
+                    raw_unit = m.group(2).strip()
+                    raw_val = m.group(3).replace(',', '')
+                    try:
+                        num = float(raw_val)
+                    except ValueError:
+                        continue
+                    # Normalise the unit symbol.
+                    unit_norm = {
+                        'nm': 'nM', 'um': 'uM', 'mm': 'mM', 'pm': 'pM',
+                        'uM': 'uM', 'nM': 'nM', 'mM': 'mM', 'pM': 'pM',
+                    }.get(raw_unit, raw_unit)
+                    out.append(AssayRecord(
+                        cid=cid,
+                        assay_name=raw_name,
+                        value_numeric=num,
+                        qualifier=None,
+                        unit=unit_norm,
+                        n_runs=None,
+                        letter_grade=None,
+                        value_text=m.group(0),
+                        table_id=t.table_id,
+                        column_header=c.header,
+                    ))
+            # --- End embedded-assay scan ---
 
         # Flush any buffered wrapped-name record at end of table
         _flush_wrapped()
