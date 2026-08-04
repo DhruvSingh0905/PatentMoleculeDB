@@ -972,3 +972,38 @@ def test_opsin_resolves_a_multi_component_name_component_by_component():
     # All-or-nothing: a partial join would record Cs2CO3 as "carbonate".
     bad, err = _try_opsin("benzene;notachemicalnameatall", strict=False)
     assert bad is None and "multi-component" in err
+
+
+def test_patent_text_prefers_the_patents_own_xml(tmp_path, monkeypatch):
+    """USPTO XML is tier 1 for TEXT, not just for assay tables.
+
+    The loader did not know the XML existed: it went to Google Patents first
+    and MinerU markdown second. So values came from the document and names
+    came from a scrape of the document, which is why a 250-line
+    `GP107 -> 107` reconciliation bridge was needed to put them back together
+    — and why a tier-3 OCR fallback was reachable at all for a patent whose
+    tier-1 text was sitting on disk.
+    """
+    from patentdb.core import config, patent_text
+
+    monkeypatch.setattr(config, "OUTPUT_DIR", tmp_path)
+    (tmp_path / "uspto_xml").mkdir(parents=True)
+    (tmp_path / "gpatents_cache").mkdir(parents=True)
+    (tmp_path / "uspto_xml" / "USX.xml").write_text(
+        "<us-patent-grant><description>"
+        "<p>Example 1</p><p>benzene</p>"
+        "</description></us-patent-grant>")
+    (tmp_path / "gpatents_cache" / "USX.json").write_text(
+        '{"description": "GP SCRAPE TEXT"}')
+
+    text, src = patent_text.load_patent_description("USX")
+    assert src == "uspto_xml", f"fell through to {src}"
+    assert "benzene" in text and "GP SCRAPE" not in text
+    # Block tags become newlines: an example header must not be welded onto
+    # the paragraph beneath it, which is the defect name_boundary cleans up.
+    assert "Example 1" in text and "Example 1 benzene" not in text
+
+    # GP remains the fallback when there is no XML.
+    (tmp_path / "uspto_xml" / "USX.xml").unlink()
+    text2, src2 = patent_text.load_patent_description("USX")
+    assert src2 == "google_html" and "GP SCRAPE" in text2
