@@ -82,6 +82,7 @@ def build(pids: list[str], dest) -> dict:
     from openpyxl.utils import get_column_letter
 
     from ...core import config
+    from ...core.name_boundary import terminate_name
     try:
         from .reference_bench import load_bindingdb
         bdb, _ = load_bindingdb()
@@ -132,7 +133,12 @@ def build(pids: list[str], dest) -> dict:
         named = structured = matched = 0
         for cid, rs in sorted(by_cid.items()):
             info = struct.get(cid) or by_norm.get(_norm(cid)) or {}
-            name = (info.get("iupac_name") or "").strip()
+            # Terminated and de-mojibaked AT EXPORT. The stored names were
+            # written before `name_boundary` existed, and re-deriving them
+            # means re-running the paid extraction; the function is pure and
+            # measured at zero names broken, so applying it here shows what
+            # the fixed pipeline yields without pretending the cache changed.
+            name = terminate_name((info.get("iupac_name") or "").strip())
             ik = (info.get("inchikey") or "").strip()
             named += bool(name)
             structured += bool(ik)
