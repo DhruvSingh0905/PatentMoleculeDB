@@ -812,13 +812,28 @@ def test_greedy_refuses_to_empty_one_patent_for_a_better_total():
     after = {"A": 0, "B": 500, "C": 600}         # total UP by 140
     ok, why, tg, cg, worst, loss = judge(before, after, "C")
     assert not ok and worst == "A" and loss == 1.0
-    assert "cannot see one patent being emptied" in why
+    assert "go to ZERO" in why
     assert cg > 0, "the total really did rise; that is the point"
 
     # A modest re-interpretation is allowed through.
     ok2, _, _, _, _, l2 = judge({"A": 100}, {"A": 100 - int(100 * MAX_PATENT_LOSS)},
                                 "A")
     assert l2 <= MAX_PATENT_LOSS
+
+    # ...and a patent losing a HANDFUL of compounds must not veto a large gain
+    # elsewhere. This gate was 0.10 and refused US11365191's patch — +186 on a
+    # patent that produced NOTHING, +260 across the corpus — because one
+    # unrelated patent went 36 -> 29. Protecting seven compounds by leaving a
+    # zero in place is the opposite of what this loop is for.
+    ok3, why3, _, cg3, _, _ = judge({"Z": 0, "U": 36}, {"Z": 186, "U": 29}, "Z")
+    assert ok3, f"a 7-compound dip must not veto +186 on a zero: {why3}"
+    assert "36->29" in why3, "the cost of an accepted patch must be stated"
+
+    # But emptying a SMALL patent is still annihilation, however little the
+    # ratio moves against a large corpus.
+    ok4, why4, _, _, _, _ = judge({"tiny": 2, "big": 5000},
+                                  {"tiny": 0, "big": 5400}, "big")
+    assert not ok4 and "go to ZERO" in why4
 
 
 def test_a_function_capture_stops_at_the_next_module_level_constant():

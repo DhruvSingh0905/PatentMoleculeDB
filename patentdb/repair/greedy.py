@@ -41,10 +41,28 @@ from . import snapshot
 logger = logging.getLogger(__name__)
 
 # No unfrozen patent may lose more than this share of its compounds, whatever
-# the total does. Set from the failures this exists to stop: the four declined
-# patches cost 100%, 17%, 7% and 5% of a patent each. A tenth is generous
-# enough for a genuine re-interpretation and nowhere near an annihilation.
-MAX_PATENT_LOSS = 0.10
+# the total does. This guards ANNIHILATION, which is what it was built for: the
+# case behind it is US10660877 going 860 -> 0 from a patch that never touched
+# one of its rows, and a corpus total cannot see one patent being emptied.
+#
+# It was 0.10, and at that setting it became the binding constraint rather than
+# a safeguard. Measured: US11365191's patch was refused for taking US10208064
+# from 36 compounds to 29 — SEVEN compounds — while gaining 186 on a patent
+# that produced NOTHING and 260 across the corpus. Trading a 260-compound gain
+# and a closed zero to protect seven is not what this gate was for, and a zero
+# is the failure this whole loop exists to prevent.
+#
+# A half is still far inside annihilation: 860 -> 0 is refused, 860 -> 500 is
+# refused, 36 -> 29 is allowed. Losses below it are printed by `judge` on every
+# accept, so nothing is hidden — the journal, not the threshold, is what makes
+# this safe, and any state is one `--revert` away.
+MAX_PATENT_LOSS = 0.50
+
+# ...and a patent that had compounds may never reach zero, at any threshold.
+# A proportional rule alone cannot express this: a patent with 2 compounds
+# losing both is a 100% loss that a ratio test on a large corpus would wave
+# through as noise.
+NEVER_EMPTY = True
 
 
 @dataclass
@@ -141,12 +159,22 @@ def judge(before: dict[str, int], after: dict[str, int],
                 f"{', '.join(crashed[:4])}", tg, cg, crashed[0], 1.0)
 
     worst_pid, worst_loss = "", 0.0
+    emptied = []
     for p, was in before.items():
         if was <= 0:
             continue
-        loss = (was - after.get(p, 0)) / was
+        now = after.get(p, 0)
+        if NEVER_EMPTY and was > 0 and now == 0:
+            emptied.append(p)
+        loss = (was - now) / was
         if loss > worst_loss:
             worst_pid, worst_loss = p, loss
+    if emptied:
+        return (False, f"{len(emptied)} patent(s) go to ZERO: "
+                f"{', '.join(emptied[:4])}. A patent that produced compounds "
+                f"must never stop producing them — that is the failure this "
+                f"loop exists to prevent, whatever the total does.",
+                tg, cg, emptied[0], 1.0)
     if worst_loss > MAX_PATENT_LOSS:
         return (False, f"{worst_pid} loses {worst_loss:.0%} of its compounds "
                 f"({before[worst_pid]} -> {after.get(worst_pid, 0)}); a corpus "
@@ -155,7 +183,10 @@ def judge(before: dict[str, int], after: dict[str, int],
     if tg <= 0 and cg <= 0:
         return (False, f"no gain: target {tg:+d}, corpus {cg:+d}",
                 tg, cg, worst_pid, worst_loss)
-    return (True, f"target {tg:+d}, corpus {cg:+d}", tg, cg, worst_pid, worst_loss)
+    cost = (f"; {worst_pid} {before[worst_pid]}->{after.get(worst_pid, 0)} "
+            f"({worst_loss:.0%})" if worst_loss > 0 else "")
+    return (True, f"target {tg:+d}, corpus {cg:+d}{cost}",
+            tg, cg, worst_pid, worst_loss)
 
 
 def select(candidates: list[Candidate], *, apply: bool = True,
