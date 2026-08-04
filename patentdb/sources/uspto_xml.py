@@ -396,12 +396,23 @@ def _opens_with_id(cells: list["Cell"]) -> bool:
       - it has 1 or 2 non-empty cells and the first is a long string (>15 chars)
         containing chemical-name characters (hyphens, brackets, 'yl', etc.) —
         this covers both the value row (2 cells) and the continuation row
-        (1 cell, col-1 blank).
+        (1 cell, col-1 blank) that appear in tables like
+        US9018217 TABLE-US-00001 where the full IUPAC name is the compound id.
+
+    Extended for typographic-quote-wrapped ids (e.g. US10570116): some tables
+    wrap compound identifiers in Unicode left/right double quotation marks
+    (U+201C / U+201D), e.g. \u201cC1\u201d. The quotes are stripped before
+    matching so that \u201cC1\u201d is recognised as the id "C1".
     """
     texts = [c.text.strip() for c in cells if c.text.strip()]
     if not texts:
         return False
-    if _ID_CELL.fullmatch(texts[0]):
+    # Strip typographic/Unicode quotation marks before matching the id pattern.
+    # Patents like US10570116 wrap compound ids in U+201C/U+201D (left/right
+    # double quotation marks), e.g. \u201cC1\u201d. Without stripping these the
+    # id pattern never matches and every data row is treated as annotation.
+    first = texts[0].strip('\u201c\u201d\u2018\u2019\u00ab\u00bb\u201e\u201f')
+    if _ID_CELL.fullmatch(first):
         return True
     # Name-as-id: long chemical name in col 0, with or without a value in col 1.
     # Covers both the first fragment row (name + value) and the continuation

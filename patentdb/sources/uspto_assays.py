@@ -1492,6 +1492,12 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     CID column was classified as such and the value matches a relaxed pattern
     (digits optionally followed by a period, or the standard _CID_PAT).
 
+    Typographic-quote-wrapped CIDs: some tables (e.g. US10570116) wrap compound
+    identifiers in Unicode left/right double quotation marks (U+201C/U+201D),
+    e.g. \u201cC1\u201d. These quotes are stripped from the raw CID cell text
+    before pattern matching and normalisation so that the id is recognised and
+    the record is emitted.
+
     CID fill-down: when a compound has multiple sub-rows (e.g. enantiomers,
     racemates, salt forms) the ID is printed only on the first sub-row and
     left blank on the rest. The last-seen CID is carried forward so that
@@ -1530,7 +1536,7 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
 
     # Relaxed CID pattern: accepts bare integers with optional trailing period,
     # e.g. "4." or "12" — these appear when compound numbers are listed without
-    # a prefix. The standard _CID_PAT handles alphanumeric ids like "Cpd-4".
+    # a prefix letter. The standard _CID_PAT handles alphanumeric ids like "Cpd-4".
     import re as _re
     _BARE_INT_CID = _re.compile(r'^\d+\.?$')
 
@@ -1569,6 +1575,12 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
         r'chloro|bromo|fluoro|ethyl|propyl|cyclo|oxo|amino|nitro|'
         r'benz|piperid|piperaz|pyridine|pyrazol|oxazol|thiazol)',
         _re.IGNORECASE)
+
+    # Unicode typographic quotation marks that some patents wrap around compound
+    # ids, e.g. \u201cC1\u201d (U+201C LEFT DOUBLE QUOTATION MARK / U+201D RIGHT
+    # DOUBLE QUOTATION MARK). Stripping these before id matching lets the
+    # standard _CID_PAT recognise the underlying id.
+    _TYPO_QUOTES = '\u201c\u201d\u2018\u2019\u00ab\u00bb\u201e\u201f'
 
     def _is_chem_name(s: str) -> bool:
         """Does this string look like a chemical/IUPAC compound name?"""
@@ -1662,7 +1674,8 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
         if _sample_cid_vals:
             _long = sum(1 for v in _sample_cid_vals if _is_chem_name(v))
             _short = sum(1 for v in _sample_cid_vals
-                         if _CID_PAT.match(v) or _BARE_INT_CID.match(v))
+                         if _CID_PAT.match(v) or _BARE_INT_CID.match(v)
+                         or _CID_PAT.match(v.strip(_TYPO_QUOTES)))
             if _long > 0 and _short == 0:
                 _name_as_id = True
 
@@ -1704,13 +1717,19 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
                 continue
             # --- End name-as-id handling ---
 
-            if raw_cid:
+            # Strip typographic/Unicode quotation marks from the raw CID before
+            # pattern matching. Patents like US10570116 wrap compound ids in
+            # U+201C/U+201D (e.g. \u201cC1\u201d); without stripping these the
+            # id pattern never matches and every data row is skipped.
+            raw_cid_stripped = raw_cid.strip(_TYPO_QUOTES)
+
+            if raw_cid_stripped:
                 # Accept standard CID patterns AND bare integers with optional
                 # trailing period ("4.", "12") that appear in tables where compound
                 # numbers are listed without a prefix letter.
-                if not (_CID_PAT.match(raw_cid) or _BARE_INT_CID.match(raw_cid)):
+                if not (_CID_PAT.match(raw_cid_stripped) or _BARE_INT_CID.match(raw_cid_stripped)):
                     continue
-                cid = normalize_cid(raw_cid)
+                cid = normalize_cid(raw_cid_stripped)
                 if not cid:
                     continue
                 prev_cid = cid

@@ -819,3 +819,32 @@ def test_greedy_refuses_to_empty_one_patent_for_a_better_total():
     ok2, _, _, _, _, l2 = judge({"A": 100}, {"A": 100 - int(100 * MAX_PATENT_LOSS)},
                                 "A")
     assert l2 <= MAX_PATENT_LOSS
+
+
+def test_a_function_capture_stops_at_the_next_module_level_constant():
+    """A patch to a function must not delete the constants that follow it.
+
+    `_function_source`'s function branch stopped only at the next `def`, `@` or
+    section rule. `normalize_cid` is followed by fourteen module-level
+    constants before the next `def`, so its capture ran straight through them.
+    The model returned the function alone — correctly — `src.replace(old, body)`
+    deleted all fourteen, and the module raised `NameError: _HEADER_POTENCY` on
+    import for every patent in the corpus.
+
+    It cost three separate gaps on US10570116, each logged as the model writing
+    a bad patch when the patch was fine and the SPLICE was wrong, and it was
+    invisible to an audit that checked only constants.
+    """
+    import re
+
+    from patentdb.repair.capability import _function_source, all_targets
+
+    for name, (module, _what) in all_targets().items():
+        src = _function_source(module, name)
+        assert src, f"{name} is offered but cannot be located"
+        body = src.split("\n", 1)[1] if "\n" in src else ""
+        stowaways = [m for m in re.findall(r"^([A-Za-z_]\w*)\s*=", body, re.M)
+                     if m != name]
+        assert not stowaways, (
+            f"the capture for {name} in {module.name} also contains "
+            f"{stowaways[:4]} — replacing it would DELETE them")

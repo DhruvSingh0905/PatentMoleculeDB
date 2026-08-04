@@ -180,7 +180,7 @@ ESCALATION_JOURNAL = OUTPUT_DIR / "escalation_journal.jsonl"
 
 # How many measurement-shaped cells a patent must hold before "it yielded
 # nothing" is worth reporting. ONE constant, because it was two: `loop.py` and
-# `capability._gap_from_a_silent_patent` each carried their own 20, and moving
+# `capability._gaps_from_a_silent_patent` each carried their own 20, and moving
 # only the first left US9695181 (18 cells) firing the invariant and then
 # collecting no gap — it raised and could not be acted on.
 #

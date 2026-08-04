@@ -185,7 +185,18 @@ def _function_source(module: Path, name: str) -> str | None:
     parenthesised continuations a long regex is usually written across.
     """
     src = module.read_text()
-    m = re.search(rf"^def {re.escape(name)}\(.*?(?=\n(?:def |@|# ──|\Z))",
+    # The function branch must ALSO stop at a module-level assignment, and not
+    # stopping there was a live corruption for as long as constants have been
+    # patchable. `normalize_cid` is followed by fourteen `_HEADER_*` constants
+    # before the next `def`, so its capture ran straight through them; the model
+    # returned the function alone, `src.replace(old, body)` deleted all
+    # fourteen, and the module raised `NameError: _HEADER_POTENCY` on import.
+    # Three separate gaps on US10570116 died this way, each reported as the
+    # model writing a bad patch when the patch was fine and the SPLICE was
+    # wrong. A body line can never match: `^[A-Za-z_]\w*\s*=` requires column
+    # zero, and a function body is indented.
+    m = re.search(rf"^def {re.escape(name)}\(.*?"
+                  rf"(?=\n(?:[A-Za-z_]\w*\s*=|def |@|class |# ──|\Z))",
                   src, re.S | re.M)
     if m:
         return m.group(0).rstrip()
