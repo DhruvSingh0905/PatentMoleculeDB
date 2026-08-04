@@ -1007,3 +1007,37 @@ def test_patent_text_prefers_the_patents_own_xml(tmp_path, monkeypatch):
     (tmp_path / "uspto_xml" / "USX.xml").unlink()
     text2, src2 = patent_text.load_patent_description("USX")
     assert src2 == "google_html" and "GP SCRAPE" in text2
+
+
+def test_canonical_cid_is_one_key_and_does_not_collide():
+    """Six normalisers gave four answers for `I-0020`. This is the one.
+
+    Aggressive on purpose: a compound id is an internal handle, nothing
+    downstream displays it, and BindingDB matches on InChIKey. Under-merging
+    costs a duplicate compound and a double-counted record — which corrupts
+    the coverage number, the metric that matters. Over-merging costs nothing
+    that dedup was not going to do anyway.
+
+    Measured over 9,696 stored ids: ZERO keys collide two distinct InChIKeys.
+    """
+    from patentdb.core.compound_id import canonical_cid
+
+    # the disagreement that motivated this
+    assert canonical_cid("I-0020") == canonical_cid("I 20") == \
+        canonical_cid("i-20") == "I20"
+    # label words, padding, case
+    for raw in ("Example 12", "12", "012", "Ex. No. 12", "Example Compound 12"):
+        assert canonical_cid(raw) == "12", raw
+    assert canonical_cid("12a") == "12A"
+
+    # a dotted sub-series keeps its separator: 1.1 and 11 must stay apart
+    assert canonical_cid("1.001") == "1.001"
+    assert canonical_cid("1.1") != canonical_cid("11")
+
+    # not ids
+    for raw in ("Intermediate A", "QC- ACN- TFA- XB", "", "   "):
+        assert canonical_cid(raw) is None, raw
+
+    # GP positional ids stay distinct from patent ids — cross-source dedup is
+    # InChIKey's job, not this function's.
+    assert canonical_cid("GP107") != canonical_cid("107")

@@ -250,3 +250,72 @@ def normalize_cid_key(raw: str) -> str | None:
     # Uppercase the letter suffix (and any letter-prefix) so "5a" and
     # "5A" collapse — patent convention is uppercase.
     return s.upper()
+
+
+# ── the one key everything dedups on ──────────────────────────────────
+# Six normalisers existed and gave four different answers for `I-0020`:
+#
+#   compound_id.normalize_cid_key  I-0020      tables.reconcile._norm_cid  I20
+#   uspto_assays.normalize_cid     I-20        letter_bin._norm_cid        I-0020
+#   reference_bench._norm_cid      I-20        assay_reconciler._norm      i0020
+#
+# Any two components using different ones silently fail to agree that two rows
+# describe the same compound. That is not a join across documents — there is
+# none — it is dedup WITHIN a patent between the GP pass and the XML pass, and
+# it only has to be self-consistent.
+#
+# So this is deliberately AGGRESSIVE. A compound id is an internal handle, not
+# an output: nothing downstream displays it, BindingDB matches on InChIKey, and
+# the only cost of over-merging is two rows for the same compound collapsing
+# into one — which is what dedup is for. The cost of UNDER-merging is a
+# duplicate compound and a double-counted record, which corrupts the coverage
+# number that is the metric we actually care about.
+_CANON_LABEL_RE = re.compile(
+    r"^(?:example|examples|exemple|compound|compounds|cpd|cmpd|comp|ex|no|nos|"
+    r"number|entry|item|ref|reference|structure|struct)\b[\s.\-:#]*",
+    re.IGNORECASE)
+_CANON_KEEP_RE = re.compile(r"[A-Za-z0-9]+")
+
+
+def canonical_cid(raw: str) -> str | None:
+    """The single dedup key for a compound id. `None` when there is no id.
+
+        Example 12 · 12 · 012 · Cmpd. 7 → 12 · 12 · 12 · 7
+        I-0020 · I 20 · i-20           → I20 · I20 · I20
+        1.001                          → 1.001   (a sub-numbered series)
+
+    Label words are stripped repeatedly (`Example Compound 5` happens), the
+    rest is uppercased, separators dropped, and leading zeros removed from each
+    numeric run so `I-0020` and `I-20` land together.
+
+    A DOTTED id keeps its dot. `1.001` and `1.002` are distinct compounds in a
+    sub-numbered series, and collapsing the separator would merge them into
+    `1001` and `1002` — still distinct, but `1.1` and `11` would not be. The
+    dot carries meaning; a hyphen does not.
+    """
+    if not raw:
+        return None
+    s = _html.unescape(str(raw))
+    s = _HTML_TAG_RE.sub("", s).strip()
+    for _ in range(3):                      # `Example Compound 5`, `Ex. No. 7`
+        stripped = _CANON_LABEL_RE.sub("", s).strip()
+        if stripped == s:
+            break
+        s = stripped
+    if not s:
+        return None
+    dotted = bool(re.fullmatch(r"\d+(?:\.\d+)+", s.strip()))
+    if dotted:
+        return s.strip()
+    parts = _CANON_KEEP_RE.findall(s.upper())
+    if not parts:
+        return None
+    out = []
+    for p in parts:
+        if p.isdigit():
+            out.append(p.lstrip("0") or "0")
+        else:
+            out.append(p)
+    key = "".join(out)
+    # An id must contain a digit. `Intermediate A`, `TFA`, `QC` are not ids.
+    return key if any(c.isdigit() for c in key) else None
