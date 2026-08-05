@@ -979,15 +979,29 @@ def test_opsin_resolves_a_multi_component_name_component_by_component():
     assert bad is None and "multi-component" in err
 
 
-def test_patent_text_prefers_the_patents_own_xml(tmp_path, monkeypatch):
-    """USPTO XML is tier 1 for TEXT, not just for assay tables.
+def test_patent_text_keeps_google_patents_as_the_description_source(tmp_path, monkeypatch):
+    """USPTO XML is tier 1 for ASSAY TABLES and MARKUSH — not for description TEXT.
 
-    The loader did not know the XML existed: it went to Google Patents first
-    and MinerU markdown second. So values came from the document and names
-    came from a scrape of the document, which is why a 250-line
-    `GP107 -> 107` reconciliation bridge was needed to put them back together
-    — and why a tier-3 OCR fallback was reachable at all for a patent whose
-    tier-1 text was sitting on disk.
+    This test previously asserted the opposite. The assertion is reversed here
+    because the DECISION was reversed on measurement, not because a fix needed
+    it to pass: preferring the XML for text bought nothing and cost a great
+    deal.
+
+    Bought: the two texts are word-for-word identical — 147,996 words against
+    147,998 on US11292791, every one of 1,079 diff blocks being GP mojibake
+    against correct XML Unicode, which `core.name_boundary.demojibake` already
+    repairs.
+
+    Cost: `routes/google_patents.py` gates the Strategy 0 harvest on
+    `text_source_format in ("google_html", ...)`, so returning "uspto_xml"
+    silently disabled `gp_embedded_meta` — 11,633 of 17,359 resolved
+    structures. Measured directly: US10544143 went from 237 embedded
+    compounds to 0. It also invalidated every cached LLM prompt, since each is
+    keyed on the text it was built from; only 14 of 182 name-repair prompts on
+    that patent still existed in `output_v2/cache` afterwards.
+
+    The XML loader is kept and still reachable by name — `prefer_format=
+    "uspto_xml"` — because the reader itself was never the problem.
     """
     from patentdb.core import config, patent_text
 
@@ -1002,17 +1016,16 @@ def test_patent_text_prefers_the_patents_own_xml(tmp_path, monkeypatch):
         '{"description": "GP SCRAPE TEXT"}')
 
     text, src = patent_text.load_patent_description("USX")
-    assert src == "uspto_xml", f"fell through to {src}"
-    assert "benzene" in text and "GP SCRAPE" not in text
-    # Block tags become newlines: an example header must not be welded onto
-    # the paragraph beneath it, which is the defect name_boundary cleans up.
-    assert "Example 1" in text and "Example 1 benzene" not in text
+    assert src == "google_html", f"description text must come from GP, got {src}"
+    assert "GP SCRAPE" in text
 
-    # GP remains the fallback when there is no XML.
-    (tmp_path / "uspto_xml" / "USX.xml").unlink()
-    text2, src2 = patent_text.load_patent_description("USX")
-    assert src2 == "google_html" and "GP SCRAPE" in text2
-
+    # Reachable by name, and block tags still become newlines so an example
+    # header is never welded onto the paragraph beneath it.
+    xml_text, xml_src = patent_text.load_patent_description(
+        "USX", prefer_format="uspto_xml")
+    assert xml_src == "uspto_xml"
+    assert "benzene" in xml_text
+    assert "Example 1" in xml_text and "Example 1 benzene" not in xml_text
 
 def test_canonical_cid_is_one_key_and_does_not_collide():
     """Six normalisers gave four answers for `I-0020`. This is the one.

@@ -217,14 +217,38 @@ def load_patent_description(
         data_dir = config.DATA_DIR
     pages_dir = data_dir / patent_id / "all_pages"
 
-    # 1. The patent's own XML — tier 1, and exact. No scrape, no OCR.
-    if prefer_format in ("auto", "uspto_xml"):
+    # USPTO XML is NOT preferred for description TEXT, and the attempt to make
+    # it so was reverted. It remains tier 1 for ASSAY TABLES (`uspto_assays`
+    # reads the CALS markup directly) and for MARKUSH (`<chemistry>` anchors
+    # carry document position), neither of which comes through this loader.
+    #
+    # What preferring it here actually bought, measured: nothing. The two texts
+    # are word-for-word identical — 147,996 words against 147,998 on
+    # US11292791, and every one of 1,079 diff blocks is GP mojibake against
+    # correct XML Unicode, which `core.name_boundary.demojibake` already
+    # repairs. What it COST was severe and took three separate investigations
+    # to see:
+    #
+    #   `routes/google_patents.py` gates the Strategy 0 harvest on
+    #   `text_source_format in ("google_html", ...)`, so returning "uspto_xml"
+    #   silently switched off `gp_embedded_meta` — 11,633 of 17,359 resolved
+    #   structures, 65% of the corpus. It also flipped `is_clean` to False,
+    #   routing the cleanest source in the system down the OCR-repair cascade.
+    #
+    #   Every cached LLM prompt is keyed on the text it was built from, so the
+    #   change invalidated the lot: only 14 of 182 name-repair prompts on
+    #   US10544143 still exist in `output_v2/cache`. 92% became questions we
+    #   had never asked, which is most of what a re-extraction would have paid
+    #   for.
+    #
+    # `load_uspto_description` is kept — it is correct, and callers that want
+    # the patent's own text can ask for it by name with prefer_format.
+    if prefer_format == "uspto_xml":
         text = load_uspto_description(patent_id, normalize=normalize)
         if text:
             return text, "uspto_xml"
-        if prefer_format == "uspto_xml":
-            raise FileNotFoundError(
-                f"no USPTO XML for {patent_id} at {uspto_xml_path(patent_id)}")
+        raise FileNotFoundError(
+            f"no USPTO XML for {patent_id} at {uspto_xml_path(patent_id)}")
 
     # 2. HTML scrape (clean text, no OCR artifacts).
     #    Critical for IUPAC extraction quality: MinerU markdown carries

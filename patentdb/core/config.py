@@ -169,6 +169,31 @@ RULE_JOURNAL = OUTPUT_DIR / "rule_adoption_journal.jsonl"
 # head, 77 of them for patents with no shipped artifact at all, and every fix
 # made afterwards was invisible on the patents it was meant to help. Re-enable
 # when the extraction is stable and the numbers are trusted.
+# The IUPAC name-REPAIR stages, OFF by default. These take a name our own
+# extractor produced, notice OPSIN cannot read it, and pay a model to rewrite
+# it. Measured over 22 patents / 17,359 resolved structures:
+#
+#   86.1% of the records these stages are credited with reproduce for FREE
+#   when their stored name is re-run through OPSIN. Only 87 structures — 0.50%
+#   — could not have come from a free path, and 37 of those 87 are our own
+#   damage: prose contamination, truncation, mojibake.
+#
+#   Controlled on US10544143, the patent that wants 213 paid calls: blocking
+#   the cascade gave 49 structures, serving it from cache gave 50. The entire
+#   cascade bought ONE molecule, and four of its five records were relabels of
+#   molecules the free path had already produced.
+#
+#   Classified by why OPSIN failed on those 182 calls: 48.4% unbalanced
+#   brackets, 25.3% synthesis prose, 15.4% truncated mid-name, 11% "well
+#   formed" (header contamination and mojibake). Essentially none is hard
+#   nomenclature — we were paying a model to repair our own parser's output.
+#
+# NOT gated by this: the broad IUPAC burst, which earns its cost. 3,101
+# records (17.9%) have no other route to a cid->name pairing and US11566007
+# goes 80 -> 0 without it. Nor the repair loop, which is the self-healing tier
+# and runs Haiku at ~$0.002 per new layout.
+LLM_NAME_REPAIR_ENABLED = os.environ.get("LLM_NAME_REPAIR", "0") == "1"
+
 SNAPSHOT_FREEZE_ENABLED = os.environ.get("SNAPSHOT_FREEZE", "0") == "1"
 
 REPAIR_AUTOHEAL = os.environ.get("REPAIR_AUTOHEAL", "1") == "1"

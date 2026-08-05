@@ -267,6 +267,12 @@ def _llm_clean(raw_name: str, error_msg: str, patent_id: str, compound_id: str) 
     ($3/$15 vs $15/$75 per Mtok). Cost is further bounded by the
     per-patent LM cap (config.PER_PATENT_LM_CAP).
     """
+    if not config.LLM_NAME_REPAIR_ENABLED:
+        # OFF by default — see config.LLM_NAME_REPAIR_ENABLED for the
+        # measurement. This paid a model to rewrite a name OPSIN rejected; 86.1% of what it
+        # was credited with resolves for free through OPSIN.
+        return None
+
     prompt = CLEANING_PROMPT.format(error=error_msg, raw_name=raw_name)
 
     response = call_claude_text(
@@ -292,6 +298,12 @@ def _llm_direct_smiles(raw_name: str, patent_id: str, compound_id: str) -> str |
     Sonnet/Opus fallback recovered 9/15 OPSIN-unparseable macrocyclic
     names.
     """
+    if not config.LLM_NAME_REPAIR_ENABLED:
+        # OFF by default — see config.LLM_NAME_REPAIR_ENABLED for the
+        # measurement. This paid a model to guess a SMILES from a name; 86.1% of what it
+        # was credited with resolves for free through OPSIN.
+        return None
+
     prompt = SMILES_FALLBACK_PROMPT.format(raw_name=raw_name)
 
     response = call_claude_text(

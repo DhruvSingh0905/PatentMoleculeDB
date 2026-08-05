@@ -19,6 +19,7 @@ Public API:
 """
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import re
@@ -374,14 +375,148 @@ def _anchor_regex(anchor: list[str]) -> "re.Pattern[str]":
     return re.compile(gap.join(_token_subpattern(t) for t in anchor))
 
 
-def _anchor_present(lc_text: str, anchor: list[str]) -> bool:
-    """True iff the header anchor appears (tokens in order, word-bounded,
-    within `_HEADER_SPAN`) in `lc_text` (lowercased + Greek-normalized, with
-    separators kept). Empty anchor → False (never fire a pattern we can't
-    anchor)."""
+# `_anchor_present` used to live here, answering "does this anchor occur at
+# all". `_anchor_spans` below answers "and WHERE", which the locality gate
+# needs and which subsumes the boolean — an empty span list is an absent
+# anchor, and still means the pattern does not fire.
+
+
+# ── The anchor is not enough on its own: provenance-scoped firing ──
+#
+# The comment above claims a pattern's output "depends solely on the text it's
+# run against". That was the design; the anchor as built is too weak to deliver
+# it, and the gap is a fabricated MEANING, not a fabricated number.
+#
+# Measured 2026-08-04 over the 22-patent corpus (117,739 pattern-library rows):
+#   * 0 of 116 library entries carry a real `header_text`, so EVERY anchor is
+#     the degraded `column_assays` fallback in `_header_anchor`;
+#   * 30 of those anchors are a SINGLE token, because `_GENERIC_LABEL_TOKENS`
+#     correctly strips `binding`/`ic50` and `_salient_tokens` drops `μM` as
+#     too short — `RORγ Binding IC50 μM` reduces to `['rorgamma']`;
+#   * US20240010684A1 is a MASP-1/MASP-2 complement patent (226 mentions of
+#     "MASP", ONE of "RORgamma", in a list of unrelated therapeutics). That one
+#     prose word opened the gate for US10273259's pattern and its structural
+#     regex — `(?P<cid>\d+)\s+(?P<value0>\d+\.\d+)`, which matches "integer,
+#     then decimal" in any document — then ran document-wide for **593 rows**
+#     of `RORγ Binding IC50 μM`, every one of them read out of HPLC method
+#     prose: `SB-C18 2.7 μm` → `compound_id 18, RORγ Binding IC50 = 2.7 μM`.
+#
+# `output_validator` cannot see this. It corroborates `(cid, value)` and never
+# looks at `assay_name`, so a foreign label pinned to the host's own adjacent
+# numbers corroborates trivially. The number is real; the target is invented.
+#
+# Two properties separate that from the reuse the library exists for. Compare
+# it with US8952177 → US9745328, which is correct: US9745328 prints
+# `FLAP Binding wild type HTRF … Human Whole Blood LTB4 IC 50` itself, over its
+# own TABLE 5 and TABLE 6.
+#
+#   anchor size    leak 1 token          legitimate 8 tokens
+#   locality       min 30,782 chars      max 17,292 chars from the anchor
+#                  from its anchor
+#
+# So a foreign pattern must clear both: an anchor of ≥2 salient tokens (one
+# word of boilerplate is not a table header), and rows that actually sit under
+# that header rather than elsewhere in the document.
+#
+# Why this is scoped to FOREIGN patterns — entries whose `first_seen_patent`
+# is some other document. Applying either test to native patterns as well was
+# measured and costs the corpus its extraction:
+#
+#   gate (applied to ALL patterns)      native rows kept (of 113,046)
+#   anchor ≥ 2 tokens                    59,769   (−53,277)
+#   anchor ≥ 3 tokens                    51,168   (−61,878)
+#   locality ≤ 20k                       72,736   (−40,310)
+#   both, foreign only                  113,046   (unchanged)
+#
+# A native pattern's labels came off THIS patent's own header, so a mislocated
+# native row is a within-patent misassignment — a real and larger defect (the
+# locality figures above are its size), but a different one, and not something
+# to fix by silently deleting a third of the corpus's rows. Consulting
+# `first_seen_patent` re-introduces the provenance dependence the design tried
+# to avoid; that is the honest trade until `header_text` is captured at
+# discovery, which is the fix that would let the gate be text-only again.
+
+# A single salient token is boilerplate, not a header. Blocks 593/593 leaked
+# rows; costs 0 of the 3,048 legitimate US9745328 rows (8-token anchor).
+_FOREIGN_MIN_ANCHOR_TOKENS = 2
+# A row may sit this far downstream of the header that names it. 20,000 chars
+# covers US9745328's TABLE 5 (15,365 chars) with room to spare — its furthest
+# legitimate row is 17,292 away — while the nearest leaked row is 30,782 away.
+_FOREIGN_ANCHOR_LOCALITY = 20_000
+# …and a little upstream, for the caption/units line printed after the header
+# cells but before the first data row.
+_FOREIGN_ANCHOR_BACKREACH = 200
+
+
+def _lc_greek_indexed(text: str) -> tuple[str, tuple[list[int], list[int]] | None]:
+    """`_lc_greek(text)` plus the map back to offsets in `text`.
+
+    The anchor is searched in Greek-expanded space (`γ` → `gamma`), so an
+    offset there is NOT an offset in the source — it drifts by 4 chars per
+    Greek letter seen so far, and patent text is full of `μM`. The locality
+    gate compares anchor positions against `re.Match.start()` offsets in the
+    raw text, so the two have to be reconciled or the comparison is nonsense.
+
+    Returns `(lc_text, None)` when nothing expanded (the common case, no cost),
+    else `(lc_text, (starts, shifts))` for `_to_source_offset` to bisect.
+    """
+    parts: list[str] = []
+    starts: list[int] = []
+    shifts: list[int] = []
+    j = 0
+    shift = 0
+    for ch in text:
+        low = ch.lower()
+        rep = _GREEK_TO_LATIN.get(low, low)
+        if len(rep) != 1:
+            starts.append(j)
+            shift += len(rep) - 1
+            shifts.append(shift)
+        parts.append(rep)
+        j += len(rep)
+    lc = "".join(parts)
+    return lc, ((starts, shifts) if starts else None)
+
+
+def _to_source_offset(off: int, index: tuple[list[int], list[int]] | None) -> int:
+    """Offset in `_lc_greek` space → offset in the source text."""
+    if index is None:
+        return off
+    starts, shifts = index
+    k = bisect.bisect_right(starts, off) - 1
+    return off - (shifts[k] if k >= 0 else 0)
+
+
+def _anchor_spans(
+    lc_text: str,
+    index: tuple[list[int], list[int]] | None,
+    anchor: list[str],
+) -> list[tuple[int, int]]:
+    """Every place the header anchor occurs, as source-text (start, end)."""
     if not anchor:
-        return False
-    return _anchor_regex(anchor).search(lc_text) is not None
+        return []
+    return [
+        (_to_source_offset(m.start(), index), _to_source_offset(m.end(), index))
+        for m in _anchor_regex(anchor).finditer(lc_text)
+    ]
+
+
+def _is_foreign(entry: dict[str, Any], patent_id: str) -> bool:
+    """True when this pattern's labels were read off a DIFFERENT patent's
+    header. An entry with no `first_seen_patent` is a `fresh_patterns` item —
+    discovered on this patent, during this run, by the call that just paid for
+    it — and is native.
+    """
+    src = (entry.get("first_seen_patent") or "").strip().upper()
+    return bool(src) and src != (patent_id or "").strip().upper()
+
+
+def _under_anchor(offset: int, spans: list[tuple[int, int]]) -> bool:
+    """True when `offset` falls under one of the anchor's occurrences."""
+    return any(
+        start - _FOREIGN_ANCHOR_BACKREACH <= offset <= end + _FOREIGN_ANCHOR_LOCALITY
+        for start, end in spans
+    )
 
 
 def apply_patterns_to_text(
@@ -416,34 +551,50 @@ def apply_patterns_to_text(
             k = _pattern_key(rx)
             if k in existing_keys:
                 continue
-            active.append({**fp, "key": k})
+            # Stamp provenance: a fresh pattern was discovered on THIS patent
+            # by the run that is now applying it, so `_is_foreign` must not
+            # subject it to the cross-patent gate. `add_pattern` records the
+            # same value in the library; the caller's dict does not carry it.
+            active.append({"first_seen_patent": patent_id, **fp, "key": k})
             existing_keys.add(k)
 
     # Lowercase + Greek-normalize ONCE (keeping separators so the anchor's
     # word-boundary check works). The header-anchor check runs against this
     # per pattern — the deterministic gate: a pattern fires on this patent
-    # only if its header is present here.
-    lc_text = _lc_greek(text)
+    # only if its header is present here. `lc_index` maps positions in that
+    # expanded text back to `text`, for the foreign-pattern locality gate.
+    lc_text, lc_index = _lc_greek_indexed(text)
     # Built once per call: the patent's own `Label (unit)` headers.
     header_units = _text_header_units(text)
 
     out: list[dict[str, Any]] = []
     seen_per_pattern: dict[str, int] = {}
     n_anchor_skipped = 0
+    n_foreign_thin_anchor = 0
+    n_foreign_far = 0
     n_no_unit = 0
     unit_cache: dict[str, str] = {}
     for entry in active:
         rx = entry.get("regex") or ""
         column_assays = entry.get("column_assays") or []
-        # HEADER-ANCHOR GATE (per pattern, deterministic): the pattern's
-        # header must appear in THIS patent's text. If it doesn't, the
-        # row-regex may still match (it's generic) but the labels don't
-        # belong here — skip the whole pattern. This is what makes the
-        # library's output depend only on the local text, never on which
-        # patent the pattern came from.
+        # HEADER-ANCHOR GATE (per pattern): the pattern's header must appear
+        # in THIS patent's text. If it doesn't, the row-regex may still match
+        # (it's generic) but the labels don't belong here — skip the whole
+        # pattern. This was intended to make output depend only on the local
+        # text; with no entry carrying a real `header_text` it decides only
+        # "some word from the header occurs somewhere", which is why the
+        # foreign gate below exists.
         anchor = _header_anchor(entry)
-        if not _anchor_present(lc_text, anchor):
+        spans = _anchor_spans(lc_text, lc_index, anchor)
+        if not spans:
             n_anchor_skipped += 1
+            continue
+        # FOREIGN-PATTERN GATE: these labels were read off another patent's
+        # header, so they have to earn their way in. See the block above
+        # `_FOREIGN_MIN_ANCHOR_TOKENS` for the measurements.
+        foreign = _is_foreign(entry, patent_id)
+        if foreign and len(anchor) < _FOREIGN_MIN_ANCHOR_TOKENS:
+            n_foreign_thin_anchor += 1
             continue
         try:
             # MULTILINE: discovered row-regexes are written to match "a single
@@ -458,6 +609,14 @@ def apply_patterns_to_text(
         for m in compiled.finditer(text):
             cid = (m.groupdict().get("cid") or "").strip()
             if not cid:
+                continue
+            # A foreign label belongs to the table its header heads, not to
+            # every "integer, then decimal" in the document. This is what
+            # separates US9745328's rows (all within 17,292 chars of the
+            # header they inherit) from US20240010684A1's (all at least
+            # 30,782 chars away, in the HPLC methods section).
+            if foreign and not _under_anchor(m.start(), spans):
+                n_foreign_far += 1
                 continue
             # value0, value1, …
             for i, assay in enumerate(column_assays):
@@ -518,6 +677,13 @@ def apply_patterns_to_text(
             "assay_pattern_library: %s — %d pattern(s) skipped "
             "(header anchor absent in this patent's text; their tables "
             "are not present here)", patent_id, n_anchor_skipped,
+        )
+    if n_foreign_thin_anchor or n_foreign_far:
+        logger.info(
+            "assay_pattern_library: %s — cross-patent gate blocked %d "
+            "pattern(s) on a single-token anchor and %d row-match(es) sitting "
+            "outside the anchored region",
+            patent_id, n_foreign_thin_anchor, n_foreign_far,
         )
     if seen_per_pattern:
         logger.info(
