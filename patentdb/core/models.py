@@ -87,6 +87,42 @@ class CompoundSource(str, Enum):
     MARKUSH_ENUMERATED = "markush_enumerated"
 
 
+class AssayRow(dict):
+    """The ONE serialised shape of an assay row, shared by both binned paths.
+
+    `routes/letter_bin_assays.py` and `sources/uspto_assays.AssayRecord` both
+    write ranges into the same `assay_tables.json`, and used to spell them
+    differently — `value_low/value_high/value_raw/bin` (8,020 shipped rows,
+    read by both JSON consumers) versus `range_lo/range_hi/letter_grade/
+    value_text` (0 shipped rows, never exercised by a reader). A consumer had
+    to know both.
+
+    Written keys are the first spelling only: iteration, `keys()` and
+    `json.dumps` see one schema. The second spelling stays READABLE via `[]`
+    and `.get()` so the dataclass-side vocabulary — which `range_lo`/`range_hi`
+    remain, six eval scripts read them off `AssayRecord` with getattr — does
+    not have to be relearned at the dict boundary.
+    """
+    _ALIASES = {
+        "range_lo": "value_low",
+        "range_hi": "value_high",
+        "letter_grade": "bin",
+        "value_text": "value_raw",
+    }
+
+    def __missing__(self, key):
+        canonical = self._ALIASES.get(key)
+        if canonical is not None and dict.__contains__(self, canonical):
+            return dict.__getitem__(self, canonical)
+        raise KeyError(key)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+
 class AssayResult(BaseModel):
     """A single assay measurement for a compound."""
     assay_name: str
@@ -95,6 +131,12 @@ class AssayResult(BaseModel):
     qualifier: str | None = None                # ">", "<", "~", "range"
     unit: str = ""
     n_runs: int | None = None                   # Number of experimental replicates
+    # Which tier produced this measurement, e.g. "pattern_library:{key}",
+    # "harvest_llm", "uspto_xml_table". Without it the FSM tier cannot stamp
+    # provenance at all: 27,868 of the 35,888 shipped rows carried `<none>`
+    # because `HarvestResult.to_assay_results` had nowhere to put the
+    # `validation_reason` its ActivityTuples already knew.
+    source: str = ""
 
 
 class DrugLikenessResult(BaseModel):

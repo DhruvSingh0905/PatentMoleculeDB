@@ -59,15 +59,6 @@ import pytest
 from patentdb.scripts.eval.assay_completeness_audit import diff_one
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "diff_one's greedy 1:1 matcher can only consume a BDB row once, so "
-        "a value-equal duplicate v2 row (second source tag) always falls "
-        "into n_v2_only — a merge-tier duplicate is reported as a genuine "
-        "'v2 has MORE assays than BDB' finding instead of being flagged."
-    ),
-)
 def test_c1_diff_one_n_v2_only_unchanged_by_duplicate():
     bdb_assays = [{"assay": "IC50", "value": 10.0, "unit": "nM"}]
     v2_assays = [
@@ -131,15 +122,6 @@ def _fake_repo_for_row_stats(
     return str(fake_file)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "bdb_row_coverage_pct = 100 * v2_rows_for_matched / bdb_rows counts "
-        "every v2 row for a matched compound uncapped by BDB's row count, so "
-        "a duplicate v2 row inflates the percentage (100% -> 200% in this "
-        "fixture) even though BDB's own row count didn't change."
-    ),
-)
 def test_c2_bdb_row_coverage_pct_unchanged_by_duplicate(tmp_path, monkeypatch):
     patent_id = "US_TEST_C2_0001"
     ik = "ABCDEFGHIJKLMNO-UHFFFAOYSA-N"
@@ -185,15 +167,6 @@ def test_c2_bdb_row_coverage_pct_unchanged_by_duplicate(tmp_path, monkeypatch):
 # False. Classification flips on data that says nothing new about
 # whether the patent uses letter grades.
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "n_bin / n_all >= 0.30 is diluted by duplicate non-bin rows from a "
-        "second tier: 31/100 (0.31, True) becomes 31/169 (0.18, False) once "
-        "the 69 non-bin rows are each duplicated under a new source tag, "
-        "even though nothing about the patent's letter-grade usage changed."
-    ),
-)
 def test_c3_letter_grade_status_unchanged_by_nonbin_duplicates(tmp_path, monkeypatch):
     patent_id = "US_TEST_C3_0001"
     bin_rows = [
@@ -242,15 +215,6 @@ def test_c3_letter_grade_status_unchanged_by_nonbin_duplicates(tmp_path, monkeyp
 from patentdb.scripts.eval.export_assay_csv import _classify_patent, export_csv
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "_classify_patent's n_measurements/n_compounds >= 1.5 threshold "
-        "crosses from a single duplicated row with no new compounds: 50 "
-        "compounds / 74 rows (1.48, 'small_table') becomes 50 / 75 (1.50, "
-        "'table_primary') after ONE row is duplicated under a new source."
-    ),
-)
 def test_c4_classify_patent_label_unchanged_by_duplicate():
     assays: dict[str, list[dict]] = {}
     for i in range(50):
@@ -282,14 +246,6 @@ def test_c4_classify_patent_label_unchanged_by_duplicate():
 # cannot tell "one measurement, reported twice by two tiers" from "two
 # independent measurements".
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "export_csv's fieldnames omit `source`; a duplicate row from a "
-        "second extraction tier is written as a byte-identical extra CSV "
-        "line with no column that could distinguish it from the original."
-    ),
-)
 def test_c5_export_csv_has_source_column(tmp_path):
     extractions_root = tmp_path / "extraction"
     patent_id = "US_TEST_C5_0001"
@@ -365,15 +321,6 @@ def _run_build_comparison_csv(tmp_path: Path, order: str) -> tuple[dict, dict]:
     return stats, row
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "build_comparison_csv selects ki_arr[0]['value_numeric'] — the "
-        "first-listed tier's value wins. Two disagreeing rows for the same "
-        "compound (10.0 uM vs 50.0 uM) select a different claude_ki_uM and "
-        "flip ki_match_5pct purely by which tier the merge put first."
-    ),
-)
 def test_c6_build_comparison_csv_selection_independent_of_order(tmp_path, monkeypatch):
     stats_good_first, row_good_first = _run_build_comparison_csv(tmp_path, "good_first")
     stats_bad_first, row_bad_first = _run_build_comparison_csv(tmp_path, "bad_first")
@@ -403,16 +350,6 @@ from patentdb.core.smiles_utils import molecular_weight
 from patentdb.routes.process_patent import _bridge_gp_to_harvest_cids
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "_bridge_gp_to_harvest_cids picks the FIRST assay row whose name "
-        "mentions MS/[M+H]+ and never checks the rest, so the rename "
-        "decision (trusted vs skipped) depends on which of two "
-        "disagreeing tiers' MS rows a merge places first: [good, bad] "
-        "renames GP107 -> '107', [bad, good] leaves it as 'GP107'."
-    ),
-)
 def test_c7_bridge_rename_decision_independent_of_ms_row_order():
     smiles = "c1ccccc1"  # benzene — cheap, deterministic RDKit MW
     mw = molecular_weight(smiles)

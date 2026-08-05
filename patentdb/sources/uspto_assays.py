@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 
 from ..core import config
+from ..core.models import AssayRow
 from .uspto_xml import Table
 
 logger = logging.getLogger(__name__)
@@ -368,8 +369,18 @@ class AssayRecord:
     source: str = "uspto_xml_table"
     unit_source: str = "column"   # "column" | "caption" | "description"
 
-    def as_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v not in (None, "")}
+    def as_dict(self) -> AssayRow:
+        """Serialise under the ONE schema both binned paths now share.
+
+        The dataclass keeps `range_lo`/`range_hi`/`letter_grade`/`value_text`
+        as attribute names — six eval scripts getattr them. The dict spells
+        them the way `routes/letter_bin_assays.py` already ships 8,020 rows.
+        See `core/models.AssayRow` for why the old spelling still reads.
+        """
+        return AssayRow(
+            (AssayRow._ALIASES.get(k, k), v)
+            for k, v in self.__dict__.items() if v not in (None, "")
+        )
 
     def missing_fields(self) -> list[str]:
         """What stops this from being a usable measurement.

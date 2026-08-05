@@ -181,10 +181,6 @@ _RANGE_KEY_NAMES = frozenset({
 
 # ── D1 ────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason=(
-    "XML baseline never reaches output: repair/loop.py:366 computes "
-    "extract_from_patent(xml) and repair/loop.py:743 returns only `recovered`; "
-    "see repair/loop.py:366 and routes/process_patent.py:1811"))
 def test_d1_xml_baseline_reaches_assay_tables():
     """The deterministic XML records are computed, then thrown away.
 
@@ -233,10 +229,6 @@ def test_d1_xml_baseline_reaches_assay_tables():
 
 # ── D2 ────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason=(
-    "merge writes 6 of AssayRecord's 14 fields, so a binned record arrives "
-    "with no value at all; see routes/process_patent.py:1811 and "
-    "sources/uspto_assays.py:352"))
 def test_d2_merge_preserves_a_binned_records_range():
     """A record whose value IS a range loses its value crossing the merge.
 
@@ -286,9 +278,6 @@ def test_d2_merge_preserves_a_binned_records_range():
 
 # ── D3 ────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason=(
-    "the two binned paths serialise the same range under different key names; "
-    "see routes/letter_bin_assays.py:232 vs sources/uspto_assays.py:363"))
 def test_d3_binned_paths_share_one_range_schema():
     """Two producers, one file, two incompatible spellings of "a range".
 
@@ -331,9 +320,6 @@ def test_d3_binned_paths_share_one_range_schema():
 
 # ── D4 ────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason=(
-    "AssayResult has no `source` field, so HARVEST provenance is unstampable; "
-    "see core/models.py:90 and core/assay_fsm/harvest/orchestrator.py:47"))
 def test_d4_assay_result_carries_provenance():
     """Provenance is missing from the data model, not just from the writer.
 
@@ -415,9 +401,6 @@ def test_d5_us10544143_tlr_columns_are_not_shifted():
 
 # ── D6 ────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason=(
-    "apply_patterns_to_text hard-codes unit='' on every row it emits; "
-    "see core/assay_fsm/assay_pattern_library.py:388 and :405"))
 def test_d6_pattern_library_rows_carry_a_unit():
     """The pattern-library path emits every row with no unit at all.
 

@@ -58,7 +58,10 @@ _NON_ASSAY_PATTERNS = [
     re.compile(r"^\[?m\s*[+\-]\s*h\]?\+?$", re.IGNORECASE),       # [M+H], M+H, [M-H], M-H, [M+H]+
     re.compile(r"^m\s*\+\s*1\s*$", re.IGNORECASE),                # M+1
     re.compile(r"^method$", re.IGNORECASE),                       # Method (HPLC method)
-    re.compile(r"^hplc(\s+\w+)*$", re.IGNORECASE),                # HPLC method, HPLC tR
+    # `[\s_]` and not `\s`: the pattern library stores `HPLC_method` /
+    # `HPLC_ret_time_min` with underscores, and a whitespace-only class let
+    # 1,468 US10273259 rows through under a column that is a method label.
+    re.compile(r"^hplc([\s_]+\w+)*$", re.IGNORECASE),             # HPLC method, HPLC tR
     re.compile(r"^lcms?(\s+\w+)*$", re.IGNORECASE),               # LCMS, LCMS method, LCMS m/z
     re.compile(r"^ms(\s+\w+)*$", re.IGNORECASE),                  # MS, MS m/z
     re.compile(r"^m/z$", re.IGNORECASE),                          # m/z
@@ -116,6 +119,8 @@ def is_non_assay_name(name: str) -> bool:
     s = name.strip()
     if any(p.match(s) for p in _NON_ASSAY_PATTERNS):
         return True
+    if is_retention_time_name(s):
+        return True
     # Substring markers that are NEVER part of a real biological assay name —
     # mass-spec / NMR / chromatography characterization columns whose full
     # text varies too much for an anchored regex ("MS m/z 1st eluting isomer",
@@ -134,6 +139,41 @@ _NON_ASSAY_SUBSTRINGS = (
     "retention time", "rt (min)", "tr (min)", "exact mass", "molecular weight",
     "qc method", "analytical method", "hplc method", "lc method", "purity",
 )
+
+
+# ── Retention time ──────────────────────────────────────────────
+#
+# A retention time says when a peak eluted on one lab's column under one
+# gradient. It has no target, it is not comparable between patents, and filed
+# under `assay_name` it is indistinguishable from a potency measured in
+# minutes. The literal substrings above were meant to catch it and did not:
+# `"tr (min)"` misses `tR (min.)` by one abbreviation dot and `"retention
+# time"` misses `ret. time`. Measured across the 22 shipped artifacts
+# (2026-08-04): 864 rows named `'HPLC tR (min.)'`, all in US10273259.
+#
+# BOTH halves are required to reject. `C-Raf TR IC50` — 235 shipped rows — is
+# time-resolved FRET against a real kinase, and a bare `TR` test would condemn
+# it; it names no chromatography, so it survives.
+_CHROMATOGRAPHY_RE = re.compile(
+    r"(?<![A-Za-z])(hplc|uplc|lc[\s/_-]*ms|lcms|gc[\s_-]*ms|sfc|chromatograph)",
+    re.IGNORECASE,
+)
+_RETENTION_RE = re.compile(
+    r"(?<![A-Za-z])"
+    r"(t\s*[_-]?\s*r|rt|ret\.?(?:ention)?[\s_-]*time)"
+    r"(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
+
+def is_retention_time_name(name: str) -> bool:
+    """True iff the column is a chromatography retention time."""
+    s = (name or "").strip()
+    if not s:
+        return False
+    if re.search(r"ret\.?(?:ention)?[\s_-]*time", s, re.IGNORECASE):
+        return True
+    return bool(_CHROMATOGRAPHY_RE.search(s) and _RETENTION_RE.search(s))
 
 
 def is_valid_assay_name(name: str | None) -> bool:

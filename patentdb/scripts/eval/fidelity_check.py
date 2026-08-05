@@ -169,7 +169,28 @@ def _norm_key(k: str) -> str:
 
 
 def load_v2_extraction(patent_id: str) -> tuple[dict, dict]:
-    """Return (example_index_by_norm_key, assay_tables_by_norm_key)."""
+    """Return (example_index_by_norm_key, assay_tables_by_norm_key).
+
+    `_norm_key` is MANY-TO-ONE — it strips every non-alphanumeric character,
+    so `"1-2"`, `"Example 12"`, `"Compound 12"`, `"Cpd. No. 12"` and `"1 2"`
+    all normalise to `"12"`. Written as `{_norm_key(k): v for ...}` the
+    collision resolved by last-wins and one compound's ENTIRE row list
+    replaced the other's: 5 rows in, 2 out, 3 gone with no exception, no
+    warning and no counter — the denominator simply shrank and `assay_pct`
+    went up. (It does not strip leading zeros, so `"12"`/`"012"` are safe.)
+
+    Latent, not live: 0 collisions across the 22 cached patents today. But
+    hyphenated ids are already here — US10246453's `assay_tables.json` carries
+    `K-30K` beside plain numeric ids — and the day it fires there is nothing
+    to see, which is why it is fixed rather than watched.
+
+    Assay ROWS are merged, because the consumer below is a "does any row for
+    this compound match" search and two rows cost nothing there; they are NOT
+    de-duplicated, since dropping a row that looks like another is the very
+    silent loss being fixed. `example_index` values are single structure
+    records that cannot be merged, so the first is kept and the collision is
+    logged loudly.
+    """
     base = config.OUTPUT_DIR / "text_extraction" / patent_id
     ex_path = base / "example_index.json"
     as_path = base / "assay_tables.json"
@@ -177,8 +198,29 @@ def load_v2_extraction(patent_id: str) -> tuple[dict, dict]:
         return {}, {}
     ex = json.loads(ex_path.read_text())
     ay = json.loads(as_path.read_text())
-    ex_norm = {_norm_key(k): v for k, v in ex.items()}
-    ay_norm = {_norm_key(k): v for k, v in ay.items()}
+
+    ex_norm: dict = {}
+    ex_src: dict = {}
+    for k, v in ex.items():
+        nk = _norm_key(k)
+        if nk in ex_norm:
+            logger.warning(
+                "%s: example_index ids %r and %r both normalise to %r; "
+                "keeping the first, the second is not scored",
+                patent_id, ex_src[nk], k, nk)
+            continue
+        ex_norm[nk], ex_src[nk] = v, k
+
+    ay_norm: dict = {}
+    for k, v in ay.items():
+        nk = _norm_key(k)
+        rows = list(v or [])
+        if nk in ay_norm:
+            logger.warning("%s: assay ids normalise to %r; merging %d rows",
+                           patent_id, nk, len(rows))
+            ay_norm[nk] = ay_norm[nk] + rows
+        else:
+            ay_norm[nk] = rows
     return ex_norm, ay_norm
 
 

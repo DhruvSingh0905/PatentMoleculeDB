@@ -28,6 +28,8 @@ from __future__ import annotations
 import logging
 import re
 
+from ..core.models import AssayRow
+
 logger = logging.getLogger(__name__)
 
 # ── glyph / mojibake normalisation ──────────────────────────────────────────
@@ -221,8 +223,11 @@ def extract_letter_bin_assays(
                 if ncid in seen_in_table:
                     continue
                 seen_in_table.add(ncid)
+                # AssayRow, not a bare dict: the uspto_xml binned path now
+                # serialises through the same type, so one artifact carries
+                # one range schema instead of the two it shipped before.
                 out.setdefault(ncid, []).append(
-                    {
+                    AssayRow({
                         "assay_name": name,
                         "value_numeric": None,     # honest: no fabricated point
                         "unit": "µM",
@@ -233,7 +238,7 @@ def extract_letter_bin_assays(
                         "value_high": high,
                         "bin": "+" * level,
                         "source": "letter_bin",
-                    }
+                    })
                 )
 
     n_rec = sum(len(v) for v in out.values())

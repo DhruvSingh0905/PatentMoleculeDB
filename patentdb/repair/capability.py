@@ -411,16 +411,16 @@ def _bad_values_now(patent_id: str) -> int:
     same full path the sandbox measures — parse plus cached rules — so the two
     numbers are comparable.
     """
-    from ..sources.uspto_assays import extract_from_patent
     from .loop import repair_patent
     xml = (config.OUTPUT_DIR / "uspto_xml" / f"{patent_id}.xml")
     if not xml.exists():
         return 0
     try:
         text = xml.read_text(errors="ignore")
-        base = [r for r in extract_from_patent(text) if r.is_usable]
+        # `repair_patent` already unions the deterministic baseline in; adding
+        # `extract_from_patent` again would double-count every baseline record.
         extra, _ = repair_patent(patent_id, text, max_calls=0)
-        return value_check.check_patent(patent_id, base + list(extra))["bad"]
+        return value_check.check_patent(patent_id, list(extra))["bad"]
     except Exception as e:
         logger.warning("value_check baseline failed for %s: %r", patent_id, e)
         return 0

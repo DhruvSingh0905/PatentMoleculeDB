@@ -263,7 +263,17 @@ def measure(patents: list[str] | None = None, *, with_bdb: bool = True) -> dict:
                 "union": check_patent(pid, union, reference),
                 # Scored on the concatenated records so a reference value can
                 # be satisfied by whichever tier actually read that compound.
-                # `check_patent` already takes the best bucket per compound.
+                #
+                # `check_patent` is optimistic ACROSS assay names — a tier that
+                # lacks a column cannot cost the other tier its bucket — but it
+                # is majority-ruled WITHIN one, so two tiers reading the SAME
+                # column differently now shows up as a disagreement instead of
+                # being absorbed. The numbers this prints moved when that
+                # landed: corpus-wide `agree` 14,275 -> 13,968 and `bad` 3 ->
+                # 187. The old 3 was an artifact of best-of-cross-product
+                # scoring, where one correct record hid every wrong one on the
+                # same compound; 184 of the 187 are US9718790 and US9718825,
+                # where one assay name covers several distinct columns.
                 "combined": check_patent(pid, list(shipped) + list(union),
                                          reference),
             }

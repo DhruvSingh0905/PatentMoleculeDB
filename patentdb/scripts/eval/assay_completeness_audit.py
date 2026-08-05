@@ -25,12 +25,81 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from dataclasses import dataclass
 
+from ...core.units import _NM_PER_UNIT, _normalize_unit_token, value_to_uM
 from . import fidelity_check as fc
 
 logger = logging.getLogger(__name__)
+
+
+# ── Measurement identity (duplicate-safe counting) ──────────────────
+
+
+_NAME_NOISE = re.compile(r"[^a-z0-9]+")
+
+
+def measurement_key(row: dict) -> tuple:
+    """Identity of ONE measurement, deliberately blind to `source`.
+
+    `assay_tables` carries rows from TWO extraction tiers (the existing
+    one + uspto_xml), each tagged with its own `source` and never
+    deduplicated — ~59 % of the XML tier's rows have a value-equal
+    counterpart the other tier already shipped. Any metric that counts
+    raw rows therefore counts one measurement twice the moment the
+    second tier lands.
+
+    Key = (assay name, value, unit, range). The value is canonicalised
+    to μM so a tier printing `290 nM` collapses onto one printing
+    `0.29 μM`; an unrecognised unit keeps its own token so `10 %` never
+    merges with `10 nM`. `source` is excluded — that is the whole point.
+
+    assay_name is IN the key, against the first instinct to key on value
+    alone. Measured over the 22-patent corpus (35,888 rows, still ONE
+    tier, so every collapse there is a real measurement lost): a
+    value-only key collapses 18.57 % of rows — 70.0 % of US11566007 and
+    31.6 % of US10899738, whose multi-column panels legitimately report
+    the SAME number against several targets. Adding the normalised name
+    collapses 0.26 %, and those are byte-identical rows. Discarding a
+    real multi-target readout is precisely the corruption this module
+    exists to surface, so the narrower key wins.
+    """
+    unit = _normalize_unit_token(row.get("unit"))
+    value = row.get("value_numeric")
+    if value is not None and unit in _NM_PER_UNIT:
+        # round(): float scaling (0.29 μM -> 290.00000000000006 nM -> back)
+        # must not split one measurement into two keys.
+        value_key = ("μM", round(value_to_uM(value, unit), 9))
+    else:
+        value_key = (unit.lower(), value)
+    return (
+        _NAME_NOISE.sub(" ", (row.get("assay_name") or "").lower()).strip(),
+        value_key,
+        row.get("qualifier"),
+        row.get("value_low"),
+        row.get("value_high"),
+        row.get("bin"),
+    )
+
+
+def distinct_measurements(rows: list) -> list:
+    """The first row of each `measurement_key` group, order preserved.
+
+    Order-preserving so the caller's own reporting order (and any
+    first-wins field it still reads) does not change for a patent that
+    has no duplicates at all.
+    """
+    seen: set = set()
+    out: list = []
+    for r in rows or []:
+        k = measurement_key(r)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(r)
+    return out
 
 
 @dataclass
@@ -52,7 +121,18 @@ def diff_one(
     v2_assays: list,
     tol_pct: float = 5.0,
 ) -> CompoundAssayDiff:
-    """Compare two lists of assay measurements via tolerance match."""
+    """Compare two lists of assay measurements via tolerance match.
+
+    v2 rows are collapsed to DISTINCT measurements first. The matcher
+    below is greedy and 1:1 — a BDB row can be consumed only once — so a
+    value-equal duplicate from a second tier could never be matched and
+    fell straight into `n_v2_only`, the bucket `_print_report` prints
+    under "compounds where v2 has EXTRA assays (multi-column captures)".
+    Verified: bdb=[10.0 nM] vs v2=[10.0 nM] gives n_v2_only=0; appending
+    the same measurement tagged source="uspto_xml" gave n_v2_only=1 —
+    merge-tier corruption reading as a positive coverage finding.
+    """
+    v2_assays = distinct_measurements(v2_assays)
     matched_v2_idx: set[int] = set()
     n_matched = 0
     bdb_only = []

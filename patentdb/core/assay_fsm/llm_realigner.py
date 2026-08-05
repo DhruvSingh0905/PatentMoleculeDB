@@ -111,6 +111,104 @@ def chunk_region(
     return chunks
 
 
+# ── Column-shift guard ──────────────────────────────────────────
+#
+# `chunk_region` locates chunk boundaries with `_CHUNK_ROW_RE`, which matches
+# `<token> <number>`. Over a table flattened to one cell per line — the shape
+# Google Patents renders, `...\n\n436\n\n8.9\n\n27\n\n8941\n\n437\n\n5.1...` —
+# the non-overlapping scan matches VALUE PAIRS (`27 8941`) just as readily as
+# row starts (`437 5.1`). Every 45th match is therefore an arbitrary cell, and
+# a chunk beginning there opens on the tail of a row: the model reads the
+# stream one cell early and every compound in that chunk is published against
+# the wrong column.
+#
+# Measured on US10544143 (2026-08-04): 55 of 1,019 compounds in the TLR7/8/9
+# tables shipped shifted, compound 437 among them — TLR7 8941 nM (compound
+# 436's TLR9) where the patent prints 5.1 nM, a >1,700-fold error attributed
+# to the wrong target. Two cached realigner responses cover those rows, one
+# correct and one shifted; the shifted one came from the GP description, which
+# `pipeline._merge_into` treats as authoritative, so it won.
+#
+# The guard needs positive PROOF of the shift, not a plausibility score: it
+# drops a row only when the row's own values reproduce the cells starting one
+# token BEFORE its compound id, and no occurrence of that id is followed by
+# them. A row the source cannot confirm either way is left alone — rounding,
+# reordered columns and `NT` cells all make a bare "values don't match" test
+# reject correct rows, and this module's rule is that a missing assay is
+# recoverable while a wrong one is not.
+
+_NUM_CELL_RE = re.compile(
+    r"(?<![A-Za-z0-9._-])"
+    r"(?:&gt;|&lt;|&le;|&ge;|[<>≤≥~≈])?\s*"
+    r"(\d+(?:\.\d+)?)"
+    r"(?![A-Za-z0-9.])"
+)
+
+
+def _numeric_cells(text: str) -> tuple[list[float], list[str]]:
+    """Every numeric cell of `text`, in reading order, as (values, raw)."""
+    values: list[float] = []
+    raws: list[str] = []
+    for m in _NUM_CELL_RE.finditer(text):
+        raws.append(m.group(1))
+        values.append(float(m.group(1)))
+    return values, raws
+
+
+def _row_values(row: RealignedRow) -> list[float]:
+    """The row's numeric values in the order the model emitted its columns."""
+    out: list[float] = []
+    for v in (row.values or {}).values():
+        try:
+            out.append(float(v))
+        except (TypeError, ValueError):
+            return []          # a non-numeric cell breaks positional proof
+    return out
+
+
+def drop_column_shifted_rows(
+    rows: list[RealignedRow], region_text: str,
+) -> list[RealignedRow]:
+    """Drop rows proven to be read one cell early. See the note above."""
+    if not rows or not region_text:
+        return rows
+    values, raws = _numeric_cells(region_text)
+    if not values:
+        return rows
+    at: dict[str, list[int]] = {}
+    for i, raw in enumerate(raws):
+        at.setdefault(raw, []).append(i)
+
+    kept: list[RealignedRow] = []
+    for row in rows:
+        cid = (row.compound_id or "").strip()
+        vals = _row_values(row)
+        # Two values minimum: with one, "shifted" and "the previous row's
+        # value happens to repeat" are the same observation.
+        if len(vals) < 2 or cid not in at:
+            kept.append(row)
+            continue
+        k = len(vals)
+        aligned = shifted = False
+        for i in at[cid]:
+            if values[i + 1:i + 1 + k] == vals:
+                aligned = True
+                break
+            if i >= 1 and [values[i - 1]] + values[i + 1:i + k] == vals:
+                shifted = True
+        if aligned or not shifted:
+            kept.append(row)
+    n_dropped = len(rows) - len(kept)
+    if n_dropped:
+        logger.warning(
+            "llm_realigner: dropped %d/%d realigned row(s) whose values "
+            "reproduce the cells one token BEFORE their compound id — "
+            "chunk boundary opened mid-row",
+            n_dropped, len(rows),
+        )
+    return kept
+
+
 # ── LLM call wrapper ────────────────────────────────────────────
 
 
@@ -191,6 +289,10 @@ def realign_region(
                 "llm_realigner: cache HIT fp=%s rows=%d patent=%s",
                 fp[:8], len(rows), patent_id,
             )
+            # Also on the cache-hit path: every shipped artifact replays
+            # from here, so a guard that only ran on fresh calls would never
+            # reach the rows that are already wrong on disk.
+            rows = drop_column_shifted_rows(rows, region.text)
             return LLMResult(
                 rows=rows, units=units, notes=notes,
                 fingerprint=fp, cache_hit=True, n_chunks=0,
@@ -269,7 +371,7 @@ def realign_region(
         )
 
     return LLMResult(
-        rows=merged_rows,
+        rows=drop_column_shifted_rows(merged_rows, region.text),
         units=merged_units,
         notes=f"{len(chunks)}-chunk extraction" if merged_rows else "llm_failed",
         fingerprint=fp,

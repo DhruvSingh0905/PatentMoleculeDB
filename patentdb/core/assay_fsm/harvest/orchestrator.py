@@ -60,6 +60,10 @@ class HarvestResult:
                 qualifier=t.qualifier,
                 unit=t.unit or "",
                 n_runs=t.n_runs,
+                # `validation_reason` is where this tier records which arm
+                # produced the tuple ("pattern_library:{key}", agent-5 verdicts).
+                # Dropping it is what left 27,868 shipped rows unattributed.
+                source=t.validation_reason or "",
             ))
         return out
 

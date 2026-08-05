@@ -85,12 +85,13 @@ def audit_patent(patent_id: str, xml: str) -> dict:
     from ...repair.loop import repair_patent
     from ...sources.uspto_assays import extract_from_patent
 
-    recs = list(extract_from_patent(xml))
+    # `repair_patent` returns the deterministic baseline unioned with the rule
+    # recoveries, so it IS the full record set; `extract_from_patent` is only
+    # the fallback for when the loop raises.
     try:
-        extra, _ = repair_patent(patent_id, xml, max_calls=0)
-        recs += list(extra)
+        recs = list(repair_patent(patent_id, xml, max_calls=0)[0])
     except Exception:                            # the loop is additive here too
-        pass
+        recs = list(extract_from_patent(xml))
 
     usable = [r for r in recs if r.is_usable]
     stated, bare = _n_stating_cells(xml)

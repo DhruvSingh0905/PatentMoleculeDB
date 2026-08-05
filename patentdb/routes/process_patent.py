@@ -1112,16 +1112,27 @@ def _bridge_gp_to_harvest_cids(
         # is trusted (Stage A or the new prefix-based signal).
         from ..core.smiles_utils import molecular_weight
         stored_mw = molecular_weight(example_index[gp_cid].get("canonical_smiles", "")) or 0
-        ms_mh = None
-        for a in assay_tables[new_cid]:
-            name = (a.get("assay_name") or "").lower()
-            if "ms" in name or "m+h" in name:
-                ms_mh = a.get("value_numeric")
-                break
-        ms_verified = (
-            ms_mh is not None
-            and stored_mw
-            and abs((ms_mh - 1.008) - stored_mw) <= ms_tolerance_da(ms_mh)
+        # EVERY candidate MS reading, not the first one found. This took the
+        # first row whose name mentioned MS and `break`, which was fine while
+        # one tier wrote the dict and became order-dependent the moment a
+        # second tier started appending to the same list: two tiers reporting
+        # different `[M+H]+` values for one compound made the rename decision
+        # a function of which happened to be appended first. Measured — the
+        # order `[good_ms, bad_ms]` renamed `GP107 -> 107` and `[bad_ms,
+        # good_ms]` left it orphaned, on identical data.
+        #
+        # ANY corroborating reading verifies. MS is one of four alternative
+        # trust signals here (the others are positional, prefix and digit
+        # alignment) — it is evidence FOR a rename, never a veto, so a second
+        # tier misreading a mass cannot revoke a match the first one earned.
+        ms_candidates = [
+            a.get("value_numeric") for a in assay_tables[new_cid]
+            if "ms" in (a.get("assay_name") or "").lower()
+            or "m+h" in (a.get("assay_name") or "").lower()
+        ]
+        ms_verified = bool(stored_mw) and any(
+            v is not None and abs((v - 1.008) - stored_mw) <= ms_tolerance_da(v)
+            for v in ms_candidates
         )
         if (
             ms_verified
@@ -1803,11 +1814,27 @@ def process_patent(
     if config.REPAIR_ENABLED:
         try:
             from ..repair.loop import repair_patent
+            # Fetched ONCE. `_uspto_xml_for` ran three times per patent here
+            # and `extract_from_patent` three times behind it, for one document
+            # that cannot change mid-run.
+            patent_xml = _uspto_xml_for(patent_id)
+            # `repaired` is the deterministic XML baseline UNIONED with what the
+            # rules recovered — every run, not only the runs where a capability
+            # patch lands. It used to be the rule output alone, which is why all
+            # 35,888 shipped rows came from `{'<none>', 'letter_bin'}` and none
+            # from the source that scores 99.9% exact against BindingDB.
             repaired, repair_report = repair_patent(
-                patent_id, _uspto_xml_for(patent_id),
+                patent_id, patent_xml,
                 max_calls=config.REPAIR_MAX_CALLS_PER_PATENT,
             )
             for rec in repaired:
+                # All 14 AssayRecord fields, not 6. The old literal wrote
+                # value_numeric/unit/qualifier/n_runs/assay_name/source and
+                # dropped the rest, which silently emptied every BINNED record:
+                # those carry value_numeric None by design and keep the whole
+                # measurement in the bounds. 45 of the 166 rules in
+                # data/layout_rules.json are bin_key, so this was not a corner.
+                # Names are the JSON ones (see core.models.AssayRow).
                 assay_tables.setdefault(rec.cid, []).append({
                     "assay_name": rec.assay_name,
                     "value_numeric": rec.value_numeric,
@@ -1815,6 +1842,13 @@ def process_patent(
                     "qualifier": rec.qualifier,
                     "n_runs": rec.n_runs,
                     "source": rec.source,
+                    "value_low": rec.range_lo,
+                    "value_high": rec.range_hi,
+                    "value_raw": rec.value_text,
+                    "bin": rec.letter_grade,
+                    "table_id": rec.table_id,
+                    "column_header": rec.column_header,
+                    "unit_source": rec.unit_source,
                 })
             # UNCONDITIONAL. This used to be `if repair_report.rows_recovered:`,
             # so a patent recovering 500 rows logged a summary and a patent
@@ -1830,16 +1864,16 @@ def process_patent(
             from ..repair.autoheal import freeze_result, maybe_escalate
             healed = maybe_escalate(patent_id, repair_report)
             # Pin the answer. From here a patch bought for another document
-            # cannot re-derive this one — see repair/snapshot.
-            from ..sources.uspto_assays import extract_from_patent as _efp
-            freeze_result(patent_id,
-                          list(_efp(_uspto_xml_for(patent_id))) + list(repaired))
+            # cannot re-derive this one — see repair/snapshot. `repaired`
+            # already carries the baseline, so re-extracting to prepend it
+            # would freeze every baseline record twice.
+            freeze_result(patent_id, list(repaired))
             if healed and healed.get("applied"):
                 # The reader changed underneath us. Re-extract so this patent
                 # benefits from the patch it just paid for, rather than the
                 # next run being the first to see it.
                 from ..sources.uspto_assays import extract_from_patent
-                for rec in extract_from_patent(_uspto_xml_for(patent_id)):
+                for rec in extract_from_patent(patent_xml):
                     if not rec.is_usable:
                         continue
                     assay_tables.setdefault(rec.cid, []).append({
@@ -1849,6 +1883,13 @@ def process_patent(
                         "qualifier": rec.qualifier,
                         "n_runs": rec.n_runs,
                         "source": "autoheal_" + (rec.source or "uspto_xml"),
+                        "value_low": rec.range_lo,
+                        "value_high": rec.range_hi,
+                        "value_raw": rec.value_text,
+                        "bin": rec.letter_grade,
+                        "table_id": rec.table_id,
+                        "column_header": rec.column_header,
+                        "unit_source": rec.unit_source,
                     })
         except Exception as e:
             # Repair is additive. It must never be able to break a run that

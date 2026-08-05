@@ -12,6 +12,9 @@ One row per (patent, compound, assay) tuple. Columns:
     qualifier              — '<', '>', '~', '≤', '≥' or empty
     n_runs                 — replicate count if the extractor captured one
     is_null                — True when the cell was a "not tested" / "—" placeholder
+    source                 — extraction tier that produced the row (e.g. uspto_xml,
+                             letter_bin); blank on rows predating the tag. The only
+                             thing separating two tiers' copies of one measurement.
     source_patent_class    — heuristic: "table_primary" / "prose_only" / "no_data" / "image_primary"
 
 Patent-agnostic. No per-patent column or value rewriting. Whatever the
@@ -65,10 +68,30 @@ def _guess_target(assay_name: str) -> str:
 
 
 def _classify_patent(n_compounds: int, n_measurements: int) -> str:
-    """Heuristic patent classification — purely from extraction stats."""
-    if n_compounds == 0:
+    """Heuristic patent classification — purely from extraction stats.
+
+    Classified on COMPOUND count alone. `assay_tables` now merges two
+    extraction tiers without deduplication, so `n_measurements` is a
+    duplicate-contaminated row count: the old
+    `n_measurements / n_compounds >= 1.5` gate crossed on a SINGLE
+    duplicated row (50 compounds / 74 rows = 1.48 "small_table" ->
+    50 / 75 = 1.50 "table_primary"), and no threshold on that ratio can
+    be made safe — every one of them has an edge one duplicate can step
+    over. Only a quantity duplicates cannot move is safe, and duplicates
+    add rows, never compounds.
+
+    Dropping the ratio is also the more honest label: `assay_tables`
+    only contains compounds that HAVE assay rows, so ≥50 of them is a
+    table by construction. Re-classified over the 22-patent corpus, 3
+    patents move small_table -> table_primary — US9718825 (658
+    compounds, ratio 1.48), US11286268 (207, 1.48) and US9302989 (126,
+    1.09). Two of those sit on the exact 1.48 knife-edge the ratio made
+    fragile, and calling a 658-compound assay table "small" was always
+    wrong.
+    """
+    if n_compounds == 0 or n_measurements == 0:
         return "no_data_or_prose_only"
-    if n_compounds >= 50 and n_measurements / max(1, n_compounds) >= 1.5:
+    if n_compounds >= 50:
         return "table_primary"
     if n_compounds >= 5:
         return "small_table"
@@ -87,10 +110,17 @@ def export_csv(
 
     Returns (n_rows_written, per_patent_counts).
     """
+    # `source` is the extraction tier that produced the row. Without it two
+    # tiers reporting the same measurement print as byte-identical lines and
+    # neither a human reviewer nor any downstream aggregation over this CSV
+    # can tell "one measurement, reported twice" from "two independent
+    # measurements". Rows are NOT deduplicated here on purpose — this is the
+    # long-form hand-verification export, so both tiers' rows stay visible
+    # and the column is what makes them distinguishable.
     fieldnames = [
         "patent_id", "compound_id", "iupac_name", "target",
         "assay_name", "value_uM", "value_raw", "value_unit",
-        "qualifier", "n_runs", "is_null", "source_patent_class",
+        "qualifier", "n_runs", "is_null", "source", "source_patent_class",
     ]
     n_rows = 0
     per_patent: dict[str, dict] = {}
@@ -142,6 +172,7 @@ def export_csv(
                         "qualifier": qualifier,
                         "n_runs": a.get("n_runs") if a.get("n_runs") is not None else "",
                         "is_null": is_null,
+                        "source": a.get("source") or "",
                         "source_patent_class": patent_class,
                     })
                     n_rows += 1

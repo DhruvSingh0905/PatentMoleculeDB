@@ -34,6 +34,7 @@ from patentdb.core.iupac_to_smiles import _try_opsin, _convert_single
 from patentdb.core.cost_tracker import cost_tracker
 from patentdb.core.models import Compound, CompoundSource, IupacSource
 from patentdb.scripts.eval import fidelity_check as fc
+from patentdb.scripts.eval.assay_completeness_audit import distinct_measurements
 
 
 DOWNLOADS = Path.home() / "Downloads"
@@ -1824,19 +1825,34 @@ def _letter_grade_status(patent_id: str) -> bool:
         return False
     # Direct signal: honest letter-bin records (source=letter_bin,
     # value_numeric=None) as emitted by routes.letter_bin_assays for
-    # US11566007. When a meaningful fraction of the patent's assay rows are
-    # bins, it's a letter-grade patent regardless of the geomean heuristic.
-    n_all = sum(len(rows) for rows in ay.values())
-    n_bin = sum(1 for rows in ay.values() for r in rows
-                if r.get("source") == "letter_bin")
-    if n_all and n_bin / n_all >= 0.30:
+    # US11566007. When a meaningful fraction of the patent's COMPOUNDS
+    # carry a bin, it's a letter-grade patent regardless of the geomean
+    # heuristic.
+    #
+    # Counted per COMPOUND, not per row, because a second extraction tier
+    # duplicates only the numeric rows — it has no reason to re-emit the
+    # honest value_numeric=None bins — so a row ratio is diluted from the
+    # denominator alone. Verified: 31 bin / 100 rows (0.31 -> True) becomes
+    # 31 / 169 (0.18 -> False) once the 69 non-bin rows are duplicated
+    # under a second source, flipping a genuinely letter-graded patent to
+    # "numeric" on data saying nothing new. Duplicates add rows, never
+    # compounds. Re-measured over all 22 patents: the compound ratio
+    # reproduces the row ratio's verdict everywhere (US11566007 0.99 rows /
+    # 0.98 cids, US11292791 0.53 / 0.84, all others 0.00) — no patent
+    # changes classification.
+    n_cids = len(ay)
+    n_cids_bin = sum(1 for rows in ay.values()
+                     if any(r.get("source") == "letter_bin" for r in rows))
+    if n_cids and n_cids_bin / n_cids >= 0.30:
         return True
     GEOMEAN = (0.0316, 0.316, 3.16, 31.6)
     total = 0
     geomean_hits = 0
     distinct_gm: set[float] = set()
     for cid, rows in ay.items():
-        for r in rows:
+        # Same reason, applied to the `total >= 20` floor below: duplicate
+        # rows would let a patent clear it without a single new value.
+        for r in distinct_measurements(rows):
             v = r.get("value_numeric")
             if v in (None, 0, 0.0):
                 continue
@@ -2028,6 +2044,24 @@ def build_assay_row_stats(patent_id: str) -> dict:
       v2_rows_for_matched : assay rows v2 extracted for matched cids
       bdb_row_coverage    : v2_rows_for_matched / bdb_rows_total (×100)
       top_assays          : [(assay_name, count), ...] top-5 by row count
+
+    Every v2 count here is over DISTINCT measurements, which is what the
+    sheet already claims to show ("the individual (cid, assay, value)
+    measurements"). `assay_tables` now carries two extraction tiers side
+    by side without deduplication, and `bdb_row_coverage_pct` has BDB's
+    own row count as its denominator, so counting raw rows let ONE
+    duplicated v2 row take the colour-highlighted quality signal from
+    100 % to 200 % while BDB's side did not move at all.
+
+    Note the metric legitimately exceeds 100 % without any duplicate —
+    US10214537 reads 296.7 %, US10899738 211.1 %, US9745328 148.6 %,
+    because v2 captures multi-column panels BDB never curated. That is
+    why the defect had to be fixed by deduplicating rather than by
+    capping: a cap would have hidden it behind numbers that are already
+    supposed to be there. Measured over the corpus, deduplication moves
+    no patent's percentage today (only US11566007 and US20240335431A1
+    have collapsible rows at all, 93 between them, and neither has BDB
+    data) — this is a guard for the merge, not a restatement of it.
     """
     import csv, json
     from collections import defaultdict
@@ -2037,6 +2071,7 @@ def build_assay_row_stats(patent_id: str) -> dict:
         return {"patent_id": patent_id, "missing": True}
     ay = json.loads((out_dir / "assay_tables.json").read_text())
     ex = json.loads((out_dir / "example_index.json").read_text())
+    ay = {cid: distinct_measurements(rows) for cid, rows in ay.items()}
     v2_n_cids = len(ay)
     v2_n_rows = sum(len(rows) for rows in ay.values())
     by_assay: dict[str, int] = defaultdict(int)

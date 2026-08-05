@@ -24,6 +24,18 @@ the buckets separate assay variability from a different quantity entirely:
 
 Only a range can be checked by containment, and containment is a weaker test
 than equality; it is reported separately rather than folded in.
+
+WHAT A BUCKET COUNTS. `buckets` counts COMPOUNDS, one bucket each, as it
+always has — every reader of this dict (`scripts/eval/baseline.py`,
+`value_check_cli`, `check_corpus`) reads it that way. What changed in 2026-08
+is how a compound's many records collapse into that one bucket: the best of
+the whole cross-product, which no wrong record could ever lower, became the
+median WITHIN an assay name and the best ACROSS assay names (`check_patent`).
+`record_buckets` is the other half — a per-RECORD count, so a row that agrees
+with nothing is visible even when its compound reads fine. It has to be
+visible somewhere: the old scorer gave a wrong row no bucket, no counter and
+no example line, which is how 99 dimensionless ratios read as nanomolar
+potencies while the score held.
 """
 from __future__ import annotations
 
@@ -53,9 +65,41 @@ def _to_nm(value, unit):
     return None if value is None or unit not in _TO_NM else value * _TO_NM[unit]
 
 
+def _norm_target(name: str) -> str:
+    """One protein, one spelling. Whitespace only — the names are BDB's.
+
+    Measured on the live file: 201 distinct Target Names among the rows we
+    key, and the collapse changes that count by zero. It is here so a stray
+    tab or wrapped newline inside a curator's protein name cannot split one
+    target into two keys, which would hand back the resolving power the finer
+    key exists to keep.
+    """
+    return re.sub(r"\s+", " ", (name or "").strip())
+
+
 def load_reference(patent_ids: set[str] | None = None,
                    single_patent_only: bool = True) -> dict:
-    """(patent, cid) -> set of reference values in nM. Empty when BDB is absent.
+    """(patent, cid, measure, target) -> set of values in nM. Empty w/o BDB.
+
+    WHICH measurement and WHICH protein are part of the reference point, not
+    decoration on it. Keyed on `(patent, cid)` alone — as this returned until
+    2026-08 — a 10 nM IC50 against one target and a 500 nM Ki against another
+    pour into one set and become alternative right answers, so a value we read
+    against the WRONG protein scores `agree` against the right one's number.
+
+    Measured over `config.BDB_REFERENCE_TSV` (271 MB, 95,245 rows): 19,550
+    coarse keys where the same rows support 37,573 `(patent, cid, measure,
+    target)` keys — 48.0% of the reference's resolving power discarded before
+    a single comparison — and 92.8% of the finer keys hold exactly ONE value,
+    i.e. the finer key almost always names a unique number where the coarse
+    one names a menu (only 52.7% of coarse keys are single-valued).
+
+    US9745328 is the live case: its rows carry BOTH `Arachidonate
+    5-lipoxygenase-activating protein` (1,619 rows) and `Flap endonuclease 1`
+    (898 rows), two unrelated proteins under one compound id.
+
+    Callers that only want "the numbers BDB publishes for this compound" fold
+    the key with `_ref_by_compound` rather than losing it at load time.
 
     Only rows attributing the ligand to ONE patent count, and that is the
     difference between a benchmark and a rumour. BindingDB routinely names a
@@ -75,7 +119,7 @@ def load_reference(patent_ids: set[str] | None = None,
     """
     from ..scripts.eval.reference_bench import _EXAMPLE_REF, _norm_cid
 
-    out: dict[tuple[str, str], set[float]] = collections.defaultdict(set)
+    out: dict[tuple[str, str, str, str], set[float]] = collections.defaultdict(set)
     if not _BDB.exists():
         logger.info("value_check: no BindingDB subset at %s", _BDB)
         return out
@@ -86,16 +130,21 @@ def load_reference(patent_ids: set[str] | None = None,
             nm_i = hdr.index("BindingDB Ligand Name")
         except ValueError:
             return out
-        vcols = [i for i, h in enumerate(hdr)
+        # The column is located AND named: `Ki (nM)` -> "Ki". Same scan as
+        # before, one field wider, so the stream stays a single pass over
+        # 271 MB with no extra work on the rows we discard.
+        vcols = [(i, h.split("(")[0].strip()) for i, h in enumerate(hdr)
                  if h.split("(")[0].strip() in ("Ki", "IC50", "Kd", "EC50")]
+        tgt_i = hdr.index("Target Name") if "Target Name" in hdr else -1
         for row in rdr:
             if len(row) <= nm_i:
                 continue
             vals = []
-            for i in vcols:
+            for i, measure in vcols:
                 if i < len(row) and row[i].strip():
                     try:
-                        vals.append(float(re.sub(r"[<>~=]", "", row[i]).strip()))
+                        vals.append((measure,
+                                     float(re.sub(r"[<>~=]", "", row[i]).strip())))
                     except ValueError:
                         pass
             if not vals:
@@ -104,10 +153,12 @@ def load_reference(patent_ids: set[str] | None = None,
                     for m in _EXAMPLE_REF.finditer(row[nm_i] or "")]
             if single_patent_only and len({p for p, _ in hits}) > 1:
                 continue
+            target = _norm_target(row[tgt_i]) if 0 <= tgt_i < len(row) else ""
             for pid, cid in hits:
                 if patent_ids and pid not in patent_ids:
                     continue
-                out[(pid, cid)].update(vals)
+                for measure, val in vals:
+                    out[(pid, cid, measure, target)].add(val)
     return out
 
 
@@ -121,8 +172,90 @@ def _bucket(mine_nm: float, ref_nm: float) -> str:
             "disagree" if fold <= 10 else "wrong_scale")
 
 
+# Best to worst. The index is the severity rank the per-compound median is
+# taken over, so the order is load-bearing, not presentation.
+_ORDER = ["agree", "range_contains", "variance", "disagree",
+          "wrong_scale", "range_misses", "incomparable"]
+_BAD = ("wrong_scale", "disagree", "range_misses")
+
+
+def _ref_by_compound(ref: dict, patent_id: str) -> dict[str, dict[float, str]]:
+    """Fold the reference down to `cid -> {value_nM: 'MEASURE TARGET'}`.
+
+    `load_reference` keys on `(patent, cid, measure, target)` because those
+    are four different facts. Pairing them with OUR records is a separate
+    question with a worse answer: an `AssayRecord` carries a free-text column
+    header (`'Ave A2B cAMP IC50'`), not a curator's protein name, so demanding
+    a per-target match would score every record whose assay BDB does not hold
+    as a disagreement — manufacturing exactly the false failures this module
+    exists to tell apart from real ones.
+
+    So the provenance rides along as a LABEL and surfaces in `examples`, where
+    a human can see which published number a record was scored against.
+    Accepts the pre-2026-08 two-field key unchanged.
+    """
+    out: dict[str, dict[float, str]] = collections.defaultdict(dict)
+    for key, values in ref.items():
+        if key[0] != patent_id:
+            continue
+        label = " ".join(str(x) for x in key[2:4] if x) if len(key) >= 4 else ""
+        per = out[key[1]]
+        for v in sorted(values):
+            per.setdefault(v, label)
+    return out
+
+
+def _score_record(r, refvals: dict[float, str]) -> tuple[str, str] | None:
+    """This ONE record's best bucket over the compound's reference values.
+
+    Optimism belongs here and only here. A patent reports several assays, BDB
+    may hold several, and we do not know which pairs — so a record is scored
+    against its own best match. What it may no longer do is speak for the
+    other ten records of the same compound.
+
+    None when the record carries neither a usable value nor a usable range.
+    """
+    # Hoisted out of the loop: whether this record carries a usable number at
+    # all does not depend on WHICH reference value it is held against, and
+    # deciding it once turns "no usable value" into one exit instead of one
+    # per reference value.
+    mv = lo = hi = None
+    if r.value_numeric is not None:
+        mv = _to_nm(r.value_numeric, r.unit)
+        if mv is None:
+            return None
+    elif r.range_lo is not None or r.range_hi is not None:
+        lo, hi = _to_nm(r.range_lo, r.unit), _to_nm(r.range_hi, r.unit)
+        if lo is None and hi is None:
+            return None
+    else:
+        return None
+
+    best: tuple[str, str] | None = None
+    for rv, label in refvals.items():
+        seen = f" [{label}]" if label else ""
+        if mv is not None:
+            tag = _bucket(mv, rv)
+            d = (f"{r.assay_name[:34]!r} ours={r.value_numeric}{r.unit} "
+                 f"= {mv:g} nM vs ref {rv:g} nM{seen}")
+        else:
+            inside = ((lo is None or rv >= lo * (1 - TOLERANCE))
+                      and (hi is None or rv <= hi * (1 + TOLERANCE)))
+            tag = "range_contains" if inside else "range_misses"
+            d = (f"{r.assay_name[:34]!r} ours={lo}-{hi} nM "
+                 f"vs ref {rv:g} nM{seen}")
+        if best is None or _ORDER.index(tag) < _ORDER.index(best[0]):
+            best = (tag, d)
+    return best
+
+
 def check_patent(patent_id: str, records, reference: dict | None = None) -> dict:
-    """Score one patent's records against BindingDB. Never raises."""
+    """Score one patent's records against BindingDB. Never raises.
+
+    `buckets` counts COMPOUNDS, one bucket each, as it always has.
+    `record_buckets` counts RECORDS and is the new half: it is where a row
+    that agrees with nothing is visible even when its compound reads fine.
+    """
     from ..sources.uspto_assays import normalize_cid
 
     ref = reference if reference is not None else load_reference({patent_id})
@@ -132,58 +265,78 @@ def check_patent(patent_id: str, records, reference: dict | None = None) -> dict
         if cid:
             mine[cid].append(r)
 
-    st = collections.Counter()
-    worst: list[dict] = []
-    for (pid, cid), refvals in ref.items():
-        if pid != patent_id:
-            continue
+    st = collections.Counter()          # per COMPOUND — every reader's shape
+    rst = collections.Counter()         # per RECORD
+    cand: list[dict] = []
+    for cid, refvals in _ref_by_compound(ref, patent_id).items():
         got = mine.get(cid)
         if not got:
             st["no_record"] += 1
             continue
-        # Best bucket across our records for this compound and the reference
-        # values it lists. Deliberately optimistic per compound: a patent
-        # reports several assays and BDB may hold several, and we do not know
-        # which pairs. The point is to catch a WRONG value, not to grade
-        # pairing, so a compound counts as agreeing if any pairing agrees.
-        order = ["agree", "range_contains", "variance", "disagree",
-                 "wrong_scale", "range_misses", "incomparable"]
-        best, detail = None, None
-        for r in got:
-            for rv in refvals:
-                if r.value_numeric is not None:
-                    mv = _to_nm(r.value_numeric, r.unit)
-                    if mv is None:
-                        continue
-                    tag = _bucket(mv, rv)
-                    d = (f"{r.assay_name[:34]!r} ours={r.value_numeric}{r.unit} "
-                         f"= {mv:g} nM vs ref {rv:g} nM")
-                elif r.range_lo is not None or r.range_hi is not None:
-                    lo = _to_nm(r.range_lo, r.unit)
-                    hi = _to_nm(r.range_hi, r.unit)
-                    if lo is None and hi is None:
-                        continue
-                    inside = ((lo is None or rv >= lo * (1 - TOLERANCE))
-                              and (hi is None or rv <= hi * (1 + TOLERANCE)))
-                    tag = "range_contains" if inside else "range_misses"
-                    d = (f"{r.assay_name[:34]!r} ours={lo}-{hi} nM "
-                         f"vs ref {rv:g} nM")
-                else:
-                    continue
-                if best is None or order.index(tag) < order.index(best):
-                    best, detail = tag, d
-        if best is None:
+        scored = [(r, s) for r, s in ((r, _score_record(r, refvals))
+                                      for r in got) if s]
+        if not scored:
             st["no_value"] += 1
             continue
-        st[best] += 1
-        if best in ("wrong_scale", "disagree", "range_misses") and len(worst) < 12:
-            worst.append({"cid": cid, "bucket": best, "detail": detail})
+        for _, (tag, _d) in scored:
+            rst[tag] += 1
+        # WITHIN one assay name, the MEDIAN. ACROSS assay names, the best.
+        #
+        # Taking the best of the whole cross-product — what this did until
+        # 2026-08 — made the metric monotone in record count: 20 rows against
+        # 5 references is 100 chances to land within 5% and no wrong row could
+        # ever cost a compound its `agree`. Measured on the old code, one
+        # correct record scored {'agree': 1}; that same record plus ten 50x-out
+        # ones scored {'agree': 1} — byte-identical with 91% of the evidence
+        # wrong, and the wrong rows carried no bucket, no counter, no example
+        # row. That is exactly the patch this module exists to catch: one that
+        # reads MORE of the wrong thing.
+        #
+        # Plain median over ALL of a compound's records was measured and
+        # rejected. Over the 84 scored patents it moved bad from 3 compounds
+        # to 682, and the new flags were mostly OUR OWN correct readings: on
+        # US11613531 compound 228 we read `ROCK2 IC50 = 3.0 nM` and `ROCK1
+        # IC50 = 4.0 nM`, both BDB's numbers exactly, and the compound scored
+        # `wrong_scale` because five further columns (pMLC, NIH3T3, two
+        # %-inhibition rows) are assays BDB does not hold and had no right
+        # pairing to be scored against. Punishing a patent for reporting more
+        # than BindingDB does is the false-failure half of the same defect.
+        #
+        # Records sharing an assay name are competing claims about ONE
+        # quantity, and the reference can corroborate one of them at most, so
+        # a strict majority there decides (even splits still resolve
+        # optimistically). Records under DIFFERENT names are different
+        # quantities, so the compound keeps the best of them. Measured:
+        # agree 14,275 -> 13,968, bad 3 -> 187 compounds over 4 patents, and
+        # 184 of those 187 are US9718790 (161) + US9718825 (23) where a single
+        # assay name covers several distinct columns — 2,262 of US9718790's
+        # 2,270 records are all called `P2X3 IC50 (μM)`. That is a real
+        # finding about our headers, not a manufactured one.
+        groups: dict[str, list] = collections.defaultdict(list)
+        for r, s in scored:
+            groups[re.sub(r"\s+", " ", (r.assay_name or "").strip().lower())].append(s)
+        per_group = []
+        for g in groups.values():
+            g.sort(key=lambda s: _ORDER.index(s[0]))
+            per_group.append(g[(len(g) - 1) // 2])
+        tag, detail = min(per_group, key=lambda s: _ORDER.index(s[0]))
+        st[tag] += 1
+        dist = collections.Counter(s[0] for _, s in scored)
+        if tag in _BAD or any(t in _BAD for t in dist):
+            cand.append({"cid": cid, "bucket": tag, "detail": detail,
+                         "records": dict(dist)})
 
+    # Disagreeing COMPOUNDS first, then compounds that merely hide disagreeing
+    # rows, so the 12-row cap cannot be spent on the milder half.
+    cand.sort(key=lambda e: (e["bucket"] not in _BAD,
+                             -sum(n for t, n in e["records"].items() if t in _BAD)))
     st["refs"] = sum(v for k, v in st.items() if k != "refs")
     bad = st["wrong_scale"] + st["disagree"] + st["range_misses"]
     return {"patent": patent_id, "buckets": dict(st), "bad": bad,
             "checked": st["refs"] - st["no_record"] - st["no_value"],
-            "examples": worst, "tolerance": TOLERANCE}
+            "record_buckets": dict(rst),
+            "bad_records": rst["wrong_scale"] + rst["disagree"] + rst["range_misses"],
+            "examples": cand[:12], "tolerance": TOLERANCE}
 
 
 def check_corpus(patent_ids: list[str] | None = None) -> dict:

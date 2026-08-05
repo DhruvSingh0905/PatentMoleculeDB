@@ -43,7 +43,13 @@ def _blocks(pid: str, xml: str, only_gaps: bool = False) -> list[dict]:
     records = A.extract_from_patent(xml)
     try:
         from ...repair.loop import repair_patent
-        repaired, _ = repair_patent(pid, xml, max_calls=0)
+        # This returns baseline ∪ rules. The page marks the rule-recovered rows
+        # specially, so subtract the baseline back out by (cid, assay, value)
+        # rather than by identity — the loop re-extracts its own copies.
+        all_records, _ = repair_patent(pid, xml, max_calls=0)
+        base_keys = {(r.cid, r.assay_name, r.value_numeric) for r in records}
+        repaired = [r for r in all_records
+                    if (r.cid, r.assay_name, r.value_numeric) not in base_keys]
     except Exception:
         repaired = []
     by_block: dict[str, list] = {}

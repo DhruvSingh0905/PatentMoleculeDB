@@ -269,6 +269,94 @@ def _header_anchor(entry: dict[str, Any]) -> list[str]:
     return anchor
 
 
+# ── Unit resolution ─────────────────────────────────────────────
+#
+# Both emit sites in `apply_patterns_to_text` used to write the literal
+# `"unit": ""`. Measured on US9694016 (2026-08-04): 13,582 rows over 2,215
+# compound ids, unit distribution `{'': 13582}` — Example 1's B-Raf IC50,
+# which the patent prints as 0.000145 μM, replayed as a bare 0.0003.
+#
+# The discovered regex captures `cid` and `value0…valueN` only, so the unit
+# has to come from the column header. Two sources, in order, and NEITHER is
+# an inheritance rule: a unit is taken only from a header naming THIS column.
+#   1. the column name itself — 53 of the library's 124 names carry it,
+#      `P2X3 IC50 (μM)`;
+#   2. this patent's own text — a header whose normalised form equals the
+#      column name, with a unit printed against it: US9694016's TABLE 2
+#      prints `b-Raf IC-50 (μM)` and the column is named `B-Raf IC50`.
+# A block-level fallback ("nearest unit upstream") is deliberately NOT one of
+# them; that is the rule that stamped nM onto US11254686's dimensionless
+# Ratio column and produced 99 records reading 2.24 nM against BindingDB's
+# 300 nM. A row whose scale cannot be named is dropped instead — the same
+# call `AssayRecord.missing_fields()` makes, which nothing on this path
+# applied before.
+
+# Bare `M` and `nm` are deliberately NOT here. `M` matched the `M` of
+# `MS (M+H)+` and stamped molar onto 1,619 US10273259 mass-spec rows; `nm` is
+# a wavelength. Neither is worth the one real molar column it might cost.
+_UNIT_LITERALS = r"nM|μM|uM|µM|mcM|mM|pM|fM|%|mg/mL|μg/mL|ug/mL|mL/min/kg|uL/min/mg"
+# Concentration units only — the ones safe to read off a bare name tail.
+# `M` and `%` are excluded there: every name ending in a capital M would
+# otherwise claim molar.
+_CONC_LITERALS = r"nM|μM|uM|µM|mcM|mM|pM|fM"
+# The unit need not be the WHOLE bracket: `CBP IC50 (μM gmean)` is 2,874 rows
+# on US11292791 and the qualifier is the aggregation, not the scale.
+_NAME_UNIT_RE = re.compile(
+    r"[\(\[][^)\]]*?(?<![A-Za-z])(" + _UNIT_LITERALS + r")(?![A-Za-z])[^)\]]*[\)\]]"
+)
+# …and it need not be bracketed at all: `RORγ Binding IC50 μM` is 3,307 rows
+# across US10273259 + US20240010684A1.
+_NAME_UNIT_TAIL_RE = re.compile(
+    r"(?<![A-Za-z])(" + _CONC_LITERALS + r")\s*$"
+)
+# A header cell and the unit printed against it: up to 60 chars of label
+# ending immediately before the bracketed unit, no newline crossing.
+_HEADER_UNIT_RE = re.compile(
+    r"([A-Za-zͰ-Ͽ][^\n\r]{0,60}?)\s*[\(\[]\s*("
+    + _UNIT_LITERALS + r")\s*[\)\]]"
+)
+
+
+def _unit_from_name(assay_name: str) -> str:
+    m = _NAME_UNIT_RE.search(assay_name or "")
+    if m:
+        return m.group(1)
+    m = _NAME_UNIT_TAIL_RE.search(assay_name or "")
+    return m.group(1) if m else ""
+
+
+def _text_header_units(text: str) -> dict[str, str]:
+    """{normalised header label → unit} for every `Label (unit)` in `text`.
+
+    Keyed on the normalised label so `b-Raf IC-50` and the column name
+    `B-Raf IC50` collapse to the same key — the two spellings of one column
+    that kept 9,178 of US9694016's rows unitless.
+    """
+    out: dict[str, str] = {}
+    for m in _HEADER_UNIT_RE.finditer(text):
+        key = _normalize(m.group(1))
+        if key and key not in out:
+            out[key] = m.group(2)
+    return out
+
+
+def _resolve_unit(assay_name: str, header_units: dict[str, str]) -> str:
+    unit = _unit_from_name(assay_name)
+    if unit:
+        return unit
+    key = _normalize(re.sub(r"[\(\[].*", "", assay_name or ""))
+    if not key:
+        return ""
+    if key in header_units:
+        return header_units[key]
+    # The header may carry a leading cell the column name doesn't
+    # (`Cmpd  b-Raf IC-50 (μM)`), so accept a header that ENDS with it.
+    for hkey, unit in header_units.items():
+        if hkey.endswith(key):
+            return unit
+    return ""
+
+
 def _token_subpattern(tok: str) -> str:
     """Regex for one normalized anchor token, matched on WORD BOUNDARIES with
     internal separators allowed. `raf` matches `Raf`/`RAF` but NOT the `raf`
@@ -336,10 +424,14 @@ def apply_patterns_to_text(
     # per pattern — the deterministic gate: a pattern fires on this patent
     # only if its header is present here.
     lc_text = _lc_greek(text)
+    # Built once per call: the patent's own `Label (unit)` headers.
+    header_units = _text_header_units(text)
 
     out: list[dict[str, Any]] = []
     seen_per_pattern: dict[str, int] = {}
     n_anchor_skipped = 0
+    n_no_unit = 0
+    unit_cache: dict[str, str] = {}
     for entry in active:
         rx = entry.get("regex") or ""
         column_assays = entry.get("column_assays") or []
@@ -378,6 +470,14 @@ def apply_patterns_to_text(
                 raw_val = (m.groupdict().get(grp) or "").strip()
                 if not raw_val or raw_val.lower() in ("nt", "nd", "—", "-"):
                     continue
+                if assay not in unit_cache:
+                    unit_cache[assay] = _resolve_unit(assay, header_units)
+                unit = unit_cache[assay]
+                if not unit:
+                    # No scale, no measurement. See the note above
+                    # `_UNIT_LITERALS` for why no block-level fallback.
+                    n_no_unit += 1
+                    continue
                 # numeric or letter-grade?
                 try:
                     v_num = float(raw_val)
@@ -385,7 +485,7 @@ def apply_patterns_to_text(
                         "compound_id": cid,
                         "assay_name": assay,
                         "value": v_num,
-                        "unit": "",
+                        "unit": unit,
                         "qualifier": None,
                         "n_runs": None,
                         "source_quote": m.group(0)[:80],
@@ -402,7 +502,7 @@ def apply_patterns_to_text(
                         "assay_name": assay,
                         "value": None,
                         "value_categorical": raw_val,
-                        "unit": "",
+                        "unit": unit,
                         "qualifier": None,
                         "n_runs": None,
                         "source_quote": m.group(0)[:80],

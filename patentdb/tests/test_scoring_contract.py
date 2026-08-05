@@ -6,12 +6,30 @@ invisible in exactly the way an extractor's are not: a broken parser prints
 zero rows, a broken scorer prints a number that looks like success. Three of
 the four defects below make the reported score go UP.
 
-Each test is `xfail(strict=True)`. It fails against the tree as it stands —
-that is the proof it grades something real and not a restatement of current
-behaviour. When the defect is fixed the test XPASSes, strict turns that into a
-FAILURE, and whoever fixed it is forced to come here and delete the marker.
-A characterization test (one that passes today, against the broken code) would
-have locked the defect in instead.
+Each test was written `xfail(strict=True)` and failed against the tree as it
+stood — that is the proof it grades something real and not a restatement of
+current behaviour. When the defect is fixed the test XPASSes, strict turns
+that into a FAILURE, and whoever fixed it is forced to come here and delete
+the marker. A characterization test (one that passes today, against the broken
+code) would have locked the defect in instead.
+
+All three markers are now gone, which means all three defects are fixed and
+these run as ordinary regression tests:
+
+  S1  `check_patent` buckets a compound on the MEDIAN of its records' own best
+      matches, not on the best pairing in the cross-product. A strict majority
+      of a compound's records decides its bucket; an even split still resolves
+      optimistically, so a record whose assay BDB does not hold cannot
+      manufacture a disagreement. `record_buckets` counts every record.
+  S2  `load_reference` keys on `(patent, cid, measure, target)`.
+      `check_patent` folds that back to the compound via `_ref_by_compound`
+      for scoring — an `AssayRecord` names a table column, not a protein — and
+      carries the measure/target through into `examples`.
+  S3  `load_v2_extraction` MERGES colliding assay row lists and logs the
+      example_index collision it cannot merge.
+
+The measurements below are what the tree did BEFORE those fixes. They are
+kept as the record of what was wrong, not as a description of today.
 
 Nothing here reads `output_v2/bindingdb/our_patents.tsv` (271 MB) or reaches a
 network or a model. S2 monkeypatches the reference path to a four-line
@@ -82,11 +100,6 @@ def _score(records):
                         reference={("USTEST01", "1"): {_REF_NM}})
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "check_patent takes the best bucket over the cross-product of our records "
-    "x BDB's values, so adding WRONG records can never lower the score. "
-    "Measured: 1 correct record scores agree/bad=0; that same record plus ten "
-    "50x-wrong ones also scores agree/bad=0. 91% wrong, identical score."))
 def test_wrong_records_cannot_be_hidden_by_one_right_one():
     """Adding wrong data must not be free, and must not be a way to score.
 
@@ -176,12 +189,6 @@ def synthetic_bdb(tmp_path, monkeypatch):
     return path
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "load_reference keys on (patent, cid) only — Target Name (col 6) is never "
-    "read and Ki/IC50/Kd/EC50 (cols 8-11) are flattened into one set. "
-    "Measured: 19,550 coarse keys vs 37,573 (patent, cid, measure, target) "
-    "keys = 48.0% of resolving power discarded; 92.8% of the finer keys hold a "
-    "single value."))
 def test_reference_distinguishes_ic50_from_ki_and_target_from_target(synthetic_bdb):
     """A 10 nM IC50 and a 500 nM Ki are not two guesses at one number.
 
@@ -254,11 +261,6 @@ def v2_output(tmp_path, monkeypatch):
     return assay_tables
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "fidelity_check.py:181 normalises cid keys through a many-to-one _norm_key "
-    "inside a dict comprehension. '1-2' and '12' both normalise to '12', so "
-    "last-wins silently drops one compound's entire row list: 5 rows in, "
-    "2 rows out, 3 lost with no error and no counter."))
 def test_cid_normalisation_never_drops_a_compounds_rows(v2_output):
     """Normalising a key must never be able to delete a measurement.
 

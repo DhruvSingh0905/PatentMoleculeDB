@@ -740,7 +740,20 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
 
     if not dry_run:
         lib.save()
-    return recovered, report
+    # UNION, baseline first. `baseline` used to exist only to measure gaps
+    # against and was then dropped, so the one route by which a deterministic
+    # XML record could reach `assay_tables` was the re-extract in
+    # `process_patent`, gated on a capability patch actually landing. Measured
+    # across the 22 shipped artifacts (2026-08-04): 35,888 rows, source
+    # distribution `{'<none>': 27868, 'letter_bin': 8020}` — not one row from
+    # the source CLAUDE.md records at 99.9% exact-match against BindingDB.
+    #
+    # NO DEDUP, deliberately. A key including assay_name matches 0.3% of rows
+    # because the two tiers name the same column differently, and a value-only
+    # key would assert that an IC50 of 5 nM and a Ki of 5 nM are the same fact.
+    # Both rows ship, each carrying its own `source`; consumers are duplicate-
+    # safe.
+    return list(baseline) + list(recovered), report
 
 
 def _journal_rule(patent_id: str, gap, rule: Rule, produced: list) -> None:

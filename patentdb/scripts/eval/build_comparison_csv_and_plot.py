@@ -19,7 +19,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from patentdb.scripts.eval import fidelity_check as fc
-from patentdb.scripts.eval.assay_completeness_audit import diff_one
+from patentdb.scripts.eval.assay_completeness_audit import (
+    diff_one,
+    distinct_measurements,
+)
 
 
 REPO = Path("/Users/dhruvsingh/Downloads/Patent (1)")
@@ -56,18 +59,91 @@ def load_v2_us8952177() -> dict[str, list[dict]]:
     return json.loads(p.read_text())
 
 
+# Name tokens that mark a row as the Ki / IC50 readout. Shared with
+# `select_assay`, which ranks candidates by HOW MANY of them a row's name
+# carries — see there.
+_ASSAY_KEYS = {
+    "ki": ("ki", "flap"),
+    "ic50": ("ic50", "ltb", "hwb"),
+}
+
+
 def find_assay(arr: list[dict], kind: str) -> list[dict]:
     """`kind`: 'ki' or 'ic50'. Returns matching v2 measurement(s)."""
-    if kind == "ki":
-        keys = ("ki", "flap")
-    else:
-        keys = ("ic50", "ltb", "hwb")
+    keys = _ASSAY_KEYS[kind]
     out = []
     for a in arr:
         an = (a.get("assay_name") or "").lower()
         if any(k in an for k in keys):
             out.append(a)
     return out
+
+
+def select_assay(arr: list[dict], kind: str) -> tuple[dict | None, list[float]]:
+    """Pick ONE row to report from `arr`, deterministically, and return
+    the distinct values that were genuinely in contention for it.
+
+    Replaces `arr[0]` — first-element-wins. `assay_tables` now merges two
+    extraction tiers into one list with no ordering contract, so the
+    reported value, its qualifier, its n_runs AND the plotted
+    `ki_match_5pct` all hinged on which tier the merge happened to append
+    first. Verified: two rows for one compound (10.0 μM vs 50.0 μM against
+    a 10.0 μM reference) flip `claude_ki_uM` between the two and
+    `ki_match_5pct` between 1 and 0 purely by list order.
+
+    Resolution, in order, none of it positional:
+
+    1. NAME SPECIFICITY — how many of `_ASSAY_KEYS[kind]` the row's name
+       carries. `find_assay` admits a row on ANY one token, which is far
+       too loose to then pick from: on US8952177 ten compounds carry both
+       `FLAP Binding wild type HTRF Ki` and a `FLAP Binding wild type
+       HTRF K` (no "i") whose value is the PREVIOUS compound's Ki — a
+       row-shifted artifact admitted on "flap" alone. Ranking by value
+       instead picked that artifact for 3 of the 10 and dropped
+       ki_match_5pct from 190/190 to 187/190. Matching 2 tokens beats
+       matching 1, which restores 190/190 and is the honest reason: it
+       is more precisely the assay asked for.
+    2. AGREEMENT — the value with the most supporting rows; two tiers
+       agreeing outvote one that does not.
+    3. the smallest value, then the row's own fields — an arbitrary but
+       fixed order, so the outcome is reproducible.
+
+    Only step 1's survivors count as contenders, so `distinct_values`
+    reports a real tier disagreement about ONE assay and not the presence
+    of a second, vaguer assay. A disagreement is never silently settled:
+    the losers land in the CSV's `*_conflict` column and the
+    `*_conflicts` stat.
+    """
+    cands = distinct_measurements(arr)
+    if not cands:
+        return None, []
+
+    keys = _ASSAY_KEYS[kind]
+
+    def _specificity(r) -> int:
+        an = (r.get("assay_name") or "").lower()
+        return sum(1 for k in keys if k in an)
+
+    best_spec = max(_specificity(r) for r in cands)
+    cands = [r for r in cands if _specificity(r) == best_spec]
+
+    by_value: dict = defaultdict(list)
+    for r in cands:
+        by_value[r.get("value_numeric")].append(r)
+
+    def _value_rank(item):
+        value, rows = item
+        # -len(rows): most-supported first. (value is None) sorts null
+        # values last so a real number always beats a missing one.
+        return (-len(rows), value is None, value if value is not None else 0.0)
+
+    def _row_rank(r):
+        return tuple(str(r.get(k) or "") for k in
+                     ("assay_name", "unit", "qualifier", "n_runs", "source"))
+
+    _, best_rows = min(by_value.items(), key=_value_rank)
+    distinct_values = sorted(v for v in by_value if v is not None)
+    return min(best_rows, key=_row_rank), distinct_values
 
 
 def _to_float(v) -> float | None:
@@ -109,6 +185,12 @@ def build_comparison_csv(out_path: Path) -> dict:
         "n_runs_present_in_jie": 0,
         "ki_log_diffs": [],         # log10(claude/jie) for present-in-both
         "ic50_log_diffs": [],
+        # Compounds where the merged tiers offered more than one distinct
+        # value for the same assay. Surfaced rather than swallowed: the
+        # selection below resolves them deterministically, but a reviewer
+        # needs to know a number was CHOSEN, not simply read.
+        "ki_conflicts": 0,
+        "ic50_conflicts": 0,
     }
 
     for cid, ref in jie.items():
@@ -121,13 +203,19 @@ def build_comparison_csv(out_path: Path) -> dict:
         ki_arr = find_assay(v2_arr, "ki")
         ic50_arr = find_assay(v2_arr, "ic50")
 
-        # Best-match v2 value per assay
-        v2_ki = ki_arr[0]["value_numeric"] if ki_arr else None
-        v2_ki_qual = ki_arr[0].get("qualifier") if ki_arr else None
-        v2_ki_runs = ki_arr[0].get("n_runs") if ki_arr else None
-        v2_ic50 = ic50_arr[0]["value_numeric"] if ic50_arr else None
-        v2_ic50_qual = ic50_arr[0].get("qualifier") if ic50_arr else None
-        v2_ic50_runs = ic50_arr[0].get("n_runs") if ic50_arr else None
+        # Best-match v2 value per assay — order-independent (see select_assay)
+        ki_row, ki_values = select_assay(ki_arr, "ki")
+        ic50_row, ic50_values = select_assay(ic50_arr, "ic50")
+        v2_ki = ki_row.get("value_numeric") if ki_row else None
+        v2_ki_qual = ki_row.get("qualifier") if ki_row else None
+        v2_ki_runs = ki_row.get("n_runs") if ki_row else None
+        v2_ic50 = ic50_row.get("value_numeric") if ic50_row else None
+        v2_ic50_qual = ic50_row.get("qualifier") if ic50_row else None
+        v2_ic50_runs = ic50_row.get("n_runs") if ic50_row else None
+        if len(ki_values) > 1:
+            stats["ki_conflicts"] += 1
+        if len(ic50_values) > 1:
+            stats["ic50_conflicts"] += 1
 
         # Match logic
         ki_5 = ki_20 = False
@@ -181,6 +269,11 @@ def build_comparison_csv(out_path: Path) -> dict:
             "claude_ki_qualifier": v2_ki_qual or "",
             "jie_ki_n_runs": ref["ki_runs"] if ref["ki_runs"] is not None else "",
             "claude_ki_n_runs": v2_ki_runs if v2_ki_runs is not None else "",
+            # Every distinct value the tiers offered, when they disagreed —
+            # blank when they agreed. The chosen one is claude_ki_uM.
+            "claude_ki_conflict": (
+                "|".join(f"{v:g}" for v in ki_values) if len(ki_values) > 1 else ""
+            ),
             "jie_ic50_uM": ref["ic50"],
             "claude_ic50_uM": v2_ic50,
             "ic50_diff_pct": f"{ic50_diff_pct:.2f}" if ic50_diff_pct is not None else "",
@@ -189,6 +282,9 @@ def build_comparison_csv(out_path: Path) -> dict:
             "claude_ic50_qualifier": v2_ic50_qual or "",
             "jie_ic50_n_runs": ref["ic50_runs"] if ref["ic50_runs"] is not None else "",
             "claude_ic50_n_runs": v2_ic50_runs if v2_ic50_runs is not None else "",
+            "claude_ic50_conflict": (
+                "|".join(f"{v:g}" for v in ic50_values) if len(ic50_values) > 1 else ""
+            ),
             "compound_in_claude": "Y" if has_compound else "N",
         })
 
@@ -404,6 +500,12 @@ def main() -> None:
           f"IC50 match (5%): {jie_stats['ic50_match_5pct']}/{jie_stats['ic50_value_present_both']}; "
           f"qualifier match: {jie_stats['qualifier_match']}/{jie_stats['qualifier_present_in_jie']}; "
           f"n_runs match: {jie_stats['n_runs_match']}/{jie_stats['n_runs_present_in_jie']}")
+    if jie_stats["ki_conflicts"] or jie_stats["ic50_conflicts"]:
+        # Not a warning about the extraction — a warning about the METRIC.
+        # These compounds' reported value was chosen between disagreeing
+        # tiers, so the match rates above are conditional on that choice.
+        print(f"  tier disagreements (value CHOSEN, see *_conflict columns): "
+              f"Ki {jie_stats['ki_conflicts']}, IC50 {jie_stats['ic50_conflicts']}")
 
     # 2. Gather BDB stats for the 4 patents BDB has data for
     bdb_stats = gather_bdb_stats([
