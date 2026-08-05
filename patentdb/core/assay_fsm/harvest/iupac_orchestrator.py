@@ -48,31 +48,73 @@ def _iupac_gap_signal(
 # ── Chunking ───────────────────────────────────────────────────────
 
 
+_IUPAC_SHAPE_RE = re.compile(
+    # A locant-initial token ("4-", "(2R)-", "[1,2,4]") of ≥25 chars ending in
+    # a chemical suffix. Deliberately shape-only — no element or ring
+    # vocabulary — so it costs one regex pass and generalises across patents.
+    r"(?<![A-Za-z0-9])"
+    r"[0-9(\[]"
+    r"[A-Za-z0-9\(\)\[\]\{\},\.\-'’ ]{23,}?"
+    r"(?:yl|one|amine|amide|carboxamide|carboxylate|oate|ol|ate|ine|ide|acid)"
+    r"(?![a-z])"
+)
+"""Probe for "does this text contain IUPAC names at all".
+
+Measured against 14,849 IUPAC names already extracted across the 21-patent
+corpus (`example_index.json`): 453 misses (3.0%), and every one of those
+patents still scores in the hundreds — the misses are trivial names like
+`magnesium bis(octadecanoate)` that carry no locant. Since a chunk's score is
+a COUNT, a 3% per-name miss rate cannot zero a chunk that holds real names.
+"""
+
+
+def _count_iupac_shapes(text: str) -> int:
+    """How many IUPAC-shaped names a span contains. The ranking signal."""
+    return len(_IUPAC_SHAPE_RE.findall(text))
+
+
 def _chunk_high_density_regions(
     text: str,
     chunk_size: int = 8_000,
     max_chunks: int = 4,
 ) -> list[tuple[int, str]]:
-    """Pick top-N chunks of `chunk_size` chars ranked by IUPAC-density
-    proxy (paren+bracket count). Returns [(absolute_offset, chunk_text)].
+    """Pick top-N chunks of `chunk_size` chars ranked by how many
+    IUPAC-SHAPED names they contain. Chunks scoring 0 are never returned.
+    Returns [(absolute_offset, chunk_text)].
 
-    Why density-ranked: the LLM cost is bounded by chunk count, so we
-    only spend on regions likely to contain IUPAC names. Background +
-    abstract sections won't qualify.
+    Why not paren density (what this ranked by until it was measured):
+    parens are a proxy for chemistry, not for *names*, and on a patent whose
+    experimental section is NMR/LCMS characterization the proxy is exactly
+    inverted. On US11292791 the top 25 of 40 paren-ranked windows held ZERO
+    IUPAC names each — they were the `δ (ppm): 7.46-7.32 (m, 4H) … LCMS (ES,
+    m/z)` block, ~790 parens per 15 KB and not one compound name — while the
+    example paragraphs that hold 33-111 names apiece ranked 26th and below.
+    The 11 windows that actually fired in the paid run were the first 11 of
+    those 25: 10 returned nothing and the 11th returned 48 pairs whose
+    `iupac_name` was the literal string `"unknown"`. $0.45 for zero compounds.
+    Markush claim boilerplate (`—C 1 -C 6 alkyl`, `(I)`) and numeric assay
+    tables (`(nM)`) mis-rank the same way.
+
+    Why skip 0-scoring chunks rather than just deprioritise them: a chunk with
+    no name-shaped token in it cannot yield a (compound_id, iupac_name) pair,
+    so firing the LLM on it is a guaranteed-empty paid call. It is also the
+    only thing standing between `max_chunks=40` and 40 such calls on a patent
+    whose names the ranker cannot find at all.
     """
     if not text:
         return []
 
     if len(text) <= chunk_size:
-        return [(0, text)]
+        # Same rule as the ranked path — no name shapes, nothing to extract.
+        return [(0, text)] if _count_iupac_shapes(text) else []
 
-    # Score each window of chunk_size chars by paren+bracket density
-    # (cheap proxy for IUPAC content)
     stride = chunk_size // 2
     scored: list[tuple[int, int]] = []  # (score, start_offset)
     for start in range(0, len(text) - chunk_size + 1, stride):
         sub = text[start:start + chunk_size]
-        score = sub.count("(") + sub.count("[") + sub.count("{")
+        score = _count_iupac_shapes(sub)
+        if score == 0:
+            continue
         scored.append((score, start))
 
     scored.sort(key=lambda x: -x[0])
@@ -181,15 +223,36 @@ def _write_cache(data: dict) -> None:
 # ── Targeted chunking for chunk-and-verify ────────────────────────
 
 
+MAX_WINDOWS_PER_CID = 4
+"""Ceiling on paid windows bought for ONE missing cid.
+
+A compound is named where it is defined; it is *mentioned* everywhere it
+appears in a table. Without a ceiling the two are indistinguishable and short
+cids fan out: on US11292791 the single unresolved cid `"1"` produced 55
+windows (74 raw `1.`/`1:` hits) — ~$1.3 of 8 KB calls for one compound, and
+`"2"` produced 65 more. Four windows is well past the point of diminishing
+returns; the patterns below are ordered most-specific-first, so the four kept
+are the `Example N` / `Compound N` style hits, not table rows."""
+
+_MIN_CID_LEN_FOR_LOOSE_MATCH = 2
+"""The loose table-row fallback needs a cid with at least this many chars.
+
+`1` followed by two numbers is a table row, not a compound label — it matches
+every row of every numeric table in the document. The fallback exists for
+dense-table patents like US10544143 where cids are 3-4 digits and appear
+nowhere else; at 1 char it is pure noise."""
+
+
 def _find_cid_context_windows(
     text: str,
     cid: str,
     *,
     window_chars: int = 4000,
+    max_windows: int = MAX_WINDOWS_PER_CID,
 ) -> list[tuple[int, str]]:
-    """Find every place in `text` where `cid` is mentioned as a compound
-    label (e.g., "Example 152", "Compound 152", "152.", "(152)", " 152 :")
-    and return surrounding windows.
+    """Find where in `text` `cid` is mentioned as a compound label (e.g.,
+    "Example 152", "Compound 152", "152.", "(152)", " 152 :") and return
+    surrounding windows, at most `max_windows` of them.
 
     Returns list of (offset, window_text). Multiple hits → one window per
     hit, so `iupac_burst_targeted` can fire the LLM on each.
@@ -205,17 +268,22 @@ def _find_cid_context_windows(
         rf"\bCpd\.?\s*(?:No\.?\s*)?{cid_re}(?![0-9])",  # "Cpd. No. 152"
         rf"(?<![0-9.]){cid_re}\s*[.:](?![0-9])",        # "152." or "152:"
         rf"\(\s*{cid_re}\s*\)(?![0-9])",        # "(152)"
-        # Table-row fallback: cid as bare digit followed by ≥2 numeric
-        # tokens (e.g., `118 463.59 463.9 1.42 QC-ACN-AA-XB` — physical-
-        # property tables) or ≥2 IC50-like floats (e.g., `325 1.5 38 3110`
-        # — assay tables). Without this, dense-table patents like
-        # US10544143 (1500+ compounds in compressed tables) lose 97 %+
-        # of their cids to "no context" because the targeted burst's
-        # context-finder is looking for `Example NNN` / `Compound NNN`
-        # mentions that the patent never emits.
-        rf"(?<![0-9.A-Za-z]){cid_re}(?![0-9.])"
-        rf"\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?",
     ]
+    # Table-row fallback: cid as bare digit followed by ≥2 numeric
+    # tokens (e.g., `118 463.59 463.9 1.42 QC-ACN-AA-XB` — physical-
+    # property tables) or ≥2 IC50-like floats (e.g., `325 1.5 38 3110`
+    # — assay tables). Without this, dense-table patents like
+    # US10544143 (1500+ compounds in compressed tables) lose 97 %+
+    # of their cids to "no context" because the targeted burst's
+    # context-finder is looking for `Example NNN` / `Compound NNN`
+    # mentions that the patent never emits.
+    # Gated on cid length — see _MIN_CID_LEN_FOR_LOOSE_MATCH.
+    if len(cid.strip()) >= _MIN_CID_LEN_FOR_LOOSE_MATCH:
+        patterns.append(
+            rf"(?<![0-9.A-Za-z]){cid_re}(?![0-9.])"
+            rf"\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?"
+        )
+
     seen_offsets: list[int] = []
     windows: list[tuple[int, str]] = []
     for pat in patterns:
@@ -229,6 +297,11 @@ def _find_cid_context_windows(
             start = max(0, off - half)
             end = min(len(text), off + half)
             windows.append((off, text[start:end]))
+            # Ceiling reached — stop scanning entirely. Patterns run
+            # most-specific-first, so what we keep is the best evidence
+            # available, not an arbitrary prefix of the document.
+            if len(windows) >= max_windows:
+                return windows
     return windows
 
 
@@ -494,7 +567,28 @@ def iupac_burst(
             )
             continue
 
-        # 4. Fire LLM agent
+        # 4. COST GATE — BEFORE the spend, never after it. This check used to
+        # sit at the BOTTOM of the loop (step 7), which meant a chunk that
+        # returned no pairs `continue`d straight past it: the zero-result path
+        # paid full price and never consulted the cap. A patent where the LLM
+        # finds nothing therefore paid the MOST — measured on US11292791, 40
+        # chunks x $0.041 = $1.64 of exposure against a $0.20
+        # PER_PATENT_LM_CAP, of which $0.45 was actually spent on 11 chunks
+        # that yielded zero compounds. `iupac_burst_targeted` has always had
+        # this check at the top of its loop; this is the same gate in the same
+        # position. Cache hits above are free and keep flowing past it.
+        if cost_tracker.patent_lm_exceeded(patent_id):
+            from ... import config as _cfg
+            logger.warning(
+                "iupac_burst: COST-GATED at chunk %d for %s — spend $%.3f >= "
+                "cap $%.2f; skipping %d/%d remaining chunks. Grep COST-GATED "
+                "to attribute reduced IUPAC recovery to the budget.",
+                chunk_idx, patent_id, cost_tracker.patent_spend(patent_id),
+                _cfg.PER_PATENT_LM_CAP, len(chunks) - chunk_idx, len(chunks),
+            )
+            break
+
+        # 5. Fire LLM agent
         result = extract_iupac_pairs(chunk_text, patent_id=patent_id)
         if not result.pairs:
             logger.info(
@@ -505,7 +599,7 @@ def iupac_burst(
             cache[cache_key] = {"pairs": [], "pattern_meta": None}
             continue
 
-        # 5. Vocab learning — patterns the LLM identified
+        # 6. Vocab learning — patterns the LLM identified
         if result.pattern_meta and result.pattern_meta.get("pattern_name"):
             pattern = IupacPattern(
                 pattern_name=result.pattern_meta["pattern_name"],
@@ -515,7 +609,7 @@ def iupac_burst(
             )
             library.add_discovery(pattern, fingerprint=fp, patent_id=patent_id)
 
-        # 6. Persist to cache + collect pairs
+        # 7. Persist to cache + collect pairs
         cache[cache_key] = {
             "pairs": result.pairs,
             "pattern_meta": result.pattern_meta,
@@ -529,21 +623,6 @@ def iupac_burst(
                 continue
             if cid not in new_pairs:
                 new_pairs[cid] = nm
-
-        # 7. Per-patent cap re-check (fail-closed mid-loop) — ALWAYS enforced,
-        # even under force=True. This is the gate that stops a big-gap patent
-        # from burning $5+ on up to max_chunks synchronous LLM calls. At
-        # ~$0.14/chunk against a $0.20 cap it fires ~1-2 chunks then breaks.
-        if cost_tracker.patent_lm_exceeded(patent_id):
-            from ... import config as _cfg
-            logger.warning(
-                "iupac_burst: COST-GATED mid-burst at chunk %d for %s — spend "
-                "$%.3f >= cap $%.2f; stopping (skipping remaining chunks). Grep "
-                "COST-GATED to attribute reduced IUPAC recovery to the budget.",
-                chunk_idx, patent_id, cost_tracker.patent_spend(patent_id),
-                _cfg.PER_PATENT_LM_CAP,
-            )
-            break
 
     # Persist cache once at end (atomic-ish write)
     _write_cache(cache)
