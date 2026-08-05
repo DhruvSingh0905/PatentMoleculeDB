@@ -79,6 +79,42 @@ def _harvest_cache(cache: AdaptiveExtractionCache | None) -> AdaptiveExtractionC
     return cache if cache is not None else AdaptiveExtractionCache()
 
 
+def prelib_tuples(text: str, patent_id: str | None = None) -> list[ActivityTuple]:
+    """The pattern-library pass: regex only, ZERO LLM cost.
+
+    Lifted out of `harvest_burst` so the pipeline can run it when the PAID
+    tier is switched off. Every live reference to `apply_patterns_to_text`
+    used to sit inside `harvest_burst`, whose only live caller is behind
+    `HARVEST_BURST_ENABLED` — so `HARVEST_BURST=0`, set to stop a tier that
+    cost $2.13 on one patent, also switched off a free regex pass that costs
+    nothing. The flag's own docstring says it gates the safety-net tier; it
+    was gating this too.
+
+    Measured on the burst-off run that found it: US10214537 lost 2,305 rows
+    (its untagged tier went 3,644 -> 1,339) while still spending $0.275 on an
+    unrelated path. US9694016 stands to lose 4,310 rows / 1,100 compounds,
+    100% of which survive `output_validator`.
+    """
+    from ..assay_pattern_library import apply_patterns_to_text as _apply_lib
+    try:
+        rows = _apply_lib(text, patent_id or "unknown", fresh_patterns=None)
+    except Exception as e:
+        logger.warning("prelib: pattern-library pass failed: %r", e)
+        return []
+    out: list[ActivityTuple] = []
+    for row in rows:
+        v = row.get("value")
+        t = ActivityTuple.from_dict({**row, "value": v if v is not None else 0.0})
+        if t is None:
+            continue
+        if v is None and row.get("value_categorical"):
+            t.validation_reason = (
+                (t.validation_reason or "") + f" categorical={row['value_categorical']}"
+            ).strip()
+        out.append(t)
+    return out
+
+
 def harvest_burst(
     text: str,
     *,
@@ -165,23 +201,10 @@ def harvest_burst(
     # (regex-only). If they extract enough rows, the chunks below may
     # need fewer LLM calls. This is the "discovery first, HARVEST last"
     # reordering the user requested.
-    from ..assay_pattern_library import apply_patterns_to_text as _apply_lib
-    try:
-        prelib_rows = _apply_lib(text, patent_id or "unknown", fresh_patterns=None)
-    except Exception as e:
-        logger.warning("harvest_burst: pre-apply library failed: %r", e)
-        prelib_rows = []
+    prelib_rows = prelib_tuples(text, patent_id)
     if prelib_rows:
         n_prelib_tuples = 0
-        for row in prelib_rows:
-            v = row.get("value")
-            t = ActivityTuple.from_dict({**row, "value": v if v is not None else 0.0})
-            if t is None:
-                continue
-            if v is None and row.get("value_categorical"):
-                t.validation_reason = (
-                    (t.validation_reason or "") + f" categorical={row['value_categorical']}"
-                ).strip()
+        for t in prelib_rows:
             all_tuples.append(t)
             n_prelib_tuples += 1
         logger.info(

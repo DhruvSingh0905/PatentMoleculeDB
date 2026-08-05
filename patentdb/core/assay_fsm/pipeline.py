@@ -378,6 +378,38 @@ def extract_for_patent(
                         burst.n_chunks_with_tuples, burst.n_chunks,
                         burst.n_prelib_rows,
                     )
+    else:
+        # The PAID tier is off, but the pattern-library pass is regex-only and
+        # free — and every live reference to it sat inside `harvest_burst`,
+        # which is reachable only from the branch above. So `HARVEST_BURST=0`
+        # switched off a $0 pass along with the tier it was meant to gate.
+        #
+        # Measured on the run that found this: US10214537's untagged tier went
+        # 3,644 -> 1,339, losing 2,305 rows, while still spending $0.275 on an
+        # unrelated path. US9694016 stands to lose 4,310 rows / 1,100
+        # compounds, all of which survive `output_validator`.
+        #
+        # `gap_fill_only=True` matches the branch above: these rows are a
+        # safety net and must not re-add pairs the clean sources already have.
+        full_text = _gather_full_text(patent_id, data_dir)
+        if full_text:
+            from .harvest import HarvestResult
+            from .harvest.orchestrator import prelib_tuples
+
+            tup = prelib_tuples(full_text, patent_id)
+            if tup:
+                n_before = sum(len(v) for v in all_assays.values())
+                _merge_into(all_assays,
+                            HarvestResult(tuples=tup).to_assay_results(),
+                            gap_fill_only=True)
+                n_after = sum(len(v) for v in all_assays.values())
+                aggregate_diag["harvest_n_prelib_rows"] = len(tup)
+                aggregate_diag["harvest_burst_n_added"] = n_after - n_before
+                logger.info(
+                    "prelib (burst off): %s — %d library rows, added %d "
+                    "measurements (%d -> %d), zero LLM cost",
+                    patent_id, len(tup), n_after - n_before, n_before, n_after,
+                )
 
     # Final dedup pass — collapse (value, unit, qualifier) triples per
     # compound, normalizing μM/uM/µM unit-string variants.

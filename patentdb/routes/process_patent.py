@@ -1708,6 +1708,15 @@ def _run_text_dominant(
                 "unit": a.unit,
                 "qualifier": a.qualifier,
                 "n_runs": getattr(a, "n_runs", None),
+                # Which arm produced this row. `harvest/orchestrator.py:68`
+                # sets it on the AssayResult and its comment says dropping it
+                # "is what left 27,868 shipped rows unattributed" — but the fix
+                # landed on the producer only, and this dict rebuilt the row
+                # without it. Measured today: 27,708 of 38,000 shipped records
+                # (73%) carry no provenance, so "did the pattern library or the
+                # burst produce this row" could only be answered by re-running
+                # a simulation, never from the artifact.
+                "source": getattr(a, "source", "") or "",
             }
             for a in arr
         ]
