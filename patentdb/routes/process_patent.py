@@ -2240,6 +2240,24 @@ def process_patent(
             "records_dropped": _n_nonname_dropped,
             "names_cleared": _n_nonname_cleared,
         },
+        # What this run actually cost, broken down by route.
+        #
+        # `cost_tracker` is an in-memory singleton and NOTHING persisted it, so
+        # no artifact on disk recorded what any run spent — which made "where
+        # is the cost coming from" unanswerable from the evidence and left
+        # every figure quoted about it an estimate. Per the backtrace rule in
+        # CLAUDE.md, a number nothing produces is not a result.
+        #
+        # `patent_spend` is language-model spend only; image spend has its own
+        # bucket and its own cap, so both are reported rather than summed into
+        # one figure that hides which ceiling a patent is near.
+        "cost": {
+            "lm_usd": round(final_spend, 4),
+            "image_usd": round(cost_tracker.patent_image_spend(patent_id), 4),
+            "by_route": cost_tracker.all_route_spend(patent_id),
+            "lm_cap_usd": config.PER_PATENT_LM_CAP,
+            "lm_cap_hit": cost_tracker.patent_lm_exceeded(patent_id),
+        },
         # Substituent-table scan (harvest-integrated, $0). `enumerable`
         # flags a true Markush genus whose species the enumeration path
         # (markush.step.enumerate_from_scaffold_table) can expand once a
