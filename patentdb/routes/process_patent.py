@@ -26,7 +26,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..core import config
-from ..core.name_boundary import terminate_name
+from ..core.assay_name_guard import is_retention_time_name
+from ..core.name_boundary import looks_like_spectra, terminate_name
 from ..core.cost_tracker import cost_tracker
 from ..core.patent_text import load_patent_description
 from ..core.route_classifier import classify_route, RouteDecision
@@ -567,6 +568,115 @@ def _compounds_to_example_index(compounds: list) -> dict:
     return out
 
 
+# A mass reading, not a name — `496.1 (M + H) +`, `[M+H]+ 528.3`, `(M + 1)`.
+#
+# Anchored on the ADDUCT, never on the number, and case-sensitive on the `M`.
+# `(m-tolyl)` opens a bracket with an m and a hyphen, and an axial-chirality
+# descriptor legally opens one with an M — `(M)-1,1'-binaphthyl` — so both a
+# case-blind test and a "bracket, M, sign" test condemn real names. Requiring
+# the ion token AND the closing bracket leaves both alone: in `(M)-` the
+# bracket closes before the sign, and `m-` is lowercase.
+_MASS_ADDUCT_RE = re.compile(r"[\[(]\s*M\s*[+-]\s*(?:H|Na|K|Li|NH4|1|2)\s*[\])]")
+
+
+def _is_chemical_name(raw: str) -> bool:
+    """Is `raw` a chemical name, or is it characterisation data wearing one?
+
+    Composed from the detectors that already exist rather than a fourth one:
+    `terminate_name` (grammar-based prose/analytical cut, returns "" for a
+    chunk that was spectra from character zero or carries no lowercase word),
+    `looks_like_spectra` and `is_retention_time_name`, plus the adduct test
+    above — `496.1 (M + H) +` contains no NMR marker and no chromatography, so
+    the three existing detectors alone let it through.
+
+    The test is applied to what SURVIVES `terminate_name`, not to the raw
+    chunk, so a real name that merely trails its own MS line keeps its name:
+    `…-2-carboxamide LCMS (m/z) (M+H)=528.3` cuts to the carboxamide and
+    passes. Measured on US10273259: the description holds 1,036 mass readings
+    in `NNN.N (M + H) +` form, 643 distinct, and every one that a pattern
+    captures as an `iupac` reaches the paid batch below.
+    """
+    kept = terminate_name((raw or "").strip())
+    if not kept:
+        return False
+    if looks_like_spectra(kept) or is_retention_time_name(kept):
+        return False
+    return not _MASS_ADDUCT_RE.search(kept)
+
+
+# Extraction methods whose SMILES was derived FROM the stored `iupac_name`.
+# For these the name is the evidence: if the name is a mass reading, the
+# structure is a model's guess at what `496.1 (M + H) +` might be, and the
+# record goes. Everything else (GP-embedded meta, table OPSIN off a different
+# cell) has an independent structure, so only the false name is cleared.
+_NAME_DERIVED_METHODS = (
+    "strategy5_iupac_harvest_broad",
+    "iupac_harvest_targeted",
+    "iupac_harvest",
+    "llm_direct_smiles",
+    "llm_cleaned",
+    "opsin_direct",
+    "pubchem_direct",
+)
+
+
+def _reject_non_name_records(example_index: dict, patent_id: str = "") -> tuple[dict, int, int]:
+    """Strip records whose `iupac_name` is not a name. Returns (index, dropped, cleared).
+
+    Three outcomes, decided by what the record would still be worth without
+    the false name:
+
+      * structure derived FROM the name (`_NAME_DERIVED_METHODS`) → drop it;
+        the molecule is a guess at what a mass reading might be.
+      * no structure either → drop it; a record with neither a name nor a
+        SMILES identifies nothing and only inflates `merged_unique_compounds`.
+        Measured: 139 of US11292791's 150 such records are exactly this.
+      * structure from an independent route → keep the molecule, clear the
+        name into `iupac_rejected` so the discard is auditable rather than
+        silent.
+
+    THE write point for compound identity. Measured over the 22 shipped
+    artifacts (2026-08-04): 214 of 17,786 records carry an `iupac_name` that is
+    not a name, 47 of them with a `canonical_smiles`; 56 of those names are
+    literal mass readings across six patents, 20 with a structure — including
+    US10273259's `654.1 2.39 (M + H)+`. They arrived through five different
+    upstream routes (`examples`, `llm_cleaned`, `gp_description_example_header
+    _llm_cleaned`, `tables`, `strategy5_iupac_harvest_broad`), which is why
+    guarding the routes one at a time is how the next capture pattern ships the
+    next 214. This is the one choke point every record passes on its way to
+    disk. Applying it costs 170 records dropped and 44 names cleared — 1.2% of
+    the corpus, none of it a molecule with a name.
+
+    A missing compound is recoverable; a mass reading recorded as a molecule is
+    not — the same trade `_DIMENSIONLESS` makes for units.
+    """
+    dropped = cleared = 0
+    out: dict = {}
+    for cid, rec in example_index.items():
+        name = (rec.get("iupac_name") or "").strip() if isinstance(rec, dict) else ""
+        if not name or _is_chemical_name(name):
+            out[cid] = rec
+            continue
+        method = rec.get("extraction_method") or rec.get("source") or ""
+        if any(method.startswith(m) for m in _NAME_DERIVED_METHODS) or not (
+            rec.get("canonical_smiles") or ""
+        ).strip():
+            dropped += 1
+            continue
+        rec = dict(rec)
+        rec["iupac_name"] = ""
+        rec["iupac_rejected"] = name
+        cleared += 1
+        out[cid] = rec
+    if dropped or cleared:
+        logger.warning(
+            "%s: non-name iupac_name guard — dropped %d name-derived record(s), "
+            "cleared the name on %d independently-sourced one(s)",
+            patent_id, dropped, cleared,
+        )
+    return out, dropped, cleared
+
+
 def _strategy5_after_classification(
     patent_id: str,
     text: str,
@@ -674,8 +784,10 @@ def _strategy5_after_classification(
         return example_index
 
     import re
-    from ..core.iupac_to_smiles import _try_opsin
-    from ..core.smiles_utils import get_inchikey, validate_smiles
+    from ..core.iupac_to_smiles import (
+        MIN_SMILES_LENGTH, MIN_SMILES_MW, _try_opsin,
+    )
+    from ..core.smiles_utils import get_inchikey, molecular_weight, validate_smiles
 
     # ── Pass 1: OPSIN each (cid, iupac). Collect the names OPSIN can't
     # parse so we can batch a single LLM-direct-SMILES fallback for them.
@@ -687,20 +799,48 @@ def _strategy5_after_classification(
     # those names; batching keeps it cheap (50% discount + concurrent).
     cid_to_smiles: dict[str, str] = {}
     opsin_failures: list[tuple[str, str]] = []  # (cid, cleaned_iupac)
+    n_not_a_name = 0
     for cid, iupac in new_pairs.items():
         cleaned = re.sub(
             r"^(?:racemic|rac\.?|meso)\s+", "", iupac, flags=re.IGNORECASE,
         ).strip()
+        # A mass reading is not a name and asking a model to convert one is
+        # not a recoverable failure — it is a paid request for a molecule
+        # that does not exist, and the answer is un-checkable. On US10273259
+        # a single pending pattern captured the `(M + H) +` column and 720 of
+        # 721 requests in the batch below were readings like `496.1 (M + H) +`.
+        # The pattern's OWN discovery description said "No IUPAC names are
+        # present in this snippet — only spectral data is provided per
+        # compound number"; nothing downstream read it. This is where that is
+        # read, in the shape of the string itself.
+        if not _is_chemical_name(cleaned):
+            n_not_a_name += 1
+            continue
         smiles, _err = _try_opsin(cleaned)
         if smiles and validate_smiles(smiles):
             cid_to_smiles[cid] = smiles
         elif cleaned:
             opsin_failures.append((cid, cleaned))
+    if n_not_a_name:
+        logger.info(
+            "%s: Strategy 5 broad — %d of %d captured pairs are not chemical "
+            "names (mass readings / NMR / retention times); not sent to OPSIN "
+            "or to the LLM batch",
+            patent_id, n_not_a_name, len(new_pairs),
+        )
 
     n_llm_recovered = 0
     if opsin_failures:
         from ..core.api_client import call_claude_text_batch
         from ..core.iupac_to_smiles import SMILES_FALLBACK_PROMPT
+        # DEDUP. The request is keyed by the NAME — same prompt, same
+        # cache_key — so N cids sharing one name were N identical paid
+        # questions: 447 distinct names across 721 requests on US10273259,
+        # 274 of them bought nothing. The answer is fanned back out to every
+        # cid below, so collapsing the QUESTION does not collapse the ANSWER.
+        cids_by_name: dict[str, list[str]] = {}
+        for cid, name in opsin_failures:
+            cids_by_name.setdefault(name, []).append(cid)
         reqs = [
             {
                 # Sonnet, not Opus — IUPAC→SMILES recovery doesn't need the
@@ -711,20 +851,33 @@ def _strategy5_after_classification(
                 "max_tokens": 200,
                 "cache_key": f"smiles_fallback:{name}",
             }
-            for _cid, name in opsin_failures
+            for name in cids_by_name
         ]
         results = call_claude_text_batch(reqs, patent_id=patent_id)
-        for (cid, _name), resp in zip(opsin_failures, results):
+        for (name, cids), resp in zip(cids_by_name.items(), results):
             if not resp:
                 continue
             cand = resp.strip().split("\n")[0].strip()
-            if validate_smiles(cand):
+            # The floors `core/iupac_to_smiles._llm_direct_smiles` has always
+            # had, and this sibling path never did. `validate_smiles` alone
+            # says only "rdkit parsed it": `I` (127.9 Da) and `CCO` (46 Da)
+            # both pass it, and a model answering an impossible question
+            # answers small. A drug is not 3 characters of SMILES.
+            if not (validate_smiles(cand) and len(cand) >= MIN_SMILES_LENGTH):
+                continue
+            mw = molecular_weight(cand)
+            if not mw or mw < MIN_SMILES_MW:
+                continue
+            for cid in cids:
                 cid_to_smiles[cid] = cand
-                n_llm_recovered += 1
+            # Counted in CIDS, as before the dedup — one answer fanned out to
+            # eight compound ids recovered eight compounds, not one.
+            n_llm_recovered += len(cids)
         logger.info(
-            "%s: Strategy 5 broad — OPSIN failed on %d names; LLM-direct "
-            "recovered %d (batched)",
-            patent_id, len(opsin_failures), n_llm_recovered,
+            "%s: Strategy 5 broad — OPSIN failed on %d names (%d distinct, "
+            "%d duplicate requests saved); LLM-direct recovered %d (batched)",
+            patent_id, len(opsin_failures), len(cids_by_name),
+            len(opsin_failures) - len(cids_by_name), n_llm_recovered,
         )
 
     n_added = 0
@@ -1703,6 +1856,12 @@ def _write_outputs(
     out_dir: Path | None = None,
 ) -> dict[str, Path]:
     """Persist example_index.json + assay_tables.json + route_audit.json."""
+    # Last line of defence, applied to whatever any caller hands us: a mass
+    # reading must not reach disk as an `iupac_name`. `process_patent` already
+    # ran this before computing the audit counts, so on that path it is a
+    # no-op; it is here so a future caller — or a future capture pattern —
+    # cannot ship the 214 records this guard was written for.
+    example_index, _, _ = _reject_non_name_records(example_index, patent_id)
     if out_dir is None:
         out_dir = config.OUTPUT_DIR / "text_extraction" / patent_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2045,6 +2204,14 @@ def process_patent(
         logger.warning("%s: substituent-table scan failed (%r)", patent_id, e)
 
     # ── STAGE 6 — persist + return ────────────────────────────────
+    # Run the non-name guard BEFORE the audit counts, not inside the writer:
+    # `n_with_iupac` / `route_breakdown` are read as the record of what
+    # shipped, and an audit that counts records the writer then removes is
+    # exactly the "totals look healthy while patents are missing" failure this
+    # file has produced before.
+    example_index, _n_nonname_dropped, _n_nonname_cleared = _reject_non_name_records(
+        example_index, patent_id,
+    )
     final_spend = cost_tracker.patent_spend(patent_id) - initial_spend
     # Route-tag breakdown so we can see at a glance how many compounds
     # came from each extraction path (Strategy 0 GP-embedded vs density
@@ -2066,6 +2233,13 @@ def process_patent(
         "n_with_inchikey": sum(1 for r in example_index.values() if r.get("inchikey")),
         "asy_compounds": len(assay_tables),
         "route_breakdown": dict(route_breakdown),
+        # What the non-name guard removed on this run. Reported, not silent —
+        # a guard whose work is invisible is indistinguishable from a route
+        # that found nothing.
+        "non_name_iupac": {
+            "records_dropped": _n_nonname_dropped,
+            "names_cleared": _n_nonname_cleared,
+        },
         # Substituent-table scan (harvest-integrated, $0). `enumerable`
         # flags a true Markush genus whose species the enumeration path
         # (markush.step.enumerate_from_scaffold_table) can expand once a

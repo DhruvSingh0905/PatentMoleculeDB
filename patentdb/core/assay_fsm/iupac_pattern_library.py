@@ -47,6 +47,45 @@ def _today() -> str:
     return date.today().isoformat()
 
 
+# ── Self-disclaiming discoveries ──────────────────────────────────
+#
+# The model is asked for a pattern and answers in two parts: a description of
+# what it saw, and a regex. When those two contradict each other the
+# description is the one to believe — it is the model reporting, the regex is
+# the model complying with the output format.
+#
+# Live example (`OTHER`, 2026-08-04, US11292791): description "No IUPAC names
+# are present in this snippet — only spectral data is provided per compound
+# number", regex `^(?P<cid>\d{3,4})\s*\n\s*(?P<iupac>(?!\s*1\s*H)[^\n]{10,})`
+# — a capture that takes whatever follows a bare compound number, which on
+# that layout is the MS column. It was stored `pending`, and
+# `list_pending()` is applied at runtime by `_strategy5_after_classification`,
+# so a pattern the model said contains no names spent the rest of its life
+# handing mass readings to an OPSIN-then-LLM cascade.
+#
+# Refused only when BOTH halves are present: a description that disclaims
+# names AND a runnable capture regex. A narrative discovery that says the same
+# thing is harmless (nothing can execute it) and is still recorded. Measured
+# against the six patterns in the historical library (_attic): 0 refused.
+_NO_NAMES_RE = re.compile(
+    r"no\s+(?:\w+\s+){0,2}names?\s+(?:are|is|were|was)?\s*"
+    r"(?:present|given|provided|found|shown|contained|included)"
+    r"|only\s+spectral\s+data"
+    r"|names?\s+(?:are|is)\s+not\s+(?:present|given|provided|shown)",
+    re.IGNORECASE,
+)
+
+
+def _disclaims_names(description: str) -> bool:
+    """Does the discovery's own description say the region holds no names?"""
+    return bool(description) and bool(_NO_NAMES_RE.search(description))
+
+
+def _is_capture_regex(rule: str) -> bool:
+    """Can `apply_patterns_to_text` actually execute this? Same test it uses."""
+    return "(?P<cid>" in (rule or "") and "(?P<iupac>" in (rule or "")
+
+
 # ── Pattern record ────────────────────────────────────────────────
 
 
@@ -235,6 +274,22 @@ class IupacPatternLibrary:
                 )
                 return
 
+        # A capture regex whose own description disclaims names is recorded
+        # `rejected`, never `pending` — see `_NO_NAMES_RE`. Recorded rather
+        # than dropped so the observation survives for curation, and so a
+        # re-proposal under the same name merges into a rejected entry instead
+        # of re-entering the runtime set.
+        self_disclaimed = (
+            _disclaims_names(pattern.description)
+            and _is_capture_regex(pattern.regex_or_heuristic)
+        )
+        if self_disclaimed:
+            logger.warning(
+                "IUPAC pattern %r stored as rejected: its description says the "
+                "region contains no names, but it carries a capture regex",
+                pattern.pattern_name,
+            )
+
         with self._lock:
             data = self._read_raw(self.discoveries_path)
             patterns: list[dict] = data.get("patterns", [])
@@ -242,7 +297,23 @@ class IupacPatternLibrary:
                 (p for p in patterns if p.get("pattern_name") == pattern.pattern_name),
                 None,
             )
-            if existing is None:
+            if existing is None and self_disclaimed:
+                patterns.append({
+                    "pattern_name": pattern.pattern_name,
+                    "description": pattern.description,
+                    "regex_or_heuristic": pattern.regex_or_heuristic,
+                    "example_patent": patent_id,
+                    "status": "rejected",
+                    "rejected_reason": (
+                        "description disclaims the presence of names while the "
+                        "proposal carries a runnable capture regex"
+                    ),
+                    "n_observations": 1,
+                    "fingerprints": [fingerprint],
+                    "first_seen": _today(),
+                    "last_updated": _today(),
+                })
+            elif existing is None:
                 patterns.append({
                     "pattern_name": pattern.pattern_name,
                     "description": pattern.description,
@@ -272,9 +343,20 @@ class IupacPatternLibrary:
                 # discards the new regex.
                 incoming = pattern.regex_or_heuristic or ""
                 stored = existing.get("regex_or_heuristic") or ""
-                incoming_usable = "(?P<cid>" in incoming and "(?P<iupac>" in incoming
-                stored_usable = "(?P<cid>" in stored and "(?P<iupac>" in stored
-                if incoming_usable and not stored_usable:
+                incoming_usable = _is_capture_regex(incoming)
+                stored_usable = _is_capture_regex(stored)
+                if self_disclaimed:
+                    # The upgrade path is how a narrative entry becomes
+                    # runnable. A self-disclaimed proposal must not be the
+                    # thing that makes one runnable, and must not carry an
+                    # existing entry to auto_loaded on its observation count.
+                    existing["status"] = "rejected"
+                    existing.setdefault(
+                        "rejected_reason",
+                        "a proposal under this name disclaimed the presence of "
+                        "names while carrying a runnable capture regex",
+                    )
+                elif incoming_usable and not stored_usable:
                     existing["regex_or_heuristic"] = incoming
                     existing["description"] = pattern.description or existing.get("description", "")
                     logger.info(
@@ -315,6 +397,7 @@ class IupacPatternLibrary:
                 if k not in (
                     "status", "fingerprints", "example_patent",
                     "n_observations", "first_seen", "last_updated",
+                    "rejected_reason",
                 )
             }
             promoted["source"] = f"promoted_{_today()}"

@@ -501,6 +501,133 @@ def _anchor_spans(
     ]
 
 
+# ── The NATIVE half: a label that stays in its own patent but leaves its own
+# ── table ──────────────────────────────────────────────────────────────────
+#
+# Everything above is scoped to FOREIGN entries and keys on `first_seen_patent`,
+# so it cannot see the larger case. A native pattern's labels came off THIS
+# patent's own header, and the anchor gate above is satisfied trivially — the
+# header IS here. What travels wrongly is not provenance but REACH: the
+# row-regex is purely structural (`I-\d+` then a decimal) and matches every
+# "id, then number" table in the document, including the ones that publish
+# retention times and masses.
+#
+# Measured 2026-08-04 over the 6 corpus patents whose library patterns fire —
+# 62,566 native rows, each graded against ITS OWN patent's CALS tables via
+# `sources.uspto_assays.extract_from_patent`, and classified by the nearest
+# `TABLE <n>` header printed above it:
+#
+#   the row sits under a header that…    rows   corroborated  contradicted
+#   names this assay                   40,017        32,382         2,678  92.4%
+#   names a DIFFERENT measurement      18,422           888         8,545   9.4%
+#
+# Two fabrications, both native, both from the biggest emitters:
+#
+#   US9718790  TABLE 141 "Retention Compound Time Structure No. (min) [M + H]
+#              Method" → `I-0687 1.86 580 2` → `I-0687 P2X3 IC50 = 1.86 μM`.
+#              1.86 is MINUTES. 14,293 of that patent's 38,666 rows are this.
+#   US10214537 TABLE 3 "Ex. LCMS No. R Name (M + H) +" → `4 21 2-(4-acetyl-…`
+#              → `compound 4, CD69 IC50 = 2 nM`. The "2" is the first character
+#              of an IUPAC NAME.
+#
+# WHY NOT DISTANCE. The obvious gate is the one already used above — a row must
+# sit within 20,000 chars of its anchor. It was measured against the same
+# ground truth and is the worse instrument on every axis:
+#
+#   gate                        drops    verified WRONG   verified CORRECT lost
+#   locality ≤ 20k             20,886            7,560                   4,366
+#   this rule, as applied      15,112            6,135                       4
+#
+# US9694016 settles it: 2,689 of its rows sit 20,000–28,844 chars from their
+# anchor and 2,688 of them are CORRECT — they are the tail of one enormous
+# `Example NNN 0.00280 0.00050` table that simply runs longer than 20 KB. A
+# distance gate deletes all of them. The header rule costs that patent nothing
+# (8,022 rows before and after), because nothing else is printed in between.
+# Distance was a proxy for "some other table intervened"; this reads the other
+# table directly.
+#
+# What the rule actually removed, re-graded after it was applied: 6,135 rows
+# the patent's own CALS tables CONTRADICT, plus 8,973 whose compound ids the
+# CALS parser never reached — unjudgeable by BindingDB or by CALS, and
+# convicted instead by the header printed directly above them. Corpus accuracy
+# over judgeable rows goes 74.6% → 85.7%.
+#
+# The four corroborated rows it does lose are ALL US10214537 name-table matches
+# — `4 21 2-(4-acetyl-…` under `Ex. LCMS No. R Name (M + H) +`, `498 414 1` and
+# two more under `LC/MS [M + 1] … Name Rt` — where the captured "value" is the
+# leading digit of the IUPAC name that follows. They are the same fabrication
+# as the 147 beside them and score correct only because CD69 IC50 readings are
+# frequently single digits. Verified real collateral: zero.
+#
+# Unlike the foreign gate this is TEXT-ONLY — it never consults
+# `first_seen_patent` — so it applies to every pattern and restores the
+# property the module's design comment asks for: output depends solely on the
+# text the pattern is run against.
+
+# A row belongs to the header it sits under. 2,000 chars is measured, not
+# chosen: of the 15,082 rows sitting within 2,000 chars of a non-assay header,
+# 3 are corroborated. Widening to 10,000 admits 737 more corroborated rows
+# against 963 contradicted, and beyond that the "nearest header" is 283,000
+# chars away and means nothing — that is US10273259's flattened region, where
+# the caption belongs to a table 39 captions earlier.
+_HEADER_SCAN = 2_000
+# How much of the caption counts as "the header" — enough for the column names
+# that follow `TABLE 141`, not enough to reach the first data row.
+_HEADER_WINDOW = 200
+_TABLE_MARK_RE = re.compile(r"TABLE[\s\-]*(?:US[\s\-]*)?\d+", re.IGNORECASE)
+# The vocabulary of a header that publishes something OTHER than a potency.
+# Every term here was read off a real header in the corpus that was producing
+# fabricated assay rows; none of them names an activity.
+_NONASSAY_HEADER_RE = re.compile(
+    r"retention\s*time|\[\s*M\s*\+\s*[H1]|\(\s*M\s*\+\s*[H1]|LC\s*/?\s*MS|"
+    r"m/z|molecular\s*weight|\bMW\b|\bR\s*t\b|\bRT\s*\(\s*min|QC[\s\-]*method|"
+    r"\bmethod\b|\bcalc|\bfound\b|NMR",
+    re.IGNORECASE,
+)
+
+
+def _table_marks(text: str) -> tuple[list[int], list[str]]:
+    """`TABLE <n>` caption positions and the header text that follows each."""
+    starts: list[int] = []
+    heads: list[str] = []
+    for m in _TABLE_MARK_RE.finditer(text):
+        starts.append(m.start())
+        heads.append(text[m.start():m.start() + _HEADER_WINDOW])
+    return starts, heads
+
+
+def _under_foreign_header(
+    offset: int,
+    starts: list[int],
+    heads: list[str],
+    anchor: list[str],
+    cache: dict[int, bool],
+) -> bool:
+    """True when the nearest header above `offset` names a DIFFERENT
+    measurement and does not also carry this pattern's own anchor.
+
+    No `TABLE <n>` caption above the row means no evidence either way, and the
+    answer is False — Google Patents renders some tables as flat prose with the
+    caption gone (US10246453's 446 far rows, US10273259's 881 corroborated
+    ones), and reading absent evidence as guilt deletes them.
+    """
+    if not starts:
+        return False
+    i = bisect.bisect_right(starts, offset) - 1
+    if i < 0 or offset - starts[i] > _HEADER_SCAN:
+        return False
+    hit = cache.get(i)
+    if hit is None:
+        head = heads[i]
+        # A header that names this assay too is the assay's own header, however
+        # many masses it also prints (`CBP IC50 (μM) … [M+H]` is one table).
+        norm = _normalize(head)
+        hit = (not all(tok in norm for tok in anchor)
+               and bool(_NONASSAY_HEADER_RE.search(head)))
+        cache[i] = hit
+    return hit
+
+
 def _is_foreign(entry: dict[str, Any], patent_id: str) -> bool:
     """True when this pattern's labels were read off a DIFFERENT patent's
     header. An entry with no `first_seen_patent` is a `fresh_patterns` item —
@@ -566,12 +693,16 @@ def apply_patterns_to_text(
     lc_text, lc_index = _lc_greek_indexed(text)
     # Built once per call: the patent's own `Label (unit)` headers.
     header_units = _text_header_units(text)
+    # …and once per call: where every `TABLE <n>` caption sits, for the
+    # native mislabelling gate below.
+    tbl_starts, tbl_heads = _table_marks(text)
 
     out: list[dict[str, Any]] = []
     seen_per_pattern: dict[str, int] = {}
     n_anchor_skipped = 0
     n_foreign_thin_anchor = 0
     n_foreign_far = 0
+    n_wrong_table = 0
     n_no_unit = 0
     unit_cache: dict[str, str] = {}
     for entry in active:
@@ -606,9 +737,21 @@ def apply_patterns_to_text(
         except re.error:
             continue
         n_for_pattern = 0
+        hdr_cache: dict[int, bool] = {}
         for m in compiled.finditer(text):
             cid = (m.groupdict().get("cid") or "").strip()
             if not cid:
+                continue
+            # WRONG-TABLE GATE (native and foreign alike, text-only): the
+            # header printed above this row names a different measurement.
+            # `I-0687 1.86` under "Retention … (min) [M + H] Method" is a
+            # retention time, not a micromolar potency. See the block above
+            # `_HEADER_SCAN` for the 62,566-row measurement and for why this
+            # is not a distance test.
+            if _under_foreign_header(
+                m.start(), tbl_starts, tbl_heads, anchor, hdr_cache
+            ):
+                n_wrong_table += 1
                 continue
             # A foreign label belongs to the table its header heads, not to
             # every "integer, then decimal" in the document. This is what
@@ -684,6 +827,13 @@ def apply_patterns_to_text(
             "pattern(s) on a single-token anchor and %d row-match(es) sitting "
             "outside the anchored region",
             patent_id, n_foreign_thin_anchor, n_foreign_far,
+        )
+    if n_wrong_table:
+        logger.info(
+            "assay_pattern_library: %s — wrong-table gate blocked %d row "
+            "match(es) sitting under a header that names a different "
+            "measurement (retention time / mass / method)",
+            patent_id, n_wrong_table,
         )
     if seen_per_pattern:
         logger.info(
