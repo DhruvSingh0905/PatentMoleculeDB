@@ -23,6 +23,8 @@ from ...adaptive_extraction_cache import (
     AdaptiveExtractionCache,
     fingerprint_table_shape,
 )
+from ... import config
+from ...cost_tracker import cost_tracker
 from ...models import AssayResult
 from ._compound_id import sanitize_compound_id
 from .agent1_targets import Target, extract_targets
@@ -246,6 +248,26 @@ def harvest_burst(
         chunks = []  # short-circuits the for-loop below
 
     for cidx, chunk_text in enumerate(chunks):
+        # The per-patent LM cap, which this path did not consult.
+        #
+        # `PER_PATENT_LM_CAP` is $0.20 and `api_client` records every call
+        # against it, so the tracker knew the whole time — nothing asked. The
+        # IUPAC sibling (`harvest/iupac_orchestrator`) checks it in four
+        # places; this one checked it in none, and a measured probe on
+        # US9718790 spent $2.13 across 55 calls before the batch it was
+        # waiting on had even returned. A cap nothing consults is not a cap.
+        #
+        # Checked per chunk rather than up front because the spend accrues
+        # chunk by chunk, and stopping at the boundary keeps every chunk
+        # already paid for. Cache HITS are below this line deliberately: a
+        # cached chunk costs nothing, and refusing to read one because an
+        # earlier chunk was expensive would drop free coverage.
+        if cost_tracker.patent_lm_exceeded(patent_id or ""):
+            logger.warning(
+                "harvest_burst: %s LM cap $%.2f reached — stopping at chunk %d/%d",
+                patent_id or "-", config.PER_PATENT_LM_CAP, cidx + 1, len(chunks),
+            )
+            break
         fp = _chunk_fingerprint(chunk_text)
         cache_key = f"harvest:{fp}"
 
