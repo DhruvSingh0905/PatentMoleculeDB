@@ -1,0 +1,32 @@
+<title>';' names — hand check (US10214537)</title>
+<style>body{font:15px/1.6 ui-sans-serif,-apple-system,sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem}
+code{background:#f2f4f8;padding:1px 4px;border-radius:3px;font-size:.86em;word-break:break-all}
+table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid #dde;padding:.6rem;vertical-align:top;text-align:left}
+.box{background:#f7f9fc;border:1px solid #dde;border-radius:8px;padding:1rem;white-space:pre-wrap}
+@media(prefers-color-scheme:dark){body{background:#0f1216;color:#e8ecf2}code,.box{background:#181d24}td,th,.box{border-color:#2a323c}}</style>
+<h1>Semicolon names — US10214537</h1>
+<p><b>Question:</b> is the <code>;</code> in the patent, joining a list — or did we concatenate two compounds into one CID?</p>
+<p><b>Answer: neither.</b> The <code>;</code> is <b>PubChem's</b> notation for a multi-component substance, arriving via
+<code>iupac_source: pubchem_backfill</code>. Each is ONE substance whose SMILES already carries the matching
+<code>.</code>-separated components. No CID is merged or offset.</p>
+<table><tr><th>cid</th><th>what we stored</th><th>is the name in the patent?</th></tr><tr><td><code>GP1183</code></td>
+      <td><b>stored name</b><br><code>bis(cyclopenta-2,4-dien-1-yl(diphenyl)phosphane);iron(2+)</code>
+          <br><b>stored SMILES</b><br><code>[Fe+2].c1ccc(P(c2ccccc2)[c-]2cccc2)cc1.c1ccc(P(c2ccccc2)[c-]2cccc2)cc1</code>
+          <br><b>method</b> gp_embedded_meta &middot; <b>iupac_source</b> pubchem_backfill</td>
+      <td><b>NOT PRESENT</b> in the patent text</td></tr><tr><td><code>GP1307</code></td>
+      <td><b>stored name</b><br><code>dicesium;carbonate</code>
+          <br><b>stored SMILES</b><br><code>O=C([O-])[O-].[Cs+].[Cs+]</code>
+          <br><b>method</b> gp_embedded_meta &middot; <b>iupac_source</b> pubchem_backfill</td>
+      <td><b>NOT PRESENT</b> in the patent text</td></tr><tr><td><code>GP1385</code></td>
+      <td><b>stored name</b><br><code>palladium;tetrakis(triphenylphosphane)</code>
+          <br><b>stored SMILES</b><br><code>[Pd].c1ccc(P(c2ccccc2)c2ccccc2)cc1.c1ccc(P(c2ccccc2)c2ccccc2)cc1.c1ccc(P(c2ccccc2)c2ccccc2)cc1.c1ccc(P(c2ccccc2)c2ccccc2</code>
+          <br><b>method</b> gp_embedded_meta &middot; <b>iupac_source</b> pubchem_backfill</td>
+      <td>present</td></tr><tr><td><code>GP1413</code></td>
+      <td><b>stored name</b><br><code>disilver;oxygen(2-)</code>
+          <br><b>stored SMILES</b><br><code>[Ag+].[Ag+].[O-2]</code>
+          <br><b>method</b> gp_embedded_meta &middot; <b>iupac_source</b> pubchem_backfill</td>
+      <td><b>NOT PRESENT</b> in the patent text</td></tr></table>
+<h2>What the patent itself says (reagent context)</h2>
+<div class="box"> C-7 bromo (such as 3, 5, 17, and 19), represented by compounds 20, can be further transformed to compounds of Formula I by Scheme 6. This conversion may be achieved by using a suitable base such as potassium carbonate, cesium carbonate or tripotassium phosphate, and a suitable catalyst such as tetrakis(triphenylphosphine) palladium, 1,1′-bis(diphenylphosphino)ferrocene palladium(II) chloride, or 1,1′-bis(di-tert-butylphosphino)ferrocen</div>
+<p><b>Note the cid prefix:</b> 348 of the 654 are <code>GP####</code> — positional Google-Patents entries, i.e. reagents
+and other structures GP indexed, not numbered examples of the patent. They carry no assay values.</p>

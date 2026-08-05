@@ -1,0 +1,194 @@
+{
+ "patents": [
+  "US11649247",
+  "US9302989"
+ ],
+ "runs": [
+  {
+   "model": "haiku",
+   "model_id": "claude-haiku-4-5-20251001",
+   "seconds": 1.1,
+   "cost_usd": 0.0,
+   "compounds_before": {
+    "US11649247": 14,
+    "US9302989": 1523
+   },
+   "compounds_after": {
+    "US11649247": 14,
+    "US9302989": 1523
+   },
+   "compounds_gained": {},
+   "per_patent": [
+    {
+     "patent": "US11649247",
+     "gaps": 5,
+     "known": 5,
+     "asked": 0,
+     "adopted": 2,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 50,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US9302989",
+     "gaps": 1,
+     "known": 1,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 1,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    }
+   ],
+   "patches": [],
+   "library_by_kind": {
+    "bin_key": 18,
+    "escalate": 13,
+    "column_map": 22,
+    "not_assay": 4,
+    "value_pattern": 5
+   },
+   "values": {
+    "total": {
+     "agree": 1528,
+     "refs": 1528
+    },
+    "bad": {}
+   }
+  },
+  {
+   "model": "sonnet",
+   "model_id": "claude-sonnet-4-6",
+   "seconds": 1.1,
+   "cost_usd": 0.0,
+   "compounds_before": {
+    "US11649247": 14,
+    "US9302989": 1523
+   },
+   "compounds_after": {
+    "US11649247": 14,
+    "US9302989": 1523
+   },
+   "compounds_gained": {},
+   "per_patent": [
+    {
+     "patent": "US11649247",
+     "gaps": 5,
+     "known": 5,
+     "asked": 0,
+     "adopted": 2,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 50,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US9302989",
+     "gaps": 1,
+     "known": 1,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 1,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    }
+   ],
+   "patches": [],
+   "library_by_kind": {
+    "bin_key": 18,
+    "escalate": 13,
+    "column_map": 22,
+    "not_assay": 4,
+    "value_pattern": 5
+   },
+   "values": {
+    "total": {
+     "agree": 1528,
+     "refs": 1528
+    },
+    "bad": {}
+   }
+  },
+  {
+   "model": "opus",
+   "model_id": "claude-opus-4-6",
+   "seconds": 1.0,
+   "cost_usd": 0.0,
+   "compounds_before": {
+    "US11649247": 14,
+    "US9302989": 1523
+   },
+   "compounds_after": {
+    "US11649247": 14,
+    "US9302989": 1523
+   },
+   "compounds_gained": {},
+   "per_patent": [
+    {
+     "patent": "US11649247",
+     "gaps": 5,
+     "known": 5,
+     "asked": 0,
+     "adopted": 2,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 0,
+     "crashed": [],
+     "rows": 50,
+     "escalations": [],
+     "rejections": []
+    },
+    {
+     "patent": "US9302989",
+     "gaps": 1,
+     "known": 1,
+     "asked": 0,
+     "adopted": 0,
+     "rejected": 0,
+     "escalated": 0,
+     "over_objection": 0,
+     "capability_gaps": 1,
+     "crashed": [],
+     "rows": 0,
+     "escalations": [],
+     "rejections": []
+    }
+   ],
+   "patches": [],
+   "library_by_kind": {
+    "bin_key": 18,
+    "escalate": 13,
+    "column_map": 22,
+    "not_assay": 4,
+    "value_pattern": 5
+   },
+   "values": {
+    "total": {
+     "agree": 1528,
+     "refs": 1528
+    },
+    "bad": {}
+   }
+  }
+ ]
+}

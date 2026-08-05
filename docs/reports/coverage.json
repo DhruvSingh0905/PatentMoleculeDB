@@ -1,0 +1,17 @@
+{
+ "patents": 123,
+ "records": 93181,
+ "compounds": 37593,
+ "with_assays": 119,
+ "n_runs_cells_stating": 418,
+ "n_runs_records": 421,
+ "bdb_matched": 4467,
+ "bdb_ligands": 13613,
+ "bdb_patents": 18,
+ "value_correct": 16896,
+ "value_comparable": 16899,
+ "value_agree": 14275,
+ "value_range": 2621,
+ "value_wrong": 3,
+ "value_refs": 19547
+}

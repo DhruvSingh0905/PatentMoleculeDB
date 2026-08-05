@@ -1,0 +1,106 @@
+<title>PatentMoleculeDB — coverage</title>
+<style>
+  :root { --bg:#ffffff; --ink:#14171c; --dim:#5b6472; --line:#e3e7ee; --card:#f7f9fc; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1216; --ink:#e8ecf2; --dim:#96a0b0; --line:#232a33; --card:#161b21; }
+  }
+  :root[data-theme="dark"] { --bg:#0f1216; --ink:#e8ecf2; --dim:#96a0b0; --line:#232a33; --card:#161b21; }
+  :root[data-theme="light"] { --bg:#ffffff; --ink:#14171c; --dim:#5b6472; --line:#e3e7ee; --card:#f7f9fc; }
+  body { background:var(--bg); color:var(--ink); margin:0; padding:2.5rem 1.25rem 4rem;
+         font:16px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:1080px; margin:0 auto; }
+  h1 { font-size:1.6rem; margin:0 0 .35rem; letter-spacing:-.01em; }
+  .sub { color:var(--dim); margin:0 0 2rem; font-size:.95rem; }
+  .grid { display:grid; gap:1rem; grid-template-columns:repeat(auto-fit,minmax(290px,1fr)); }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:12px;
+            padding:1.15rem 1.25rem 1.25rem; }
+  .panel h2 { font-size:.82rem; font-weight:600; text-transform:uppercase;
+               letter-spacing:.06em; color:var(--dim); margin:0 0 .5rem; }
+  .hero { font-size:2.9rem; font-weight:650; line-height:1; letter-spacing:-.02em; }
+  .pc { font-size:1.2rem; font-weight:500; margin-left:.1rem; }
+  svg { width:100%; height:6px; display:block; margin:.85rem 0 .7rem; }
+  .track { fill:var(--line); }
+  .frac { margin:0 0 .45rem; font-size:.9rem; }
+  .caveat { margin:0; font-size:.82rem; color:var(--dim); }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; margin-top:.5rem; }
+  th,td { text-align:left; padding:.45rem .6rem; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:600; }
+  td.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .scroll { overflow-x:auto; }
+  footer { margin-top:2.5rem; color:var(--dim); font-size:.82rem; }
+</style>
+<div class="wrap">
+  <h1>PatentMoleculeDB — coverage</h1>
+  <p class="sub">123 patents &middot; 93,181 assay records &middot;
+     37,593 distinct compounds. Each panel states its own denominator:
+     the four are not on a common scale and should not be compared to one another.</p>
+  <div class="grid">
+  <section class="panel">
+    <h2>Patents yielding assay data</h2>
+    <div class="hero" style="color:#3b6fd4">96.7<span class="pc">%</span></div>
+    <svg viewBox="0 0 100 6" preserveAspectRatio="none" role="img"
+         aria-label="Patents yielding assay data: 119 of 123">
+      <rect x="0" y="0" width="100" height="6" rx="3" class="track"/>
+      <rect x="0" y="0" width="96.75" height="6" rx="3" fill="#3b6fd4"/>
+    </svg>
+    <p class="frac"><strong>119</strong> of <strong>123</strong> &mdash; patents in the corpus produce at least one usable measurement</p>
+    <p class="caveat">4 produce nothing: the open cases the repair loop exists for.</p>
+  </section>
+  <section class="panel">
+    <h2>Records carrying a replicate count</h2>
+    <div class="hero" style="color:#2e8b73">0.5<span class="pc">%</span></div>
+    <svg viewBox="0 0 100 6" preserveAspectRatio="none" role="img"
+         aria-label="Records carrying a replicate count: 421 of 93181">
+      <rect x="0" y="0" width="100" height="6" rx="3" class="track"/>
+      <rect x="0" y="0" width="0.60" height="6" rx="3" fill="#2e8b73"/>
+    </svg>
+    <p class="frac"><strong>421</strong> of <strong>93,181</strong> &mdash; assay records that carry n_runs</p>
+    <p class="caveat">The ceiling is low because patents rarely print it: only <strong>418 cells</strong> in the whole corpus state a replicate count. This measures how often n is REPORTED, not how well it is read — and cells and records are different units, so the two are not a ratio.</p>
+  </section>
+  <section class="panel">
+    <h2>BindingDB structure coverage</h2>
+    <div class="hero" style="color:#b3763a">32.8<span class="pc">%</span></div>
+    <svg viewBox="0 0 100 6" preserveAspectRatio="none" role="img"
+         aria-label="BindingDB structure coverage: 4467 of 13613">
+      <rect x="0" y="0" width="100" height="6" rx="3" class="track"/>
+      <rect x="0" y="0" width="32.81" height="6" rx="3" fill="#b3763a"/>
+    </svg>
+    <p class="frac"><strong>4,467</strong> of <strong>13,613</strong> &mdash; reference ligands matched, across the 18 patents whose structures were resolved</p>
+    <p class="caveat">The other 105 patents either never had the structure resolver run or are absent from BindingDB, so they have no InChIKeys to match and are excluded rather than counted as misses.</p>
+  </section>
+  <section class="panel">
+    <h2>BindingDB value accuracy</h2>
+    <div class="hero" style="color:#8558b8">99.98<span class="pc">%</span></div>
+    <svg viewBox="0 0 100 6" preserveAspectRatio="none" role="img"
+         aria-label="BindingDB value accuracy: 16896 of 16899">
+      <rect x="0" y="0" width="100" height="6" rx="3" class="track"/>
+      <rect x="0" y="0" width="99.98" height="6" rx="3" fill="#8558b8"/>
+    </svg>
+    <p class="frac"><strong>16,896</strong> of <strong>16,899</strong> &mdash; values correct where both sides describe the same molecule</p>
+    <p class="caveat">14,275 agree within 5% and 2,621 are ranges containing the true value; <strong>3</strong> are wrong. Recall is 86.5% of 19,547 reference values.</p>
+  </section></div>
+  <h2 style="font-size:1rem;margin:2.25rem 0 .25rem">The numbers</h2>
+  <div class="scroll"><table>
+    <tr><th>Metric</th><th class="n">Numerator</th><th class="n">Denominator</th><th class="n">%</th></tr>
+    <tr><td>Patents yielding assay data</td><td class="n">119</td>
+        <td class="n">123</td><td class="n">96.7</td></tr>
+    <tr><td>Cells in the corpus stating a replicate count</td>
+        <td class="n">418</td><td class="n">&mdash;</td>
+        <td class="n">&mdash;</td></tr>
+    <tr><td>n_runs as a share of all records</td><td class="n">421</td>
+        <td class="n">93,181</td>
+        <td class="n">0.5</td></tr>
+    <tr><td>BindingDB structure coverage</td><td class="n">4,467</td>
+        <td class="n">13,613</td>
+        <td class="n">32.8</td></tr>
+    <tr><td>BindingDB value accuracy</td><td class="n">16,896</td>
+        <td class="n">16,899</td>
+        <td class="n">99.98</td></tr>
+    <tr><td>BindingDB value recall</td><td class="n">16,899</td>
+        <td class="n">19,547</td>
+        <td class="n">86.5</td></tr>
+  </table></div>
+  <footer>Value accuracy counts a record correct when it agrees within 5% of the
+    reference or reports a range containing it. Structure coverage is an InChIKey
+    comparison and needs the structure resolver to have run.</footer>
+</div>
