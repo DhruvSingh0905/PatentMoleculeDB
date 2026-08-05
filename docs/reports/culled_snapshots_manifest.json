@@ -1,0 +1,589 @@
+{
+ "deleted_orphans": [
+  {
+   "patent": "US10004738",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 98,
+   "n_compounds": 49
+  },
+  {
+   "patent": "US10030020",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US10071079",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 2922,
+   "n_compounds": 982
+  },
+  {
+   "patent": "US10125101",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 123,
+   "n_compounds": 37
+  },
+  {
+   "patent": "US10155002",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 499,
+   "n_compounds": 187
+  },
+  {
+   "patent": "US10172859",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US10207999",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 242,
+   "n_compounds": 122
+  },
+  {
+   "patent": "US10245267",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 2592,
+   "n_compounds": 1111
+  },
+  {
+   "patent": "US10280164",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 16,
+   "n_compounds": 16
+  },
+  {
+   "patent": "US10329273",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 24,
+   "n_compounds": 24
+  },
+  {
+   "patent": "US10376513",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 418,
+   "n_compounds": 360
+  },
+  {
+   "patent": "US10478424",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 2922,
+   "n_compounds": 982
+  },
+  {
+   "patent": "US10543183",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 3,
+   "n_compounds": 2
+  },
+  {
+   "patent": "US10544120",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 343,
+   "n_compounds": 343
+  },
+  {
+   "patent": "US10626094",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 412,
+   "n_compounds": 412
+  },
+  {
+   "patent": "US10654855",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 133,
+   "n_compounds": 69
+  },
+  {
+   "patent": "US10660877",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 2542,
+   "n_compounds": 860
+  },
+  {
+   "patent": "US10676438",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 25,
+   "n_compounds": 11
+  },
+  {
+   "patent": "US10689373",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 308,
+   "n_compounds": 154
+  },
+  {
+   "patent": "US10709712",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 2592,
+   "n_compounds": 1111
+  },
+  {
+   "patent": "US10710980",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US10722495",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 51,
+   "n_compounds": 51
+  },
+  {
+   "patent": "US10730849",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 131,
+   "n_compounds": 54
+  },
+  {
+   "patent": "US10730877",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 3210,
+   "n_compounds": 1073
+  },
+  {
+   "patent": "US10953012",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 361,
+   "n_compounds": 198
+  },
+  {
+   "patent": "US10961236",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 249,
+   "n_compounds": 63
+  },
+  {
+   "patent": "US11053244",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 3210,
+   "n_compounds": 1073
+  },
+  {
+   "patent": "US11053246",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US11136320",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 50,
+   "n_compounds": 16
+  },
+  {
+   "patent": "US11407754",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 24,
+   "n_compounds": 11
+  },
+  {
+   "patent": "US11420968",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 2241,
+   "n_compounds": 664
+  },
+  {
+   "patent": "US11453677",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 279,
+   "n_compounds": 84
+  },
+  {
+   "patent": "US11485738",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 528,
+   "n_compounds": 233
+  },
+  {
+   "patent": "US11547697",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US11548900",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 359,
+   "n_compounds": 137
+  },
+  {
+   "patent": "US11613531",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 947,
+   "n_compounds": 338
+  },
+  {
+   "patent": "US11649247",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 111,
+   "n_compounds": 14
+  },
+  {
+   "patent": "US11691950",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US11708332",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 72,
+   "n_compounds": 59
+  },
+  {
+   "patent": "US11752149",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 47,
+   "n_compounds": 35
+  },
+  {
+   "patent": "US11884671",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 416,
+   "n_compounds": 52
+  },
+  {
+   "patent": "US12011444",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 2152,
+   "n_compounds": 1076
+  },
+  {
+   "patent": "US12281080",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 61,
+   "n_compounds": 18
+  },
+  {
+   "patent": "US12351648",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 44,
+   "n_compounds": 19
+  },
+  {
+   "patent": "US20240140938",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 142,
+   "n_compounds": 142
+  },
+  {
+   "patent": "US20240287022",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 199,
+   "n_compounds": 199
+  },
+  {
+   "patent": "US20240335431",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 481,
+   "n_compounds": 79
+  },
+  {
+   "patent": "US8669266",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US8722692",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 732,
+   "n_compounds": 732
+  },
+  {
+   "patent": "US8933228",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 164,
+   "n_compounds": 33
+  },
+  {
+   "patent": "US9051265",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 128,
+   "n_compounds": 87
+  },
+  {
+   "patent": "US9079880",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 163,
+   "n_compounds": 112
+  },
+  {
+   "patent": "US9221791",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US9233167",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US9265734",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 47,
+   "n_compounds": 10
+  },
+  {
+   "patent": "US9303033",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 4292,
+   "n_compounds": 1276
+  },
+  {
+   "patent": "US9315492",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 29,
+   "n_compounds": 21
+  },
+  {
+   "patent": "US9328118",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US9428511",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 152,
+   "n_compounds": 76
+  },
+  {
+   "patent": "US9593097",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 922,
+   "n_compounds": 509
+  },
+  {
+   "patent": "US9605006",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 14,
+   "n_compounds": 14
+  },
+  {
+   "patent": "US9616063",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 45,
+   "n_compounds": 15
+  },
+  {
+   "patent": "US9656988",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US9670157",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 253,
+   "n_compounds": 125
+  },
+  {
+   "patent": "US9670201",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 209,
+   "n_compounds": 105
+  },
+  {
+   "patent": "US9670210",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 116,
+   "n_compounds": 116
+  },
+  {
+   "patent": "US9670212",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US9682141",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 0,
+   "n_compounds": 0
+  },
+  {
+   "patent": "US9708336",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 5037,
+   "n_compounds": 837
+  },
+  {
+   "patent": "US9730931",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 148,
+   "n_compounds": 71
+  },
+  {
+   "patent": "US9732088",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 168,
+   "n_compounds": 41
+  },
+  {
+   "patent": "US9763922",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 1876,
+   "n_compounds": 386
+  },
+  {
+   "patent": "US9765018",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 510,
+   "n_compounds": 330
+  },
+  {
+   "patent": "US9783488",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 214,
+   "n_compounds": 107
+  },
+  {
+   "patent": "US9801872",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 35,
+   "n_compounds": 35
+  },
+  {
+   "patent": "US9914735",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 408,
+   "n_compounds": 79
+  },
+  {
+   "patent": "US9949975",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 112,
+   "n_compounds": 29
+  }
+ ],
+ "retained_with_shipped_artifact": [
+  {
+   "patent": "US10214537",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 1263,
+   "n_compounds": 827
+  },
+  {
+   "patent": "US10246453",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 1146,
+   "n_compounds": 332
+  },
+  {
+   "patent": "US10273259",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 881,
+   "n_compounds": 881
+  },
+  {
+   "patent": "US10544143",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 3210,
+   "n_compounds": 1073
+  },
+  {
+   "patent": "US10899738",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 386,
+   "n_compounds": 385
+  },
+  {
+   "patent": "US10919885",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 930,
+   "n_compounds": 463
+  },
+  {
+   "patent": "US11254686",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 2027,
+   "n_compounds": 644
+  },
+  {
+   "patent": "US11286268",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 1830,
+   "n_compounds": 1828
+  },
+  {
+   "patent": "US11292791",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 1917,
+   "n_compounds": 962
+  },
+  {
+   "patent": "US11312727",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 1092,
+   "n_compounds": 382
+  },
+  {
+   "patent": "US11566007",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 2956,
+   "n_compounds": 739
+  },
+  {
+   "patent": "US20230365584A1",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 99,
+   "n_compounds": 99
+  },
+  {
+   "patent": "US20240335431A1",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 481,
+   "n_compounds": 79
+  },
+  {
+   "patent": "US8952177",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 359,
+   "n_compounds": 190
+  },
+  {
+   "patent": "US9302989",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 1658,
+   "n_compounds": 1523
+  },
+  {
+   "patent": "US9394297",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 1249,
+   "n_compounds": 460
+  },
+  {
+   "patent": "US9694016",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 2592,
+   "n_compounds": 1111
+  },
+  {
+   "patent": "US9718790",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 2266,
+   "n_compounds": 1024
+  },
+  {
+   "patent": "US9718825",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 967,
+   "n_compounds": 658
+  },
+  {
+   "patent": "US9745328",
+   "journal_head": "0029-d05a02cf",
+   "n_usable": 3157,
+   "n_compounds": 911
+  }
+ ],
+ "why": "77 snapshots pinned answers for patents with no shipped artifact. They masked change and nothing consumed them. Regenerable by re-running the patent; journal_head recorded here so the producing code is knowable."
+}

@@ -283,6 +283,42 @@ rm -rf output_v2/images/$PID
 
 There is **no automatic cache invalidation.** The versioned step-cache DAG that `config.STEP_VERSIONS` used to describe was only ever wired to the held-out Markush step — bumping a step version did nothing for any live route, so both it and `core/step_cache.py` are gone. Every cache above is cleared by hand.
 
+## Backtrace every result to the code that produced it
+
+**A number is not a result until you can name the function that emitted it and
+the artifact it was read from.** This is the most expensive lesson in the
+project's history, and every instance below was caught only after the number
+had already been used to make a decision:
+
+- **"37,593 compounds"** was computed by `scripts/eval/pipeline_bench` and
+  `corpus_export`, which each recompute a union of the raw parser and the
+  repair rules *at measurement time*. The pipeline never produced it. The
+  shipped `assay_tables.json` held 11,344 compounds.
+- **The "shipped artifact" was a restored backup.** Fourteen files shared one
+  mtime to the second and were byte-identical to `docs/backups/` — a snapshot
+  of pre-XML-switch state, restored by hand, while HEAD was several commits
+  past it. Every comparison against it silently crossed a code boundary.
+- **"4,568 missed references"** was measured across a reference set spanning
+  far more patents than the corpus it was quoted against. Most of the "misses"
+  were patents that had never been processed.
+- **`value_check`'s `no_record` measures presence, not correctness**, and its
+  bucketing takes the *best* pairing over a cross-product — so the metric
+  improves monotonically as rows are added, regardless of whether they are
+  right. It cannot validate a change that adds rows.
+
+The habit that catches all four, before quoting anything:
+
+1. **Name the producer.** Which function wrote this file, or which script
+   recomputed it? If a number comes from an eval script, say so — it is not
+   what the pipeline ships.
+2. **Check the artifact's provenance.** `ls -la` it. An mtime shared to the
+   second across many files is a copy, not a run.
+3. **State the population and the denominator.** "43%" is meaningless without
+   both, and comparing two numbers drawn from different populations is the
+   single most common error here.
+4. **Ask whether the metric can fail.** A scorer that cannot get worse when
+   you add data is not measuring the thing you changed.
+
 ## Audit wiring before reporting any number
 
 Components that look like they're firing but aren't have burned hours here repeatedly — the image pipeline absent from benchmarks, the table parser bypassed, a Markush step producing 0 because US9718825's drawn structures are R-group fragments rather than molecules.

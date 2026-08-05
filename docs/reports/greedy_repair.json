@@ -101,9 +101,9 @@
  ],
  "candidates": [
   {
-   "label": "US9695181:_MEAN_SD,_VALUE_PAT,_CID_CORE",
-   "target": "US9695181",
-   "diagnosis": "The data rows are now correctly in the body (7 rows, 4 CID matches). The remaining failure is `parse_value` returning None for cells like \"3.0 \u00b1 1.0*\" and \"572**\". `_MEAN_SD` fails because the trailing `*` or `**` is not consumed (the pattern ends at `$` before the asterisks). `_VALUE_PAT` fails on \"572**\" for the same reason \u2014 the trailing `**` is outside the pattern. Both regexes need a trailing",
+   "label": "US11365191:extract_from_tables",
+   "target": "US11365191",
+   "diagnosis": "This table is inverted: the pIC50 range (e.g. \">9\", \"8-9\") is the row key in column 0, and column 1 holds a comma-separated list of compound example numbers that spans multiple continuation rows with a blank first column. The current code classifies column 0 as ASSAY and column 1 as CID, but _CID_PAT never matches a long comma-separated list like \"3, 18, 20, 25, 27, ...\". The fix is in `extract_fr",
    "modules": [
     "uspto_assays.py"
    ]
@@ -111,11 +111,11 @@
  ],
  "outcomes": [
   {
-   "label": "US9695181:_MEAN_SD,_VALUE_PAT,_CID_CORE",
+   "label": "US11365191:extract_from_tables",
    "accepted": true,
-   "why": "target +2, corpus +2",
-   "target_gain": 2,
-   "corpus_gain": 2,
+   "why": "target +186, corpus +260; US10208064 36->29 (19%)",
+   "target_gain": 186,
+   "corpus_gain": 260,
    "worst_patent": "",
    "worst_loss": 0.0
   }
