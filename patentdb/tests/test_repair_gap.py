@@ -777,6 +777,11 @@ def test_a_frozen_patent_is_not_re_derived_by_a_later_patch(tmp_path, monkeypatc
     from patentdb.core import config
     from patentdb.repair import snapshot
 
+    # Freezing is PAUSED corpus-wide (config.SNAPSHOT_FREEZE_ENABLED, default
+    # off) because pinned answers hid every repair made after they were taken.
+    # This test exercises the MECHANISM, so it opts in explicitly rather than
+    # inheriting a default that would make it vacuous.
+    monkeypatch.setattr(config, "SNAPSHOT_FREEZE_ENABLED", True)
     monkeypatch.setattr(snapshot, "SNAPSHOT_DIR", tmp_path / "snap")
 
     class R:

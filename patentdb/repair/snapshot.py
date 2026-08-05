@@ -79,6 +79,11 @@ def freeze(patent_id: str, records) -> dict | None:
     could never be seen downstream, because the snapshot would go on reporting
     the failure it was taken during.
     """
+    if not getattr(config, "SNAPSHOT_FREEZE_ENABLED", False):
+        # PAUSED — see config.SNAPSHOT_FREEZE_ENABLED. Freezing while the
+        # extraction is still being repaired hides every fix behind the answer
+        # that was pinned before it.
+        return None
     recs = list(records)
     if not any(getattr(r, "is_usable", False) for r in recs):
         logger.info("snapshot: %s produced nothing — not freezing a failure",

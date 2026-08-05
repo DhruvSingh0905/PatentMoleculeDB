@@ -162,6 +162,15 @@ RULE_JOURNAL = OUTPUT_DIR / "rule_adoption_journal.jsonl"
 # The same trade as PARSER_REPAIR_APPLY, one tier up: a fix that waits on a
 # human is a queue, and the gap costs records while it waits. Safety is the
 # journal and the revert, not permission.
+# Snapshot freezing — PAUSED. `repair/snapshot.freeze` pins a patent's answer
+# when it is processed so later patches cannot retroactively change it. That is
+# the right behaviour for a settled corpus and the wrong one while the corpus is
+# being repaired: 97 snapshots were found pinning answers at a single journal
+# head, 77 of them for patents with no shipped artifact at all, and every fix
+# made afterwards was invisible on the patents it was meant to help. Re-enable
+# when the extraction is stable and the numbers are trusted.
+SNAPSHOT_FREEZE_ENABLED = os.environ.get("SNAPSHOT_FREEZE", "0") == "1"
+
 REPAIR_AUTOHEAL = os.environ.get("REPAIR_AUTOHEAL", "1") == "1"
 
 # Distinct CAPABILITIES bought per process, not per patent. A capability patch
