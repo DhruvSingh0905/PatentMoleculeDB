@@ -356,10 +356,6 @@ def test_d4_assay_result_carries_provenance():
 
 # ── D5 ────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason=(
-    "US10544143 TLR columns are rotated by one in the shipped path; "
-    "see output_v2/text_extraction/US10544143/assay_tables.json vs "
-    "sources/uspto_assays.extract_from_patent"))
 def test_d5_us10544143_tlr_columns_are_not_shifted():
     """The shipped values for US10544143 are one column to the right.
 
@@ -466,10 +462,6 @@ def _is_retention_time(name: str) -> bool:
                 and _RETENTION.search(name or ""))
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "864 shipped rows file an HPLC retention time as an assay; "
-    "see sources/uspto_assays.py column classification and "
-    "output_v2/text_extraction/US10273259/assay_tables.json"))
 def test_d7_retention_time_is_not_filed_as_an_assay():
     """A retention time is a chromatography artefact, not a measurement.
 

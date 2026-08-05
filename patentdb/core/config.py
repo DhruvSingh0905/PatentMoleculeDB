@@ -70,6 +70,27 @@ BDB_REFERENCE_TSV = Path(os.environ.get("BDB_REFERENCE_TSV", "")) if os.environ.
 # regression debugging or cost-controlled re-runs.
 HARVEST_BURST_ENABLED = os.environ.get("HARVEST_BURST", "1") == "1"
 
+# Regenerate missing MinerU markdown by SHELLING OUT TO OCR.
+#
+# `process_patent._resolve_text_sources` runs MinerU whenever a patent has no
+# `page_*.md` on disk. Its own comment says "one-time, ~5-10 min", and a stack
+# sample caught it: 3,317 of 3,335 samples blocked in `subprocess.communicate`
+# under `run_mineru_for_patent`. Seven corpus patents lack that markdown, so a
+# corpus run spends roughly an hour inside OCR.
+#
+# That is often not worth it. The description source is Google Patents for
+# every patent in the corpus (`load_patent_description` returns google_html
+# 22/22), and assay values come from the USPTO XML CALS. What MinerU output
+# still feeds is `output_validator`, which corroborates a (cid, value) against
+# a MinerU `<table>` block OR the GP flat description — either rescues a row,
+# so its absence weakens but does not break the check.
+#
+# DEFAULT OFF. Shelling out to an OCR engine is not something an extraction
+# run should do implicitly: it costs 5-10 min per patent, loads GBs of model
+# weights, and produces a tier-3 source that `load_patent_description` ranks
+# BELOW the Google Patents HTML it already has. Set MINERU_OCR=1 to allow it.
+MINERU_OCR_ENABLED = os.environ.get("MINERU_OCR", "0") == "1"
+
 # ── Message Batches API (50% off, async) ──────────────────────────
 # When True, HARVEST burst collects all Agent 1 / Agent 2 / Agent 2b
 # prompts for a patent up front, submits them as one Message Batch,

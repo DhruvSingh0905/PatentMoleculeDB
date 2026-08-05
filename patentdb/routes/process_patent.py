@@ -1394,7 +1394,7 @@ def _resolve_text_sources(patent_id: str) -> tuple[str, str, str, str]:
     # extraction continues on GP description alone.
     pages_dir = config.DATA_DIR / patent_id / "all_pages"
     has_pages = pages_dir.exists() and any(pages_dir.glob("page_*.md"))
-    if not has_pages:
+    if not has_pages and config.MINERU_OCR_ENABLED:
         try:
             from ..core.mineru_runner import run_mineru_for_patent
             logger.info(
