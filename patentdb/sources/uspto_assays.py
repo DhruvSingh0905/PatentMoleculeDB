@@ -1486,6 +1486,206 @@ def _choose_inherited(candidates: list[list[str]], own_block: list[str] | None,
     return best if best_score > 0 else pool[-1 if own_block is None else 0]
 
 
+# ── repeating column groups ───────────────────────────────────────
+
+# Relaxed CID pattern: accepts bare integers with optional trailing period,
+# e.g. "4." or "12" — these appear when compound numbers are listed without
+# a prefix letter. The standard _CID_PAT handles alphanumeric ids like "Cpd-4".
+_BARE_INT_CID = re.compile(r'^\d+\.?$')
+
+# Unicode typographic quotation marks that some patents wrap around compound
+# ids, e.g. “C1” (U+201C LEFT DOUBLE QUOTATION MARK / U+201D RIGHT
+# DOUBLE QUOTATION MARK). Stripping these before id matching lets the
+# standard _CID_PAT recognise the underlying id.
+_TYPO_QUOTES = '“”‘’«»„‟'
+
+# Both constants above were local to `extract_from_tables`; they are module
+# level now because `_column_groups` asks the same question of the same cells
+# and a second copy of an id pattern is a second place to get it wrong.
+
+_WS = re.compile(r"\s+")
+_DIGITS = re.compile(r"\d+")
+
+# Evidence thresholds for calling a column an id column. Two fractions, not
+# one, because they answer different questions and a single number cannot do
+# both jobs. US11136320 TABLE-US-00011 is why: its second id column ends with
+# "Reference compound (roblitinib)" spelled down three XML rows, so only 11 of
+# its 14 non-empty cells (0.79) parse as ids — while 11 of the 11 that DO parse
+# are the same family. A single 0.8 floor over all cells declined that table;
+# the split fraction accepts it and still declines a column of prose.
+_GROUP_ID_FRACTION = 0.6    # of the non-empty cells, how many parse as an id
+_GROUP_FAMILY_PURITY = 0.9  # of the ids that parse, how many share one family
+_GROUP_MIN_IDS = 3          # absolute floor — two rows is a coincidence
+
+
+def _id_family(text: str) -> str:
+    """The non-numeric skeleton of an id: `I-0268` and `I-1607` are both `I-#`.
+
+    Zero-padding and digit count vary freely inside one column (US9718790 runs
+    `I-0020` through `I-2284`), so the digits carry no family information and
+    the prefix and separators carry all of it. The label is stripped first
+    because `normalize_cid` strips it too — `compound 64` and `64` are the same
+    compound written twice, and must be the same family.
+    """
+    s = _CID_LABEL.sub("", (text or "").strip().strip(_TYPO_QUOTES)).strip()
+    return _DIGITS.sub("#", s)
+
+
+def _id_column_family(rows, i: int, val_idx: list[int] | None = None) -> str | None:
+    """The family this column's ids belong to, or None if it holds no ids.
+
+    `val_idx` scopes the denominator to the rows that are DATA rows for this
+    group — those whose own value cells are not all blank. Without it the
+    fraction is measured over every non-empty cell in the column, and a
+    multi-row label spelled down the column vetoes a table it has no bearing
+    on: US11136320 TABLE-US-00011 trails `Reference compound (roblitinib)`
+    across three XML rows, which scored 3 ids of 6 cells = 0.50 against a 0.60
+    floor and declined a split whose header repeats verbatim. Two of those
+    three cells sit beside an empty value, so they are not rows this group
+    measures anything in. The third — `Reference` with a value — still counts
+    against the fraction, which is right: it is a real cell in a real data row
+    that is not an id, and it is what the 0.60 floor is for.
+    """
+    if val_idx:
+        rows = [r for r in rows
+                if any(len(r) > v and r[v].text.strip() for v in val_idx)]
+    vals = [r[i].text.strip() for r in rows if len(r) > i and r[i].text.strip()]
+    ids = [v for v in vals
+           if _CID_PAT.match(v.strip(_TYPO_QUOTES)) or _BARE_INT_CID.match(v)]
+    if len(ids) < _GROUP_MIN_IDS or len(ids) < len(vals) * _GROUP_ID_FRACTION:
+        return None
+    fams: dict[str, int] = {}
+    for v in ids:
+        f = _id_family(v)
+        fams[f] = fams.get(f, 0) + 1
+    fam = max(fams, key=lambda k: fams[k])
+    return fam if fams[fam] >= len(ids) * _GROUP_FAMILY_PURITY else None
+
+
+def _column_groups(cols: list[Column], rows) -> list[tuple[Column, list[Column]]] | None:
+    """Repeating `(id, value…)` column groups, or None for an ordinary table.
+
+    A patent with a long list of one-number results does not print a thousand
+    two-column rows; it pours the list into N side-by-side copies of the same
+    pair. US9718790 TABLE-US-00569..580 head six columns
+    `Compound No. | P2X3 IC50 (μM)` three times over, and every row is three
+    compounds:
+
+        I-0268  0.861   I-0943  0.061   I-1607  0.035
+
+    Read as one compound with three values that is wrong twice — I-268 scores
+    the median 0.061 against BindingDB's 861 nM, and I-943 and I-1607 get no
+    record at all, swallowed as values of their neighbour.
+
+    The whole difficulty is that a FALSE positive is worse than the under-read
+    it replaces: splitting an ordinary row invents compounds and files real
+    measurements under them, and nothing downstream can detect that. So the
+    evidence required is deliberately lopsided.
+
+      - the header must repeat EXACTLY, and every header in the group must be
+        stated. Not "similar" — identical after whitespace folding. This is
+        what keeps US10125101's `Example in this invention | IC50 | Example in
+        WO 2013/178575 | IC50` whole: it is a repeating group by shape, but the
+        second column numbers a DIFFERENT DOCUMENT's examples, and splitting it
+        would file WO 2013/178575's compound 17 as this patent's. The patent
+        says so in the header, and only an exact-match test hears it.
+      - the classified KINDS must repeat too, with exactly one id column and at
+        least one assay column per group. `No. | Structure | No. | Structure`
+        has nothing to split; `Cpd | IC50 | IC50` has no second id.
+      - and the body must agree: every repeat's id column must actually hold
+        ids, of the same family as the first group's. A merged or inherited
+        header can make two columns read alike when the second holds prose.
+
+    Body disagreement returns None rather than trying a coarser tiling. If the
+    strongest header evidence available is contradicted by the cells, a weaker
+    reading of the same header is not a better answer.
+    """
+    n = len(cols)
+    if n < 4:
+        return None
+    hdr = [_WS.sub(" ", (c.header or "")).strip().casefold() for c in cols]
+    kinds = [c.kind for c in cols]
+    body = [r for r in rows if not _is_spacer(r)]
+    if len(body) < _GROUP_MIN_IDS:
+        return None
+
+    for g in range(2, n // 2 + 1):
+        if n % g:
+            continue
+        reps = n // g
+        # A blank header tiles trivially, and trivial is not evidence.
+        if not all(hdr[j] for j in range(g)):
+            continue
+        if any(hdr[k * g + j] != hdr[j] for k in range(1, reps) for j in range(g)):
+            continue
+        if any(kinds[k * g + j] != kinds[j] for k in range(1, reps) for j in range(g)):
+            continue
+        offs = [j for j in range(g) if kinds[j] == CID]
+        if len(offs) != 1 or not any(kinds[j] == ASSAY for j in range(g)):
+            continue
+
+        off = offs[0]
+        assay_offs = [j for j in range(g) if kinds[j] == ASSAY]
+        fams = []
+        for k in range(reps):
+            fam = _id_column_family(body, k * g + off,
+                                    [k * g + j for j in assay_offs])
+            if fam is None:
+                return None
+            fams.append(fam)
+        if len(set(fams)) != 1:
+            return None
+        return [(cols[k * g + off],
+                 [cols[k * g + j] for j in range(g) if kinds[j] == ASSAY])
+                for k in range(reps)]
+    return None
+
+
+def _extract_column_groups(table: Table, groups, rows) -> list[AssayRecord]:
+    """Read a repeating-group table: one row in, one record per (id, value).
+
+    Deliberately none of the recovery machinery `extract_from_tables` carries —
+    no CID fill-down, no name-as-id buffering, no embedded-id scan. Every one of
+    those infers an id for a row that does not state one, and in a table whose
+    id columns interleave with value columns a wrong inference does not lose a
+    record, it files a real measurement under the wrong compound. A group whose
+    id cell is blank or unreadable is skipped, which is the trade this module
+    makes everywhere: a missing assay is recoverable, a misattributed one is not.
+    """
+    out: list[AssayRecord] = []
+    for row in rows:
+        if _is_spacer(row):
+            continue
+        for cid_col, assay_cols in groups:
+            if len(row) <= cid_col.index:
+                continue
+            raw = row[cid_col.index].text.strip().strip(_TYPO_QUOTES)
+            if not raw or not (_CID_PAT.match(raw) or _BARE_INT_CID.match(raw)):
+                continue
+            cid = normalize_cid(raw)
+            if not cid:
+                continue
+            for c in assay_cols:
+                if len(row) <= c.index:
+                    continue
+                parsed = parse_value(row[c.index].text)
+                if not parsed:
+                    continue
+                out.append(AssayRecord(
+                    cid=cid,
+                    assay_name=c.assay_name or c.header or "unnamed assay",
+                    value_numeric=parsed.get("value_numeric"),
+                    qualifier=parsed.get("qualifier"),
+                    unit=parsed.get("unit") or c.unit,
+                    n_runs=parsed.get("n_runs"),
+                    letter_grade=parsed.get("letter_grade"),
+                    value_text=parsed.get("value_text", ""),
+                    table_id=table.table_id,
+                    column_header=c.header,
+                ))
+    return out
+
+
 def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     """Turn a patent's CALS tables into assay records.
 
@@ -1545,11 +1745,7 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
     by_table_id: dict[str, list[str]] = {}
     unit_by_table_id: dict[str, str] = {}
 
-    # Relaxed CID pattern: accepts bare integers with optional trailing period,
-    # e.g. "4." or "12" — these appear when compound numbers are listed without
-    # a prefix letter. The standard _CID_PAT handles alphanumeric ids like "Cpd-4".
     import re as _re
-    _BARE_INT_CID = _re.compile(r'^\d+\.?$')
 
     # Pattern to extract a compound identifier embedded in a longer text cell,
     # e.g. "Compound 1.001: 1H NMR ..." → "Compound 1.001".  Also matches
@@ -1586,12 +1782,6 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
         r'chloro|bromo|fluoro|ethyl|propyl|cyclo|oxo|amino|nitro|'
         r'benz|piperid|piperaz|pyridine|pyrazol|oxazol|thiazol)',
         _re.IGNORECASE)
-
-    # Unicode typographic quotation marks that some patents wrap around compound
-    # ids, e.g. \u201cC1\u201d (U+201C LEFT DOUBLE QUOTATION MARK / U+201D RIGHT
-    # DOUBLE QUOTATION MARK). Stripping these before id matching lets the
-    # standard _CID_PAT recognise the underlying id.
-    _TYPO_QUOTES = '\u201c\u201d\u2018\u2019\u00ab\u00bb\u201e\u201f'
 
     def _is_chem_name(s: str) -> bool:
         """Does this string look like a chemical/IUPAC compound name?"""
@@ -1635,6 +1825,26 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
         # for the embedded-assay scan below.
         prose_cols = [c for c in cols if c.kind in (NMR, MS)]
         if cid_col is None or (not assay_cols and not prose_cols):
+            continue
+
+        # Repeating `(id, value)` column groups get their own reader, BEFORE
+        # any of the recovery machinery below runs. `_column_groups` returns
+        # None for an ordinary table, so this is inert on every layout that
+        # is not a side-by-side list.
+        #
+        # It has to come first because the machinery below is built on the
+        # assumption that a row is one compound: CID fill-down, name-as-id
+        # buffering and the embedded-id scan all infer an id for a row that
+        # does not state one. On a table whose id columns interleave with
+        # value columns that assumption is false, and a wrong inference there
+        # does not lose a record — it files a real measurement under the
+        # wrong compound. US9718790 read `I-0268 0.861 I-0943 0.061 I-1607
+        # 0.035` as I-268 = {0.861, 0.061, 0.035}, taking the median 0.061
+        # against BindingDB's 861 nM, while I-943 and I-1607 got no record at
+        # all — one wrong value and two compounds swallowed, from one row.
+        groups = _column_groups(cols, data_rows)
+        if groups:
+            out.extend(_extract_column_groups(t, groups, data_rows))
             continue
 
         # CID fill-down: carry the last-seen CID forward within one table so
