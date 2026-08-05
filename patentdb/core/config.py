@@ -91,6 +91,23 @@ HARVEST_BURST_ENABLED = os.environ.get("HARVEST_BURST", "1") == "1"
 # BELOW the Google Patents HTML it already has. Set MINERU_OCR=1 to allow it.
 MINERU_OCR_ENABLED = os.environ.get("MINERU_OCR", "0") == "1"
 
+# Strategy 5's paid IUPAC->SMILES recovery batch (process_patent, the
+# `opsin_failures` arm). DEFAULT OFF.
+#
+# Measured corpus-wide yield: at most 57 distinct OPSIN-failing names ever
+# produced a structure through it. Against that it cost ~$0.23/patent and,
+# worse, minutes of wall-clock per patent: it calls `call_claude_text_batch`
+# unconditionally, so a run submits TWO requests to the async Message Batches
+# API and polls them against a 1800s cap. Batching is ~50% cheaper per token
+# and pays for itself over hundreds of requests; over two it is strictly worse
+# than a synchronous call that would return in seconds.
+#
+# It is also the only live caller of the batch API once HARVEST is off, and it
+# never consulted `LLM_BATCH_ENABLED` — the flag is checked in exactly one
+# place, `harvest/orchestrator.py`. So with the burst off, LLM_BATCH controlled
+# nothing and this path batched regardless.
+STRATEGY5_LLM_ENABLED = os.environ.get("STRATEGY5_LLM", "0") == "1"
+
 # ── Message Batches API (50% off, async) ──────────────────────────
 # When True, HARVEST burst collects all Agent 1 / Agent 2 / Agent 2b
 # prompts for a patent up front, submits them as one Message Batch,

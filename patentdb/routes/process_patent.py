@@ -830,6 +830,13 @@ def _strategy5_after_classification(
         )
 
     n_llm_recovered = 0
+    if opsin_failures and not config.STRATEGY5_LLM_ENABLED:
+        logger.info(
+            "%s: Strategy 5 LLM recovery disabled — %d OPSIN failures left "
+            "unresolved (STRATEGY5_LLM=1 to enable)",
+            patent_id, len(opsin_failures),
+        )
+        opsin_failures = []
     if opsin_failures:
         from ..core.api_client import call_claude_text_batch
         from ..core.iupac_to_smiles import SMILES_FALLBACK_PROMPT

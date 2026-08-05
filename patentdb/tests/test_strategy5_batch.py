@@ -85,6 +85,12 @@ def _no_paid_calls(monkeypatch):
 
 
 def _drive_batch(monkeypatch, new_pairs, *, opsin_parses=(), batch_reply=None):
+    # These tests grade what the paid batch DOES when it runs, so they enable
+    # it explicitly. It ships disabled (`STRATEGY5_LLM`, default 0) because its
+    # measured corpus yield is at most 57 structures against minutes of batch
+    # latency per patent — but "off by default" is a shipping decision, not a
+    # reason to stop testing the behaviour.
+    monkeypatch.setattr(pp.config, "STRATEGY5_LLM_ENABLED", True, raising=False)
     """Run `_strategy5_after_classification` over `new_pairs` and return
     `(requested_names, example_index)`.
 
