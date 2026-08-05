@@ -91,6 +91,7 @@ def _drive_batch(monkeypatch, new_pairs, *, opsin_parses=(), batch_reply=None):
     # latency per patent — but "off by default" is a shipping decision, not a
     # reason to stop testing the behaviour.
     monkeypatch.setattr(pp.config, "STRATEGY5_LLM_ENABLED", True, raising=False)
+    monkeypatch.setattr(pp.config, "IUPAC_BURST_ENABLED", True, raising=False)
     """Run `_strategy5_after_classification` over `new_pairs` and return
     `(requested_names, example_index)`.
 

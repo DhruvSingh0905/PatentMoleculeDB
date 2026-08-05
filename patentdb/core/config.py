@@ -108,6 +108,23 @@ MINERU_OCR_ENABLED = os.environ.get("MINERU_OCR", "0") == "1"
 # nothing and this path batched regardless.
 STRATEGY5_LLM_ENABLED = os.environ.get("STRATEGY5_LLM", "0") == "1"
 
+# The broad IUPAC burst (`harvest/iupac_orchestrator.iupac_burst`, called from
+# Strategy 5 with force=True). DEFAULT OFF.
+#
+# Distinct from the HARVEST assay burst and from Strategy 5's OPSIN-failure
+# batch despite the shared naming. It uses the synchronous cached
+# `call_claude_text`, so it issues no batches — which is why a run with every
+# other tier disabled still showed $0.203/patent and zero batch heartbeats.
+#
+# It is the one LLM path that DOES honour `patent_lm_exceeded`, checking it in
+# four places, which is why it stops dead on the $0.20 cap instead of running
+# to the $2.13 the assay burst reached uncapped.
+#
+# Off by default so the pipeline has a deterministic $0 baseline. Every tier is
+# then measured as a marginal contribution against that baseline rather than
+# against another tier's output. IUPAC_BURST=1 restores it.
+IUPAC_BURST_ENABLED = os.environ.get("IUPAC_BURST", "0") == "1"
+
 # ── Message Batches API (50% off, async) ──────────────────────────
 # When True, HARVEST burst collects all Agent 1 / Agent 2 / Agent 2b
 # prompts for a patent up front, submits them as one Message Batch,

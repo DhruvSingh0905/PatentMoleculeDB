@@ -733,7 +733,15 @@ def _strategy5_after_classification(
         for cid, nm in prelib_pairs.items():
             existing_pairs_for_burst.setdefault(cid, nm)
 
-    new_pairs = iupac_burst(
+    if not config.IUPAC_BURST_ENABLED:
+        logger.info(
+            "%s: iupac_burst disabled (IUPAC_BURST=1 to enable) — Strategy 5 "
+            "contributes pattern-library pairs only, at zero LLM cost",
+            patent_id,
+        )
+        new_pairs = {}
+    else:
+        new_pairs = iupac_burst(
         patent_id=patent_id,
         text=text,
         existing_pairs=existing_pairs_for_burst,
@@ -741,7 +749,7 @@ def _strategy5_after_classification(
         cost_tracker=cost_tracker,
         force=True,  # bypass gap check; we want to extract from this patent
         library=lib,
-    )
+        )
 
     # ── Post-LLM library re-application ──
     # iupac_burst registers any LLM-discovered patterns into the library
