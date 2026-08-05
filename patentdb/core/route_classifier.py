@@ -174,12 +174,16 @@ Patent excerpt (truncated to 2000 chars):
 ---END---
 
 Your one-token answer:"""
-    response = call_claude_text(
-        prompt=prompt,
-        model=config.DEFAULT_MODEL,
-        patent_id=patent_id,
-        max_tokens=20,
-    )
+    from . import config as _cfg
+    if not _cfg.LLM_RECOVERY_ENABLED:
+        response = None
+    else:
+        response = call_claude_text(
+            prompt=prompt,
+            model=config.DEFAULT_MODEL,
+            patent_id=patent_id,
+            max_tokens=20,
+        )
     if response is None:
         # API failure — default to text (safe; HARVEST still runs)
         return RouteDecision(

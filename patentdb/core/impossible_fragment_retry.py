@@ -195,11 +195,15 @@ def _attempt1_focused(
         return cached.get("iupac", "")
     from .api_client import call_claude_text
     prompt = _FOCUSED_PROMPT.format(cid=cid, chunk=chunk)
-    response = call_claude_text(
-        prompt=prompt,
-        patent_id=patent_id,
-        max_tokens=300,
-    )
+    from . import config as _cfg
+    if not _cfg.LLM_RECOVERY_ENABLED:
+        response = None
+    else:
+        response = call_claude_text(
+            prompt=prompt,
+            patent_id=patent_id,
+            max_tokens=300,
+        )
     iupac = ""
     if response and "UNKNOWN" not in response.upper()[:30]:
         # Take first line; strip trailing punctuation

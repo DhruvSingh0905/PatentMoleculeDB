@@ -134,11 +134,15 @@ def _llm_confirm(prefix: str, samples: list[str], patent_id: str) -> dict[str, A
         f"patent uses any (e.g., [\"Z\", \"Z-\", \"Cpd Z\"])."
     )
     try:
-        raw = call_claude_text(
-            prompt,
-            patent_id=patent_id,
-            max_tokens=300,
-        )
+        from . import config as _cfg
+        if not _cfg.LLM_RECOVERY_ENABLED:
+            raw = None
+        else:
+            raw = call_claude_text(
+                prompt,
+                patent_id=patent_id,
+                max_tokens=300,
+            )
         if not raw:
             return {"is_compound_id": False, "surface_forms": [], "reason": "no llm response"}
         m = re.search(r"\{.*\}", raw, re.DOTALL)

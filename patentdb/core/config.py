@@ -125,6 +125,23 @@ STRATEGY5_LLM_ENABLED = os.environ.get("STRATEGY5_LLM", "0") == "1"
 # against another tier's output. IUPAC_BURST=1 restores it.
 IUPAC_BURST_ENABLED = os.environ.get("IUPAC_BURST", "0") == "1"
 
+# The remaining ad-hoc LLM callers, none of which had a flag. DEFAULT OFF.
+#
+#   route_classifier.py       classify_route()
+#   cid_prefix_discovery.py   compound-id prefix inference
+#   impossible_fragment_retry.py
+#   adaptive_extraction_cache.py
+#
+# Found while establishing a $0 baseline: with HARVEST, the cascade, Strategy 5
+# and the IUPAC burst all disabled, a run still cost $0.21/patent and hit the
+# cap. These four are why.
+#
+# `classify_route` is the clearest case. CLAUDE.md states the classifier is
+# INFORMATIONAL ONLY — `process_patent` runs the text branch for every patent
+# regardless of the label, because the old gate zeroed out real data. So the
+# call buys a string that changes no behaviour.
+LLM_RECOVERY_ENABLED = os.environ.get("LLM_RECOVERY", "0") == "1"
+
 # ── Message Batches API (50% off, async) ──────────────────────────
 # When True, HARVEST burst collects all Agent 1 / Agent 2 / Agent 2b
 # prompts for a patent up front, submits them as one Message Batch,
