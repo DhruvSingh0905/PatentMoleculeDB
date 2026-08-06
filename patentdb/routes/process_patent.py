@@ -1721,6 +1721,7 @@ def _collapse_cids_by_inchikey(
     Patent-agnostic. Eliminates the bug class where the same molecule
     appears under different cid keys depending on extraction path.
     """
+    import re as _re
     from collections import defaultdict
     # ── Pass A: orphan assay_tables cids → nearest example_index cid ──
     n_orphan_migrated = 0
@@ -1788,13 +1789,46 @@ def _collapse_cids_by_inchikey(
     # and 64 of them returned a row-less sibling under non-deterministic
     # dict iteration — exactly the −16 ``v2_has_ay`` regression we
     # observed earlier.
+    def _numeric_core(cid: str) -> str | None:
+        """The identifier's digits, ignoring prefix and zero-padding.
+
+        `GP107` -> `107`, `I-0020` -> `20`, `0020` -> `20`, `14` -> `14`.
+        None when the cid carries no digits at all (a name-as-id row).
+        """
+        m = _re.search(r"\d+", cid or "")
+        return (m.group(0).lstrip("0") or "0") if m else None
+
     n_collapsed = 0
+    n_refused = 0
     for ik, cids in ik_to_cids.items():
         if len(cids) < 2:
             continue
         canon = min(cids, key=_canon_rank)
+        canon_core = _numeric_core(canon)
         for c in cids:
             if c == canon:
+                continue
+            # SURFACE FORMS ONLY. This pass exists to join `GP107`/`107` and
+            # `I-0020`/`0020` — the SAME identifier written two ways, which is
+            # what the docstring above describes and every example in it.
+            # Sharing an InChIKey was used as the whole test, so it also merged
+            # DISTINCT example numbers whenever two of them resolved to the
+            # same structure.
+            #
+            # US8952177 lost 11 compounds that way: 190 -> 179, with the same
+            # 359 records redistributed rather than dropped. `14` was absorbed
+            # into `10`, `158` into `156`, and so on across 9 groups. Those are
+            # different compounds in the patent's own TABLE-US-00003 with
+            # different measurements — cid 10 Ki=0.0045 against cid 14
+            # Ki=0.056, cid 156 Ki=0.0068 against cid 158 Ki=0.27, a 40x
+            # difference merged onto one identifier.
+            #
+            # A shared InChIKey between two distinct example numbers is a real
+            # signal — a duplicate structure, or an upstream mis-assignment —
+            # but it is never licence to discard one of them. Refusals are
+            # counted so the signal stays visible instead of becoming silence.
+            if canon_core is None or _numeric_core(c) != canon_core:
+                n_refused += 1
                 continue
             if c in assay_tables:
                 assay_tables.setdefault(canon, []).extend(assay_tables.pop(c))
