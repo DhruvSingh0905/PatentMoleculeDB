@@ -319,6 +319,43 @@ The habit that catches all four, before quoting anything:
 4. **Ask whether the metric can fail.** A scorer that cannot get worse when
    you add data is not measuring the thing you changed.
 
+## Never form an independent hypothesis
+
+Read the data, trace the code, report what the data and the code actually say.
+Do not construct a plausible explanation and present it as a finding. If the
+evidence does not reach a conclusion, the conclusion is **"not determined"** —
+that is a complete answer, and the most likely story is not.
+
+This extends the backtrace rule above: *name the function and line that
+produced an observation, and the artifact it was read from, before stating a
+cause.* Three hypotheses stated as findings on 2026-08-05, all false, each
+costing a detour:
+
+- **"US10919885 is what's killing the background runs."** Inferred from it
+  being the patent in flight each time a run died. The next batch excluded it
+  and was killed on a different patent. The kill was following the *job* — the
+  harness reaping long-lived background work — not the work.
+- **"17.9% and `US11566007 80 → 0` exist nowhere in the repo."** Relayed from a
+  subagent without checking. Both are at `core/config.py:247`, written by this
+  project in commit `8b24855` earlier the *same day*, then cited back as
+  evidence for the decision they were written to justify. The claim was wrong;
+  the underlying figure is still unmeasured.
+- **"The prelib fix isn't taking effect."** Based on seeing zero
+  `prelib (burst off)` log lines. Logging was not at INFO in that run, so the
+  message could never have appeared. Row counts showed **+6,044**.
+
+The rule that catches all three:
+
+- **Prefer a direct measurement** — a stack sample, a row count against the
+  backup, flattened raw XML — over an inference from a log line, a process
+  listing, or a commit message. A `pgrep -f` that matches the shell wrapper
+  instead of the interpreter reports 0% CPU for a process at 99%.
+- **Absence of a signal is not evidence** unless you have verified the signal
+  could have appeared. Check the log level before concluding from a missing
+  log line.
+- **A subagent's claim is not evidence.** Verify it against the artifact or the
+  source before repeating it.
+
 ## Audit wiring before reporting any number
 
 Components that look like they're firing but aren't have burned hours here repeatedly — the image pipeline absent from benchmarks, the table parser bypassed, a Markush step producing 0 because US9718825's drawn structures are R-group fragments rather than molecules.
