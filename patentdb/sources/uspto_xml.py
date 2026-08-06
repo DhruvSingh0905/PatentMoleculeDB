@@ -249,14 +249,38 @@ def fetch_grant_xml(patent_id: str, *, refresh: bool = False) -> str:
 
 _TAG = re.compile(r"<[^>]+>")
 
+# The cell grammar and its two CALS span attributes, compiled once — `re.sub`
+# and `re.search` with a literal pattern hash the pattern string and look it up
+# in `re`'s module cache on every call, and `_parse_row` runs per row while
+# searching `namest`/`nameend` per CELL.
+_ENTRY = re.compile(r"<entry\b([^>]*?)/>|<entry\b([^>]*)>(.*?)</entry>", re.S)
+_NAMEST = re.compile(r'namest="(\w+)"')
+_NAMEEND = re.compile(r'nameend="(\w+)"')
+_NON_DIGIT = re.compile(r"\D")
+
 
 def _text(fragment: str) -> str:
     """Strip markup and normalize entities/whitespace within one cell."""
     # Keep sub/superscript content but drop the tags; patents use them for
     # units and charges (e.g. IC<sub>50</sub>, [M+H]<sup>+</sup>).
-    s = _TAG.sub("", fragment)
-    s = html.unescape(s)
-    return re.sub(r"\s+", " ", s).strip()
+    #
+    # `"<" in s` is a C-level memchr and `_TAG.sub` on a match-free string is a
+    # full backtracking scan, so the guard is strictly cheaper on the common
+    # cell, which is a bare number. The `&` guard is the one `html.unescape`
+    # already applies internally (`if '&' not in s: return s`); it is written
+    # out here only to skip the call.
+    s = fragment
+    if "<" in s:
+        s = _TAG.sub("", s)
+    if "&" in s:
+        s = html.unescape(s)
+    # `" ".join(s.split())` is `re.sub(r"\s+", " ", s).strip()`: bare
+    # `str.split()` splits on runs of whitespace, discards the empty leading
+    # and trailing fields, and uses `Py_UNICODE_ISSPACE` — the same character
+    # class `sre` compiles `\s` to for a str pattern. It is C all the way down
+    # where the regex is not, and this runs 620k times per corpus sweep. The
+    # cell-by-cell equivalence is checked against 137 patents, not argued.
+    return " ".join(s.split())
 
 
 def _parse_row(row_xml: str) -> list[Cell]:
@@ -271,21 +295,24 @@ def _parse_row(row_xml: str) -> list[Cell]:
     # subsequent cell left, so US11254686's nine-entry header rows came back as
     # 3/5/7/7 with no column position at all — and the offset search then had to
     # guess an alignment the patent had stated outright.
-    for m in re.finditer(r"<entry\b([^>]*?)/>|<entry\b([^>]*)>(.*?)</entry>",
-                         row_xml, re.S):
+    for m in _ENTRY.finditer(row_xml):
         attrs = m.group(1) if m.group(1) is not None else (m.group(2) or "")
         body = m.group(3) or ""
         span, start = 1, -1
-        st = re.search(r'namest="(\w+)"', attrs)
-        en = re.search(r'nameend="(\w+)"', attrs)
+        # `namest="` cannot match a string that does not contain `namest`, so
+        # the substring test decides the same thing the search does and skips
+        # two regex calls on the overwhelming majority of cells, which declare
+        # no span at all.
+        st = _NAMEST.search(attrs) if "namest" in attrs else None
+        en = _NAMEEND.search(attrs) if "nameend" in attrs else None
         if st:
-            digits = re.sub(r"\D", "", st.group(1))
+            digits = _NON_DIGIT.sub("", st.group(1))
             if digits:
                 start = int(digits) - 1          # colspec names are 1-based
         if st and en:
             try:
-                span = max(1, int(re.sub(r"\D", "", en.group(1)))
-                           - int(re.sub(r"\D", "", st.group(1))) + 1)
+                span = max(1, int(_NON_DIGIT.sub("", en.group(1)))
+                           - int(_NON_DIGIT.sub("", st.group(1))) + 1)
             except ValueError:
                 span = 1
         cells.append(Cell(_text(body), span, start))

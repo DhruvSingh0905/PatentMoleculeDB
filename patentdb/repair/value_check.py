@@ -41,10 +41,12 @@ from __future__ import annotations
 
 import collections
 import csv
+import functools
 import logging
 import re
 
 from ..core import config
+from ..sources.uspto_assays import normalize_cid
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,72 @@ _TO_NM = {"nM": 1.0, "uM": 1e3, "µM": 1e3, "μM": 1e3, "mM": 1e6, "pM": 1e-3,
           "M": 1e9}
 
 _BDB = config.BDB_REFERENCE_TSV
+
+
+# ── how BindingDB names a patent's compound ───────────────────────
+#
+# This pattern and `_norm_cid` used to live in `scripts/eval/reference_bench`
+# and were imported from here at call time. That made an EVAL module part of
+# the live set — `import_audit --config` listed exactly one, this one — and
+# `_bad_values_now` therefore reached into `scripts/eval/` in the middle of an
+# extraction run. The arrow now points the other way: the reader of the
+# reference lives with the reference, and the benchmark imports it.
+#
+# The word "Example" is OPTIONAL, because it is often simply absent:
+#
+#   US8952177, Example 1
+#   US8722692, 1                              <- no keyword at all
+#   US9303033, N47, Table 58A, Compound 11    <- the patent's code, then BDB's
+#
+# Requiring it scored three whole patents at zero that BindingDB holds in full:
+# US9303033 has 2,239 rows there, US8722692 732, US9708336 837. Across the 53
+# patents with no structures of our own, reading only the strict form found
+# 10,147 of 16,222 compounds; reading this form finds 13,453.
+#
+# The id is ALWAYS the token straight after the patent number, and never the
+# trailing "Compound N" — that is BindingDB's own within-table numbering.
+# Measured on US9303033: the first token hits our extracted ids 2,491 times and
+# misses 12; the trailing one hits ZERO times and misses 2,482. Taking the
+# wrong one would have attached 1,237 structures to the wrong compounds.
+# The label is optional AND positional. `US11286268, Compound 1` numbers its
+# compounds 1..1837 and "Compound 1" is the id; `US9303033, N47, Table 58A,
+# Compound 11` uses `N47` and the trailing "Compound 11" is BindingDB's own
+# within-table counter. A flat stop-list on the word `compound` gets the second
+# right and the first wrong — it cost US11286268 all 1,828 of its reference
+# values, which is why its patch could not be checked at all.
+#
+# What separates them is POSITION, not vocabulary: whatever follows the patent
+# number is the id, and a label immediately there is part of the id rather than
+# a reason to skip. The stop-list still applies to a BARE token, so
+# `US…, Table 5` is not read as compound "Table".
+_REF_LABEL = (r"(?:(?:Examples?|Compounds?|(?:C(?:o?m)?pd)\.?\s*(?:No)?\.?|Ex)"
+              r"\.?\s*)?")
+_REF_STOP = (r"(?!(?:table|scheme|fig(?:ure)?|claim|page|para|"
+             r"col(?:umn)?|entry|item|no)\b)")
+_EXAMPLE_REF = re.compile(
+    r"\b(US\d{7,11}[A-Z]?\d?)\s*,\s*" + _REF_LABEL + _REF_STOP
+    + r"([0-9A-Za-z][0-9A-Za-z\-]{0,9})\b", re.I)
+
+
+# Memoised, and the cache is what makes the key affordable rather than a
+# convenience. `load_reference` calls this once per `(patent, compound)` match
+# in a 271 MB TSV — 227,292 times in one traced extraction run — over a
+# reference whose ids repeat constantly (`1`, `2`, `I-117`). `normalize_cid` is
+# a pure function of its argument: it reads the string, two module-level
+# regexes and nothing else.
+@functools.lru_cache(maxsize=100_000)
+def _norm_cid(cid: str) -> str:
+    """'007' / 'Example 7' / 'Cpd. No. 7' → '7'. One canonical form.
+
+    Delegates to the extractor's own `normalize_cid`, because "one canonical
+    form" has to mean ONE. This function used to re-implement it with
+    `s.lstrip("0")`, which only strips zeros at position 0 — so BindingDB's
+    `I-0117` stayed `I-0117` while the patent's `I-117` normalised to `I-117`
+    and the two never met. On US9718790 that was 1,119 compounds scored as
+    missing that we had extracted correctly all along: a benchmark measuring
+    its own normaliser rather than the extraction.
+    """
+    return normalize_cid(str(cid)).upper()
 
 
 def _to_nm(value, unit):
@@ -117,8 +185,6 @@ def load_reference(patent_ids: set[str] | None = None,
     A family-level value is real evidence about a MOLECULE and no evidence at
     all about this patent's table, which is what we are checking.
     """
-    from ..scripts.eval.reference_bench import _EXAMPLE_REF, _norm_cid
-
     out: dict[tuple[str, str, str, str], set[float]] = collections.defaultdict(set)
     if not _BDB.exists():
         logger.info("value_check: no BindingDB subset at %s", _BDB)
@@ -256,8 +322,6 @@ def check_patent(patent_id: str, records, reference: dict | None = None) -> dict
     `record_buckets` counts RECORDS and is the new half: it is where a row
     that agrees with nothing is visible even when its compound reads fine.
     """
-    from ..sources.uspto_assays import normalize_cid
-
     ref = reference if reference is not None else load_reference({patent_id})
     mine: dict[str, list] = collections.defaultdict(list)
     for r in records:

@@ -404,6 +404,16 @@ def patch_tool() -> dict:
 }
 
 
+# Memoised per (patent, code state). `_try_one` calls this once per LADDER
+# RUNG, and the ladder is two rungs deep — so a gap that escalates from Sonnet
+# to Opus re-ran `repair_patent` plus a BindingDB lookup over the same unpatched
+# tree twice for the same answer (2.51 s each, measured on US20240010684A1).
+# Keyed on `ledger.code_key()` rather than on the patent alone, because a patch
+# landing mid-run genuinely changes the answer and a patent-only key would go on
+# serving the pre-patch number.
+_BAD_VALUES: dict[tuple[str, str], int] = {}
+
+
 def _bad_values_now(patent_id: str) -> int:
     """How many of this patent's values already disagree with BindingDB.
 
@@ -412,18 +422,29 @@ def _bad_values_now(patent_id: str) -> int:
     numbers are comparable.
     """
     from .loop import repair_patent
+    from . import ledger
+
     xml = (config.OUTPUT_DIR / "uspto_xml" / f"{patent_id}.xml")
     if not xml.exists():
         return 0
+    try:
+        memo_key = (patent_id, ledger.code_key())
+    except Exception:                            # never let caching break a run
+        memo_key = None
+    if memo_key is not None and memo_key in _BAD_VALUES:
+        return _BAD_VALUES[memo_key]
     try:
         text = xml.read_text(errors="ignore")
         # `repair_patent` already unions the deterministic baseline in; adding
         # `extract_from_patent` again would double-count every baseline record.
         extra, _ = repair_patent(patent_id, text, max_calls=0)
-        return value_check.check_patent(patent_id, list(extra))["bad"]
+        bad = value_check.check_patent(patent_id, list(extra))["bad"]
     except Exception as e:
         logger.warning("value_check baseline failed for %s: %r", patent_id, e)
         return 0
+    if memo_key is not None:
+        _BAD_VALUES[memo_key] = bad
+    return bad
 
 
 def _sample_of_table(table, xml: str = "") -> str:
@@ -946,17 +967,33 @@ def _annotate_prior_attempts(gaps: list[dict]) -> None:
             g["retry"] = len(prior)
 
 
-def collect_gaps(patent_ids: list[str] | None = None) -> list[dict]:
-    """Every capability gap in the corpus, biggest first. Free — no model calls."""
+def collect_gaps(patent_ids: list[str] | None = None,
+                 reports: dict | None = None) -> list[dict]:
+    """Every capability gap in the corpus, biggest first. Free — no model calls.
+
+    `reports` is `{patent_id: RepairReport}` a caller already has. `autoheal`
+    always does: `maybe_escalate` is handed the report `process_patent` just
+    produced, decides from it that a rule cannot close the gap, and then this
+    function re-ran `repair_patent` on the same document to derive it again.
+
+    Reusing it is not only cheaper, it is more faithful. The recompute passes
+    `max_calls=0`, so a patent whose pipeline run BOUGHT a rule was re-examined
+    as though it had not — `_wants_code_tier` and `collect_gaps` could disagree
+    about which gaps exist, and the tier would be spending on a set of gaps
+    other than the one that triggered it.
+    """
     from .loop import repair_patent
 
     xml_dir = config.OUTPUT_DIR / "uspto_xml"
     pids = patent_ids or sorted(p.stem for p in xml_dir.glob("*.xml"))
     out: list[dict] = []
     for pid in pids:
+        rep = (reports or {}).get(pid)
         try:
-            _, rep = repair_patent(pid, (xml_dir / f"{pid}.xml").read_text(errors="ignore"),
-                                   max_calls=0)
+            if rep is None:
+                _, rep = repair_patent(
+                    pid, (xml_dir / f"{pid}.xml").read_text(errors="ignore"),
+                    max_calls=0)
         except Exception as e:                       # a broken patent is not a gap
             logger.warning("capability: %s raised %r", pid, e)
             continue
@@ -1047,7 +1084,8 @@ def _attach_oracle(g: dict, xml: str) -> None:
 
 def repair_capabilities(*, apply: bool | None = None, limit: int | None = None,
                         patent_ids: list[str] | None = None,
-                        model: str | None = None) -> dict:
+                        model: str | None = None,
+                        reports: dict | None = None) -> dict:
     """Find capability gaps, buy one patch each, verify, APPLY, journal.
 
     Applies without asking, for the same reason `repair_reader` does: a fix that
@@ -1060,12 +1098,18 @@ def repair_capabilities(*, apply: bool | None = None, limit: int | None = None,
     from ..sources.uspto_xml import assemble_blocks, parse_tables
 
     do_apply = config.PARSER_REPAIR_APPLY if apply is None else apply
-    gaps = collect_gaps(patent_ids)
+    gaps = collect_gaps(patent_ids, reports=reports)
     if limit:
         gaps = gaps[:limit]
     if not gaps:
         return {"gaps": 0, "applied": 0, "declined": 0, "results": []}
 
+    # The FULL corpus baseline, exactly as before — `verify_patch` compares its
+    # sum against a corpus-wide probe total, and a narrower population would put
+    # a stale addend or a hole into that comparison. What changed is that it is
+    # now REMEMBERED per patent rather than re-derived: a 3-row gap on one
+    # 15-compound document no longer buys a 137-file re-extraction. See
+    # repair/ledger.py for the key and for why populational scoping was rejected.
     base = baseline_counts()
     results = []
     applied = declined = 0
@@ -1230,11 +1274,21 @@ def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
             for q in base if q != "_clean"
             and verdict.get("per_patent", {}).get(q, 0) != base[q]},
     }
+    entry["below_best"] = verdict.get("below_best") or {}
     if verdict.get("ok") and do_apply:
         for mod, text in edited.items():
             mod.write_text(text)
         entry["applied"] = True
     jid = _journal(entry)
+    if entry["applied"]:
+        # The tree has moved, so every ledger entry is now stale — and the probe
+        # that just ran measured the corpus under exactly this tree. Adopting it
+        # here is what keeps the NEXT gap's baseline free; without it a landed
+        # patch buys the following patent a 137-file rescan, which is the cost
+        # this ledger exists to remove. After the write, so `code_key()` names
+        # the patched tree.
+        from .parser_repair import adopt_baseline
+        adopt_baseline(verdict, journal_id=jid)
     return {"ok": bool(verdict.get("ok")), "journal_id": jid, "model": model,
             "fingerprint": g["fingerprint"], "target": targets,
             "rows_at_stake": g["rows_at_stake"],

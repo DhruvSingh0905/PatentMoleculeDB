@@ -261,6 +261,39 @@ RULE_JOURNAL = OUTPUT_DIR / "rule_adoption_journal.jsonl"
 # and runs Haiku at ~$0.002 per new layout.
 LLM_NAME_REPAIR_ENABLED = os.environ.get("LLM_NAME_REPAIR", "0") == "1"
 
+# The PubChem name->SMILES lookup that opened the IUPAC cascade, OFF by
+# default. `iupac_to_smiles._try_pubchem` sat at Stage 0, AHEAD of OPSIN,
+# unconditional and uncached: one HTTPS round-trip per candidate name, every
+# name, every run.
+#
+# It is free in dollars and enormous in wall time. A call trace over three
+# patents (1,225 s) put it at 297.8 s — 24.3% of all traced wall — 279.3 s of
+# which was US10214537 alone, 26.9% of that patent's run. Measured latency on
+# 30 corpus names today: 0.295 s/call.
+#
+# What it buys, counted from the 22 shipped `example_index.json` (18,039
+# records): 11 records carry `extraction_method == "pubchem_direct"`. That is
+# 0.061%, in three patents (US9718825 8, US8952177 2, US10899738 1), and ZERO
+# on US10214537, the patent where it spent 279 s.
+#
+# Re-running the free cascade (strict OPSIN -> rule_clean -> relaxed OPSIN) on
+# those 11 records' stored names gives, for all 11, the SAME InChIKey PubChem
+# itself returns for that name. No record loses a structure; 9 of the 11 also
+# equal the shipped InChIKey. So the stage buys latency, not molecules.
+#
+# It was a rescue path for OCR-mangled names — PubChem's fuzzy name search
+# could recover a structure OPSIN could not parse. MinerU OCR was removed in
+# 43d037e and every corpus patent now reads GP HTML + USPTO XML, so the input
+# it was built to repair no longer reaches it. Kept behind a flag rather than
+# deleted, for a future source that is noisy again: PUBCHEM_NAME_LOOKUP=1.
+#
+# NOT gated by this: `core/iupac_backfill`, which hits a different PubChem
+# endpoint for the opposite direction (InChIKey -> IUPAC name, cosmetic
+# backfill for GP-embedded records that ship a structure and no name). It
+# supplies `iupac_source == "pubchem_backfill"` on 12,572 of the 18,039
+# records and is already disk-cached, so its cost amortises to zero.
+PUBCHEM_NAME_LOOKUP_ENABLED = os.environ.get("PUBCHEM_NAME_LOOKUP", "0") == "1"
+
 SNAPSHOT_FREEZE_ENABLED = os.environ.get("SNAPSHOT_FREEZE", "0") == "1"
 
 REPAIR_AUTOHEAL = os.environ.get("REPAIR_AUTOHEAL", "1") == "1"

@@ -26,12 +26,27 @@ Three separate breaks produced that, and each is fixed here or by the caller:
 
 WHY THIS IS BOUNDED. A capability patch is bought per FINGERPRINT and cached by
 `PATCH_EPOCH`, so the corpus buys each shape once however many patents show it.
-What is not free is `baseline_counts()`, which re-extracts every patent in the
-corpus on each `repair_capabilities` call — so an auto-fire that ran per failing
-patent would cost one full corpus scan each time. Hence `_attempted`, a
-process-level set of fingerprints, and `AUTOHEAL_MAX_PER_RUN`. CLAUDE.md
-measures three capability gaps in the entire corpus; the cap is a ceiling on
-damage, not a target.
+Hence `_attempted`, a process-level set of fingerprints, and
+`AUTOHEAL_MAX_PER_RUN`. CLAUDE.md measures three capability gaps in the entire
+corpus; the cap is a ceiling on damage, not a target.
+
+WHAT IT COSTS, measured. On US20240010684A1 — 15 compounds, a gap worth 3 rows —
+this call was 74.68 s of a 154.65 s traced run (48.3%), 39.53 s untraced. Two
+things dominated and only one still does:
+
+    baseline_counts   14.04 s  re-extracted all 137 cached XMLs, every call
+                               -> now REMEMBERED per patent (repair/ledger.py)
+                                  and re-measured only when the extraction code
+                                  moves; the probe below keeps it fresh across
+                                  a landed patch, so it costs a file read
+    verify_patch      22.49 s  the corpus probe (16.59 s) plus the full test
+                               suite (5.82 s), in a scratch copy of the tree
+
+`verify_patch` is the irreducible half and is deliberately untouched: it is the
+only thing that measures OTHER patents under the patch, and a capability patch
+is a global code change. US10660877 went 860 -> 0 on a patch that touched none
+of its rows. Scoping that probe to the patent being repaired would make the tier
+cheap and blind at the same time.
 
 Nothing here decides whether a patch is GOOD. That judgement stays exactly where
 it was — one condition, in `parser_repair.verify_patch`: does the patched reader
@@ -193,7 +208,13 @@ def maybe_escalate(patent_id: str, report) -> dict | None:
     _healing.active = True
     try:
         from .capability import repair_capabilities
-        rep = repair_capabilities(patent_ids=[patent_id], limit=1)
+        # Hand over the report we were given. `collect_gaps` used to re-run
+        # `repair_patent` on this same document to re-derive it — and with
+        # `max_calls=0`, so a patent whose pipeline run bought a rule was
+        # re-examined as though it had not. The tier could then act on a
+        # different set of gaps than the one `_wants_code_tier` escalated for.
+        rep = repair_capabilities(patent_ids=[patent_id], limit=1,
+                                  reports={patent_id: report})
     except Exception as e:
         # Healing is additive. It must never break a run that would otherwise
         # have produced results — the same contract the rule tier has in

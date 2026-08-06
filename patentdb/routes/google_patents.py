@@ -22,7 +22,9 @@ import requests
 
 from ..core import config
 from ..core.models import Compound, CompoundSource, IupacSource
-from ..core.iupac_to_smiles import _try_opsin, _finalize, _convert_single
+from ..core.iupac_to_smiles import (
+    _try_opsin, _finalize, _convert_single, prefetch_cascade,
+)
 from ..core.cost_tracker import cost_tracker
 from ..core.smiles_utils import validate_smiles
 
@@ -1064,6 +1066,20 @@ def extract_compounds_from_clean_text(
         c.inchikey for c in gp_embedded if c.inchikey
     }
 
+    # Resolve every candidate name through OPSIN in batched JVM launches
+    # before the loop. The loop reaches OPSIN by two routes — `_try_opsin`
+    # directly in fast mode, `_convert_single` in full mode — and both are
+    # warmed by the same memo. Measured by counting launches around this
+    # function on US10214537: 816 -> 3 (233.0 s -> 5.5 s), returning a
+    # byte-identical 974-compound list.
+    #
+    # The relaxed stage only exists on the not-clean path: `_convert_single`
+    # skips Stage 2d entirely when is_clean_text, so warming it there would
+    # buy a JVM launch for names nothing will ask about.
+    is_clean = text_source_format == "google_html"
+    prefetch_cascade([_clean_name(c['name']) for c in candidates],
+                     relaxed=not is_clean)
+
     for c in candidates:
         name = _clean_name(c['name'])
         # Use suffix-aware compound_id when the candidate has one
@@ -1093,7 +1109,7 @@ def extract_compounds_from_clean_text(
         # cascade_mode="fast": only Stage 1 OPSIN (strict on noisy source) +
         # Stage 2 rule_clean. No LLM — keeps
         # the markdown secondary pass under budget.
-        is_clean = text_source_format == "google_html"
+        # (`is_clean` is bound above the loop, where the prefetch needs it.)
         if cascade_mode == "fast":
             from ..core.iupac_to_smiles import rule_based_clean
             smiles, _err = _try_opsin(name, strict=not is_clean)

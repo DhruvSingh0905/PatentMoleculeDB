@@ -33,6 +33,9 @@ from py2opsin import py2opsin
 import threading
 import os
 import tempfile
+import uuid
+import warnings
+from typing import Iterable
 
 # py2opsin uses a shared temp file — not thread-safe AND not
 # process-safe. The default temp filename is `py2opsin_temp_input.txt`
@@ -168,7 +171,15 @@ def _try_pubchem(name: str) -> str | None:
 
     PubChem has 111M+ compounds with resolved stereochemistry.
     This bypasses OPSIN's stereo limitations.
+
+    OFF by default — see `config.PUBCHEM_NAME_LOOKUP_ENABLED` for the
+    measurement. One uncached HTTPS round-trip per name at 24.3% of traced
+    wall time, for 11 of 18,039 shipped records, none of which the free
+    OPSIN cascade fails to reproduce.
     """
+    if not config.PUBCHEM_NAME_LOOKUP_ENABLED:
+        return None
+
     try:
         import pubchempy as pcp
         results = pcp.get_compounds(name, 'name')
@@ -290,6 +301,338 @@ _OPSIN_INPUT_GARBAGE_PAT = re.compile(
 )
 
 
+# ============================================================
+# OPSIN, batched — one JVM for a patent instead of one per name
+# ============================================================
+#
+# `py2opsin` shells out to `subprocess.run(["java", "-jar", opsin-cli.jar…])`
+# on EVERY call (py2opsin.py:137). A call trace over three patents measured
+# 3,726 `_try_opsin` calls at ~0.19 s each = 721.3 s, 58.9% of all wall time,
+# and essentially all of that is JVM startup, not parsing.
+#
+# py2opsin already takes a list (py2opsin.py:41) and writes it one name per
+# line (py2opsin.py:117-121), so a whole patent costs one JVM. What a list
+# call does NOT return is per-name stderr: py2opsin raises a single warning
+# carrying the concatenated stderr of the entire run, and OPSIN's messages are
+# not 1:1 with failures — 600 corpus names produced 54 empty results but 56
+# stderr lines, and lines like "APPEARS_AMBIGUOUS: …" and "hydrogen addition
+# at locant: 13 …" name no compound at all, so neither positional nor
+# prefix attribution works. `_try_opsin`'s strict mode READS that message
+# (an "Unmatched bracket" warning rejects an otherwise-valid parse, see the
+# warning gate below), so losing attribution would silently change which
+# structures ship.
+#
+# Attribution is therefore done with SENTINELS: an unparsable per-process
+# nonce is written between every pair of real names. Each nonce yields one
+# empty stdout line and at least one stderr line containing its own token, so
+# the stderr stream partitions exactly, and the per-name message is rebuilt by
+# inverting py2opsin's own formatting. Results land in `_OPSIN_MEMO`, which
+# `_try_opsin` reads before shelling out — so a call site opts in by calling
+# `prefetch_opsin` before its loop and changes nothing else.
+#
+# Every assumption is CHECKED at run time (stdout length, sentinel stdout
+# empty, sentinels seen in ascending order, no stderr outside a sentinel
+# span). Any violation discards the whole batch and leaves the memo untouched,
+# which degrades to exactly the old per-name behaviour rather than to a
+# mis-assigned structure. `tests/test_opsin_batch_identity.py` asserts the
+# batched result is byte-identical to the per-call result over corpus names.
+
+# (name, relaxed) -> (raw py2opsin result, py2opsin warning message)
+_OPSIN_MEMO: dict[tuple[str, bool], tuple[str, str]] = {}
+_opsin_memo_lock = threading.Lock()
+
+# Names per JVM launch. Bounds the temp file and the blast radius of a
+# verification failure — a rejected batch costs its own chunk, not the patent.
+_OPSIN_BATCH_CHUNK = 500
+# Entries kept before the memo is dropped wholesale. OPSIN is a pure function
+# of (name, flags), so eviction is only a memory bound, never a correctness
+# one. The 22-patent corpus holds 16,127 distinct names.
+_OPSIN_MEMO_MAX = 200_000
+
+# py2opsin.py:146 — the literal header it puts on every stderr warning.
+_OPSIN_WARN_HEADER = "OPSIN raised the following error(s) while parsing:"
+_OPSIN_WARN_SEP = "\n > "
+
+# Underscores make the token unparsable to OPSIN under every flag combination
+# (verified with allow_bad_stereo/allow_acid/allow_radicals all set); the
+# nonce makes it impossible for patent text to collide with it.
+_OPSIN_SENTINEL_NONCE = uuid.uuid4().hex[:12]
+
+
+def _opsin_sentinel(i: int) -> str:
+    return f"zq_{_OPSIN_SENTINEL_NONCE}_sep{i}_qz"
+
+
+def _opsin_memo_store(items: dict[tuple[str, bool], tuple[str, str]]) -> None:
+    with _opsin_memo_lock:
+        if len(_OPSIN_MEMO) + len(items) > _OPSIN_MEMO_MAX:
+            _OPSIN_MEMO.clear()
+        _OPSIN_MEMO.update(items)
+
+
+def clear_opsin_memo() -> None:
+    """Drop every memoised OPSIN result. For tests that need a cold path."""
+    with _opsin_memo_lock:
+        _OPSIN_MEMO.clear()
+
+
+def _opsin_call(names, *, relaxed: bool):
+    """One py2opsin invocation. `names` is a str or a list of str.
+
+    Returns (result, warning_messages). Raises whatever py2opsin raises —
+    `_try_opsin` turns that into its (None, str(e)) return, as before.
+    """
+    with _opsin_lock:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = py2opsin(
+                names,
+                tmp_fpath=_OPSIN_TMP_FPATH,
+                allow_bad_stereo=relaxed,
+                allow_acid=relaxed,
+                allow_radicals=relaxed,
+            )
+            messages = [str(w.message) for w in caught]
+    return result, messages
+
+
+def _opsin_raw(name: str, *, relaxed: bool) -> tuple[object, str]:
+    """The raw OPSIN answer for ONE name: (py2opsin result, warning message).
+
+    Served from `_OPSIN_MEMO` when `prefetch_opsin` already resolved the name,
+    otherwise one JVM launch — identical to what `_try_opsin` did inline
+    before batching existed.
+    """
+    key = (name, relaxed)
+    hit = _OPSIN_MEMO.get(key)
+    if hit is not None:
+        return hit
+
+    result, messages = _opsin_call(name, relaxed=relaxed)
+    # py2opsin issues at most one warning per call; `caught[-1]` is what the
+    # inline version read, so keep taking the last.
+    entry = (result, messages[-1] if messages else "")
+    if isinstance(result, str):
+        _opsin_memo_store({key: entry})
+    return entry
+
+
+def _opsin_atoms(name: str) -> Iterable[str]:
+    """The strings `_try_opsin(name)` will actually hand to OPSIN.
+
+    A `;` multi-component name never reaches OPSIN whole — `_try_opsin`
+    splits it and recurses on each part (see the multi-component block), so
+    the parts are what a prefetch must resolve. Blank names and names holding
+    a newline are excluded: a newline would break the one-name-per-line
+    contract the batch depends on, and a truly empty name draws an "Input
+    chemical name was blank!" line in a batch that a lone `py2opsin("")` does
+    not, which would change the returned error text.
+    """
+    if not isinstance(name, str):
+        return
+    if ";" in name:
+        parts = [p.strip() for p in name.split(";") if p.strip()]
+        if len(parts) > 1:
+            for p in parts:
+                yield from _opsin_atoms(p)
+            return
+    if not name.strip():
+        return
+    if "\n" in name or "\r" in name:
+        return
+    yield name
+
+
+def _opsin_stderr_lines(messages: list[str]) -> list[str] | None:
+    """Undo py2opsin's warning formatting back to OPSIN's stderr lines.
+
+    py2opsin.py:146 builds the message as
+    HEADER + "\\n > " + stderr.replace("\\n", "\\n > ", stderr.count("\\n") - 1),
+    i.e. every newline but the last becomes the separator. Splitting on that
+    separator therefore recovers the original lines exactly. Returns None if
+    anything other than a py2opsin warning landed in the record, so the caller
+    can abandon the batch instead of guessing.
+    """
+    prefix = _OPSIN_WARN_HEADER + _OPSIN_WARN_SEP
+    lines: list[str] = []
+    for m in messages:
+        if not m.startswith(prefix):
+            return None
+        body = m[len(prefix):]
+        if body.endswith("\n"):
+            body = body[:-1]
+        lines.extend(body.split(_OPSIN_WARN_SEP))
+    return lines
+
+
+def _opsin_partition(err_lines: list[str], n_names: int) -> list[list[str]] | None:
+    """Split OPSIN's stderr into one bucket per name, using the sentinels.
+
+    Returns None — meaning "do not trust this batch" — if the sentinels are
+    not all present in ascending order, or if a line falls outside any
+    sentinel span.
+    """
+    buckets: list[list[str]] = [[] for _ in range(n_names)]
+    tokens = [_opsin_sentinel(i) for i in range(n_names + 1)]
+    current = -1        # index of the sentinel most recently opened
+    next_expected = 0
+    for ln in err_lines:
+        if next_expected <= n_names and tokens[next_expected] in ln:
+            current = next_expected
+            next_expected += 1
+            continue
+        if current >= 0 and tokens[current] in ln:
+            continue    # a sentinel whose own message ran to several lines
+        if current < 0 or current >= n_names:
+            return None  # stderr before the first / after the last sentinel
+        buckets[current].append(ln)
+    if next_expected != n_names + 1:
+        return None      # a sentinel never reported — spans are unreliable
+    return buckets
+
+
+def _opsin_format_warning(lines: list[str]) -> str:
+    """Rebuild the exact warning text py2opsin would have raised for a lone
+    call whose stderr was `lines`."""
+    if not lines:
+        return ""
+    return _OPSIN_WARN_HEADER + _OPSIN_WARN_SEP + _OPSIN_WARN_SEP.join(lines) + "\n"
+
+
+def _opsin_batch(
+    names: list[str], *, relaxed: bool,
+) -> dict[str, tuple[str, str]] | None:
+    """Resolve `names` in ONE JVM launch. Returns name -> (result, warning),
+    or None when any structural check fails and the batch must be discarded.
+    """
+    lines: list[str] = []
+    for i, n in enumerate(names):
+        lines.append(_opsin_sentinel(i))
+        lines.append(n)
+    lines.append(_opsin_sentinel(len(names)))
+
+    try:
+        out, messages = _opsin_call(lines, relaxed=relaxed)
+    except Exception as e:
+        logger.warning(
+            "OPSIN batch of %d names raised (%s) — resolving one at a time",
+            len(names), e,
+        )
+        return None
+
+    if not isinstance(out, list) or len(out) != len(lines):
+        logger.warning(
+            "OPSIN batch returned %s lines for %d inputs — discarding batch",
+            len(out) if isinstance(out, list) else type(out).__name__, len(lines),
+        )
+        return None
+    for i in range(0, len(lines), 2):
+        if out[i]:
+            logger.warning(
+                "OPSIN batch: sentinel at line %d parsed to %r — discarding batch",
+                i, out[i][:40],
+            )
+            return None
+
+    err_lines = _opsin_stderr_lines(messages)
+    if err_lines is None:
+        logger.warning(
+            "OPSIN batch: unrecognised warning in the record — discarding batch",
+        )
+        return None
+    buckets = _opsin_partition(err_lines, len(names))
+    if buckets is None:
+        logger.warning(
+            "OPSIN batch: stderr did not partition on the sentinels — "
+            "discarding batch",
+        )
+        return None
+
+    return {
+        n: (out[2 * i + 1], _opsin_format_warning(buckets[i]))
+        for i, n in enumerate(names)
+    }
+
+
+def prefetch_opsin(names: Iterable[str], *, relaxed: bool = False) -> int:
+    """Resolve `names` through OPSIN in batched JVM launches.
+
+    Fills the memo `_try_opsin` reads, so a caller that knows its names up
+    front pays one JVM per `_OPSIN_BATCH_CHUNK` names instead of one per name.
+    Call it before the loop; the loop body needs no change, and a name the
+    batch could not cover simply resolves on its own as it always did.
+
+    Returns the number of names newly resolved.
+    """
+    wanted: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        for atom in _opsin_atoms(name):
+            if atom in seen or (atom, relaxed) in _OPSIN_MEMO:
+                continue
+            seen.add(atom)
+            wanted.append(atom)
+    if not wanted:
+        return 0
+
+    n_new = 0
+    for i in range(0, len(wanted), _OPSIN_BATCH_CHUNK):
+        chunk = wanted[i:i + _OPSIN_BATCH_CHUNK]
+        resolved = _opsin_batch(chunk, relaxed=relaxed)
+        if resolved is None:
+            continue        # discarded — `_try_opsin` falls back per name
+        _opsin_memo_store({(n, relaxed): v for n, v in resolved.items()})
+        n_new += len(resolved)
+    logger.debug(
+        "prefetch_opsin: %d names resolved in %d batches (relaxed=%s)",
+        n_new, (len(wanted) + _OPSIN_BATCH_CHUNK - 1) // _OPSIN_BATCH_CHUNK,
+        relaxed,
+    )
+    return n_new
+
+
+def _opsin_unresolved(names: Iterable[str]) -> list[str]:
+    """Names whose strict-flag OPSIN result is known and EMPTY — i.e. the ones
+    that will go on to try the relaxed stage. Names the memo doesn't hold are
+    excluded: their outcome isn't known yet, so prefetching relaxed for them
+    would be guessing."""
+    out = []
+    for n in names:
+        hit = _OPSIN_MEMO.get((n, False))
+        if hit is not None and not hit[0]:
+            out.append(n)
+    return out
+
+
+def prefetch_cascade(
+    names: Iterable[str], *, rule_cleaned: bool = True, relaxed: bool = True,
+) -> None:
+    """Warm the memo for every OPSIN call the cascade will make over `names`.
+
+    Mirrors `_convert_single`'s free stages — raw name, `rule_based_clean`
+    retry, relaxed retry — so a caller with its names in hand pays three
+    batched JVM launches per 500 names instead of up to four per name.
+
+    The relaxed pass is issued ONLY for names both strict passes left empty,
+    which is exactly the set `_convert_single` would carry into Stage 2d.
+    Callers that never reach a stage turn it off: `rule_cleaned=False` for a
+    loop that only tries the raw name, `relaxed=False` for a clean-text
+    conversion, which skips Stage 2d entirely.
+    """
+    wanted = [n for n in names if n]
+    if not wanted:
+        return
+    prefetch_opsin(wanted)
+    cleaned: list[str] = []
+    if rule_cleaned:
+        cleaned = [rule_based_clean(n) for n in wanted]
+        prefetch_opsin(cleaned)
+    if relaxed:
+        stuck = _opsin_unresolved(wanted) + _opsin_unresolved(cleaned)
+        if stuck:
+            prefetch_opsin(stuck, relaxed=True)
+
+
 def _try_opsin(
     name: str, *, strict: bool = False, relaxed: bool = False,
 ) -> tuple[str | None, str]:
@@ -325,8 +668,6 @@ def _try_opsin(
     or another OCR'd source). Clean-HTML extractions stay lenient because
     they lack the OCR-garbage signals to filter on.
     """
-    import warnings
-
     # A MULTI-COMPONENT name — PubChem's `;` notation for a substance whose
     # parts are not bonded to one another: `dicesium;carbonate` is Cs2CO3,
     # `palladium;tetrakis(triphenylphosphane)` is Pd(PPh3)4. OPSIN expects ONE
@@ -362,26 +703,15 @@ def _try_opsin(
         if stripped and not (stripped[0].isalpha() or stripped[0] in "([{"):
             return None, "input starts with non-letter (strict mode; truncated?)"
 
-    error_msg = ""
-
-    with _opsin_lock:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            try:
-                # Pass a per-process tmp_fpath so parallel patent runs
-                # don't clobber each other's OPSIN input file.
-                result = py2opsin(
-                    name,
-                    tmp_fpath=_OPSIN_TMP_FPATH,
-                    allow_bad_stereo=relaxed,
-                    allow_acid=relaxed,
-                    allow_radicals=relaxed,
-                )
-            except Exception as e:
-                return None, str(e)
-
-            if caught:
-                error_msg = str(caught[-1].message)
+    # One JVM launch, unless `prefetch_opsin` already resolved this name in a
+    # batch — see the batching block above. Either way the answer, and the
+    # warning text OPSIN produced with it, are what a lone py2opsin call
+    # returns; a per-process tmp_fpath keeps parallel patent runs from
+    # clobbering each other's OPSIN input file.
+    try:
+        result, error_msg = _opsin_raw(name, relaxed=relaxed)
+    except Exception as e:
+        return None, str(e)
 
     if not (result and isinstance(result, str) and len(result) > 3):
         return None, error_msg or "OPSIN returned empty/invalid result"
@@ -738,6 +1068,13 @@ def convert_batch(
 
     patent_id = compounds[0].patent_id if compounds else "unknown"
     logger.info(f"Patent {patent_id}: Converting {len(to_convert)} IUPAC names (OPSIN + rules + LLM fallback)")
+
+    # Resolve the whole set through OPSIN first, in batched JVM launches, so
+    # the per-compound cascade below reads answers instead of shelling out.
+    # `_convert_single` here runs with is_clean_text=False, so all three free
+    # stages are in play. The threads remain — the LLM stages are still one
+    # network call each — but the OPSIN stages no longer are.
+    prefetch_cascade([c.iupac_name for c in to_convert])
 
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
         futures = {executor.submit(_convert_single, c): c for c in to_convert}

@@ -336,6 +336,37 @@ def verify_patch(module: Path, new_source: str, *, xml_dir: Path | None = None,
                 evidence.append(f"per-patent falls on fidelity-clean patents: {lost}")
             got["changed_on_corrupt_baseline"] = {
                 p: v for p, v in moved.items() if p not in trusted}
+
+        # ...and the question `baseline` structurally cannot answer: is any
+        # patent now below the best it has EVER scored?
+        #
+        # `baseline` is the state immediately before this patch, so the check
+        # above only ever sees one step. A sequence that takes a patent 860 ->
+        # 800 -> 700 clears the corpus condition three times if other patents
+        # rise, and nothing remembers the 860. That is the shape of the loss
+        # this tier's history is built around — US10660877 went 860 -> 0 on an
+        # `_is_namelike` patch that touched none of its rows.
+        #
+        # Recorded, never enforced. A patch that genuinely supersedes an old
+        # reading — the corrupted-baseline case, where junk parsed because
+        # cells were shifted left — must be allowed to lower it, and a gate
+        # here would be the fourth judgement-shaped gate this file has had to
+        # remove. The journal plus a named regression is what makes it
+        # reviewable.
+        try:
+            from . import ledger
+            got["below_best"] = ledger.regressions_vs_best(got["per_patent"])
+        except Exception as e:                   # bookkeeping never blocks
+            logger.warning("ledger: best-known check skipped (%r)", e)
+            got["below_best"] = {}
+        if got["below_best"]:
+            worst = sorted(got["below_best"].items(),
+                           key=lambda kv: kv[1][0] - kv[1][1], reverse=True)
+            evidence.append(
+                f"{len(worst)} patent(s) now below their best-ever count: "
+                + ", ".join(f"{p} {b}->{n}" for p, (b, n) in worst[:5])
+                + ("..." if len(worst) > 5 else ""))
+
         got["objections"] = evidence
         if evidence:
             logger.warning("patch applied over %d objection(s): %s",
@@ -344,16 +375,49 @@ def verify_patch(module: Path, new_source: str, *, xml_dir: Path | None = None,
         return got
 
 
+def adopt_baseline(verdict: dict, *, journal_id: str | None = None) -> int:
+    """The patch is in the tree; the probe already measured the tree. Adopt it.
+
+    MUST be called after the modules are written — `ledger.record` stamps the
+    entries with the CURRENT code key, and calling this first would file the
+    patched corpus under the unpatched tree's key and permanently serve a
+    baseline nobody ever measured.
+
+    This is what stops a landed patch from costing the next gap a full rescan.
+    `verify_patch` ran the patched modules over every cached XML in a sandbox
+    copy of the tracked tree, which is byte-for-byte what the tree becomes when
+    `write_text` returns, so re-deriving those counts would be recomputing a
+    number we are holding in `verdict["per_patent"]`.
+    """
+    from . import ledger
+
+    try:
+        return ledger.record(verdict.get("per_patent") or {},
+                             per_clean=verdict.get("per_clean"),
+                             journal_id=journal_id)
+    except Exception as e:                       # bookkeeping never breaks a run
+        logger.warning("ledger: could not adopt the probe's counts (%r)", e)
+        return 0
+
+
 _PROBE = '''
 import json, pathlib, sys
 sys.path.insert(0, ".")
 from patentdb.sources.uspto_xml import parse_fidelity
 from patentdb.sources.uspto_assays import extract_from_patent
 
-discrepant, per_patent = 0, {}
+discrepant, per_patent, per_clean = 0, {}, {}
 for p in sorted(pathlib.Path("__XML_DIR__").glob("*.xml")):
     xml = p.read_text()
-    discrepant += len(parse_fidelity(xml))
+    # PER PATENT, not just the total. `parse_fidelity` is already being called
+    # here and its per-file verdict was being summed away — that verdict is
+    # exactly `baseline_counts`'s `_clean` set, which decides whose count is a
+    # trustworthy floor. Recording it lets `repair/ledger.py` adopt this run as
+    # the next baseline complete, instead of carrying a stale `clean` flag
+    # forward across a patch that changed fidelity.
+    fid = parse_fidelity(xml)
+    discrepant += len(fid)
+    per_clean[p.stem] = not fid
     try:
         # COMPOUNDS, not records. A patch that splits one cell into two rows
         # doubles the record count without finding anything new; the question
@@ -382,25 +446,10 @@ if pid:
     except Exception:
         repaired = -1
 print(json.dumps({"discrepant_blocks": discrepant, "per_patent": per_patent,
+                  "per_clean": per_clean,
                   "repaired_usable": repaired, "bad_values": bad_values,
                   "total_usable": sum(v for v in per_patent.values() if v > 0)}))
 '''
-
-
-# Memoised per (xml_dir, source mtime). `autoheal` calls `repair_capabilities`
-# once per failing patent, and each call recomputed this over the WHOLE corpus:
-# the 7-patent heal run did seven identical 103-patent scans for a number that
-# cannot change while the sources are untouched. Keyed on the mtimes of the
-# patchable modules so a landed patch correctly invalidates it — this is a cache
-# of an expensive measurement, not a cache of a decision.
-_BASELINE_CACHE: dict[tuple, dict] = {}
-
-
-def _baseline_key(xml_dir: Path) -> tuple:
-    from .capability import PATCHABLE
-    mods = sorted({m for m, _ in PATCHABLE.values()})
-    return (str(xml_dir),) + tuple(
-        (m.name, m.stat().st_mtime_ns if m.exists() else 0) for m in mods)
 
 
 def baseline_counts(xml_dir: Path | None = None) -> dict:
@@ -425,34 +474,43 @@ def baseline_counts(xml_dir: Path | None = None) -> dict:
     The docstring above `verify_patch` already says compounds, `_PROBE` already
     explains why records are the wrong unit, and this function silently
     disagreed with both.
+
+    REMEMBERED, NOT RE-DERIVED. This re-extracted all 137 cached patents on every
+    call. Measured on US20240010684A1 — 15 compounds, a gap worth 3 rows — that
+    was 14.04 s of the tier's 39.53 s untraced, and 47.69 s of 74.68 s under the
+    tracer. The number is a pure function of (extraction code, XML), so it is now
+    read from `repair/ledger.py` and only the patents whose code state moved are
+    measured again. See that module for why a landed patch does not cost a rescan
+    either: the probe that verified it already measured the corpus under the new
+    code, and `verify_patch` hands that straight to the ledger.
+
+    The in-process `_BASELINE_CACHE` this used to keep is gone with it. It was
+    keyed on the patchable modules' `st_mtime_ns`, which is a weaker key than the
+    ledger's content hash — a `--revert` restores the exact bytes that were
+    measured before and moves the mtime — and it could not outlive the process,
+    which is the case that mattered: a corpus run starts a fresh one per patent.
+
+    The POPULATION is still the whole corpus, deliberately. `verify_patch`
+    compares this sum against a corpus-wide probe total, so a baseline covering
+    fewer patents would compare two numbers drawn from different populations —
+    see `ledger.counts` for why narrowing it was rejected rather than overlooked.
     """
     from ..sources.uspto_assays import extract_from_patent
-
     from ..sources.uspto_xml import parse_fidelity
 
+    from . import ledger
+
     xml_dir = xml_dir or (config.OUTPUT_DIR / "uspto_xml")
-    try:
-        ck = _baseline_key(xml_dir)
-        if ck in _BASELINE_CACHE:
-            return _BASELINE_CACHE[ck]
-    except Exception:                            # never let caching break a run
-        ck = None
-    out: dict = {}
-    clean: set[str] = set()
-    for p in sorted(xml_dir.glob("*.xml")):
-        try:
-            xml = p.read_text()
-            out[p.stem] = len({r.cid for r in extract_from_patent(xml)
-                               if r.is_usable and r.cid})
-        except Exception:                            # noqa: BLE001 - probe only
-            continue
-        if not parse_fidelity(xml):
-            clean.add(p.stem)
-    # Only these patents' counts are a trustworthy floor — see verify_patch.
-    out["_clean"] = clean
-    if ck is not None:
-        _BASELINE_CACHE[ck] = out
-    return out
+
+    def measure(path: Path) -> tuple[int, bool]:
+        xml = path.read_text()
+        n = len({r.cid for r in extract_from_patent(xml)
+                 if r.is_usable and r.cid})
+        # Only a fidelity-clean patent's count is a trustworthy floor — see
+        # verify_patch. A corrupted baseline is not a specification.
+        return n, not parse_fidelity(xml)
+
+    return ledger.counts(xml_dir, measure)
 
 
 # ── the question ──────────────────────────────────────────────────
@@ -648,6 +706,7 @@ def repair_reader(func_name: str = "_parse_row", *, apply: bool | None = None,
             continue
         if will_apply:
             module.write_text(patched)
+            adopt_baseline(verdict, journal_id=entry_id)
             report["applied"] += 1
             logger.info("parser_repair: %s APPLIED for %s (%s) — revert with "
                         "`parser_health --revert %s`",

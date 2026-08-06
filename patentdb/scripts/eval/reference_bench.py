@@ -52,56 +52,23 @@ BDB_TSV = config.BDB_REFERENCE_TSV
 CHEMBL_CACHE = config.OUTPUT_DIR / "_cache" / "chembl_patents.json"
 EXTRACTIONS = config.OUTPUT_DIR / "text_extraction"
 
-# How BindingDB attributes a ligand to a patent compound. The word "Example"
-# is OPTIONAL, because it is often simply absent:
+# How BindingDB attributes a ligand to a patent compound, and how one of its
+# compound ids is canonicalised. Both now live in `repair/value_check.py` and
+# are imported here rather than defined here.
 #
-#   US8952177, Example 1
-#   US8722692, 1                              <- no keyword at all
-#   US9303033, N47, Table 58A, Compound 11    <- the patent's code, then BDB's
+# The direction of that import is the whole point. `value_check` is PRODUCTION
+# — `capability._bad_values_now` calls it during an extraction run — and it
+# used to reach back into this module for these two names, which put an eval
+# module in the live import set (`import_audit --config` listed exactly one:
+# this one). The definitions belong with the reference reader; the benchmark is
+# a consumer of them, so it is the benchmark that imports.
 #
-# Requiring it scored three whole patents at zero that BindingDB holds in full:
-# US9303033 has 2,239 rows there, US8722692 732, US9708336 837. Across the 53
-# patents with no structures of our own, reading only the strict form found
-# 10,147 of 16,222 compounds; reading this form finds 13,453.
-#
-# The id is ALWAYS the token straight after the patent number, and never the
-# trailing "Compound N" — that is BindingDB's own within-table numbering.
-# Measured on US9303033: the first token hits our extracted ids 2,491 times and
-# misses 12; the trailing one hits ZERO times and misses 2,482. Taking the
-# wrong one would have attached 1,237 structures to the wrong compounds.
-# The label is optional AND positional. `US11286268, Compound 1` numbers its
-# compounds 1..1837 and "Compound 1" is the id; `US9303033, N47, Table 58A,
-# Compound 11` uses `N47` and the trailing "Compound 11" is BindingDB's own
-# within-table counter. A flat stop-list on the word `compound` gets the second
-# right and the first wrong — it cost US11286268 all 1,828 of its reference
-# values, which is why its patch could not be checked at all.
-#
-# What separates them is POSITION, not vocabulary: whatever follows the patent
-# number is the id, and a label immediately there is part of the id rather than
-# a reason to skip. The stop-list still applies to a BARE token, so
-# `US…, Table 5` is not read as compound "Table".
-_REF_LABEL = (r"(?:(?:Examples?|Compounds?|(?:C(?:o?m)?pd)\.?\s*(?:No)?\.?|Ex)"
-              r"\.?\s*)?")
-_REF_STOP = (r"(?!(?:table|scheme|fig(?:ure)?|claim|page|para|"
-             r"col(?:umn)?|entry|item|no)\b)")
-_EXAMPLE_REF = re.compile(
-    r"\b(US\d{7,11}[A-Z]?\d?)\s*,\s*" + _REF_LABEL + _REF_STOP
-    + r"([0-9A-Za-z][0-9A-Za-z\-]{0,9})\b", re.I)
-
-
-def _norm_cid(cid: str) -> str:
-    """'007' / 'Example 7' / 'Cpd. No. 7' → '7'. One canonical form.
-
-    Delegates to the extractor's own `normalize_cid`, because "one canonical
-    form" has to mean ONE. This function used to re-implement it with
-    `s.lstrip("0")`, which only strips zeros at position 0 — so BindingDB's
-    `I-0117` stayed `I-0117` while the patent's `I-117` normalised to `I-117`
-    and the two never met. On US9718790 that was 1,119 compounds scored as
-    missing that we had extracted correctly all along: a benchmark measuring
-    its own normaliser rather than the extraction.
-    """
-    from patentdb.sources.uspto_assays import normalize_cid
-    return normalize_cid(str(cid)).upper()
+# Re-exported under the original names because that is what they have always
+# been called here, and `tests/test_uspto_assays.py` imports both from this
+# module by name.
+from patentdb.repair.value_check import (      # noqa: E402  (after config)
+    _EXAMPLE_REF, _REF_LABEL, _REF_STOP, _norm_cid,
+)
 
 
 def _skeleton(ik: str) -> str:

@@ -15,7 +15,9 @@ import re
 from pathlib import Path
 
 from ..core import config
-from ..core.iupac_to_smiles import _try_opsin, rule_based_clean, _finalize
+from ..core.iupac_to_smiles import (
+    _try_opsin, rule_based_clean, _finalize, prefetch_cascade,
+)
 from ..core.models import Compound, CompoundSource, IupacSource
 from ..core.smiles_utils import validate_smiles
 
@@ -99,7 +101,14 @@ def extract_table_compounds_from_gp(patent_id: str) -> list[Compound]:
 
     logger.info(f"Google Patents tables {patent_id}: {len(iupac_entries)} IUPAC names from clean text")
 
-    # Convert through OPSIN
+    # Convert through OPSIN. Resolve the whole table in batched JVM launches
+    # first — this loop tried the raw name and then the rule-cleaned one, each
+    # in its own `java -jar`. Measured by counting launches around this
+    # function: US10214537 859 -> 3 (237.0 s -> 3.2 s), US10899738 451 -> 2
+    # (129.0 s -> 2.3 s), both returning a byte-identical compound list.
+    # It never reaches the relaxed flags, so that pass is not warmed.
+    prefetch_cascade(iupac_entries.values(), relaxed=False)
+
     validated = []
     for cpd_num, name in iupac_entries.items():
         smiles, err = _try_opsin(name)

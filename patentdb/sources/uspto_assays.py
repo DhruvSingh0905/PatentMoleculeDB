@@ -30,6 +30,7 @@ Layout facts this handles, all observed in real grants:
 """
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -166,6 +167,12 @@ _CID_CORE = (
 _CID_PAT = re.compile(rf"^\s*(?:{_CID_LABEL.pattern[2:]})?{_CID_CORE}\s*$", re.I)
 
 
+# The shape `normalize_cid` strips padding zeros out of, compiled once. It ran
+# 204k times over a 137-patent sweep as an inline literal, paying a pattern-cache
+# lookup each time.
+_CID_SHAPE = re.compile(r"^([A-Za-z]{1,3}[-–]?)?0*(\d+)([-–]?[a-zA-Z])?$")
+
+
 def normalize_cid(text: str) -> str:
     """`Example 007` / `Cpd. No. 7` / `7` → `7`.
 
@@ -175,7 +182,7 @@ def normalize_cid(text: str) -> str:
     s = (text or "").strip()
     s = _CID_LABEL.sub("", s).strip()
     # Preserve a prefix letter (A1, I-2300); only strip padding zeros.
-    m = re.match(r"^([A-Za-z]{1,3}[-–]?)?0*(\d+)([-–]?[a-zA-Z])?$", s)
+    m = _CID_SHAPE.match(s)
     if m:
         return f"{m.group(1) or ''}{m.group(2)}{m.group(3) or ''}"
     return s
@@ -234,6 +241,7 @@ _CAPTION_ASSAY = re.compile(
 _PLUS_BIN = re.compile(r"^\s*(\++)\s*$")
 
 
+@lru_cache(maxsize=8192)
 def caption_assay_hint(caption: str) -> tuple[str | None, str | None]:
     """(assay name, unit) inferred from a table's caption, or (None, None).
 
@@ -284,6 +292,11 @@ def infer_units_from_description(description: str, assay_names: list[str]) -> di
     if not description or not assay_names:
         return {}
     sentences = re.split(r"(?<=[.;])\s+", description)
+    # Which sentences mention a potency metric does not depend on WHICH assay
+    # name we are resolving, and it was being re-decided for every one of them:
+    # 231k `_METRIC.search` calls over a 137-patent sweep for a filter that is
+    # a property of the document. Same sentences, same order, decided once.
+    sentences = [s for s in sentences if _METRIC.search(s)]
     out: dict[str, str] = {}
     for name in assay_names:
         # Distinctive tokens: drop generic metric words so "IC50" alone can't match.
@@ -292,11 +305,17 @@ def infer_units_from_description(description: str, assay_names: list[str]) -> di
                   {"the", "and", "for", "with", "assay", "gmean", "mean", "value", "values"}]
         if not tokens:
             continue
+        # One alternation for the name's tokens, built once instead of a fresh
+        # `\btok\b` per token PER SENTENCE — 230k regex searches over a
+        # 137-patent sweep for a pattern that only depends on the name.
+        # `\b(?:a|b)\b` succeeds on exactly the strings one of `\ba\b`/`\bb\b`
+        # succeeds on: the boundaries sit outside the group, so each
+        # alternative is tried at each position under the same anchors.
+        tok_re = re.compile(r"\b(?:" + "|".join(re.escape(t) for t in tokens)
+                            + r")\b", re.I)
         found: set[str] = set()
         for s in sentences:
-            if not _METRIC.search(s):
-                continue
-            if not any(re.search(rf"\b{re.escape(tok)}\b", s, re.I) for tok in tokens):
+            if not tok_re.search(s):
                 continue
             u = _unit_from(s)
             if u and u != "%":
@@ -336,6 +355,31 @@ def _vocab() -> tuple[frozenset[str], dict[str, str], frozenset[str]]:
             nulls.update(forms + [str(t.get("lemma", "")).lower()])
     nulls.update({"-", "--", "—", "nd", "n.d.", "nt", "n.t.", "na", "n/a", ""})
     return frozenset(a for a in assays if a), quals, frozenset(nulls)
+
+
+@lru_cache(maxsize=1)
+def _assay_lemma_re() -> re.Pattern:
+    """`any(a in low for a in assay_lemmas if len(a) > 2)`, as one pattern.
+
+    Identical predicate: every lemma is escaped, so an alternation of literals
+    searched against an already-lowercased header succeeds on exactly the
+    headers the substring scan succeeded on. What it removes is the scan
+    itself — 69 lemmas re-filtered by `len(a) > 2` and tested one at a time,
+    per column, per table, on every re-extraction. That comprehension is the
+    single hottest line in the trace at 7.2M frame entries over three patents.
+
+    Longest first so the alternation's leftmost-match preference cannot report
+    a shorter lemma where a longer one also matches — irrelevant to the boolean
+    the caller wants, but it keeps the pattern's behaviour describable.
+
+    An empty vocabulary compiles to `(?!)`, which never matches. `re.compile("")`
+    matches EVERYTHING, and the vocabulary is explicitly "an optimization, not a
+    dependency" — a missing file must not classify every column as an assay.
+    """
+    lemmas = sorted((a for a in _vocab()[0] if len(a) > 2), key=len, reverse=True)
+    if not lemmas:
+        return re.compile(r"(?!)")
+    return re.compile("|".join(re.escape(a) for a in lemmas))
 
 
 # ── data model ────────────────────────────────────────────────────
@@ -440,6 +484,23 @@ _SHAPE_NUM = re.compile(r"^\s*[<>~≈≥≤]?\s*\d*\.?\d+\s*$")
 _SHAPE_BIN = re.compile(r"^\s*(\++|[A-E])\*?\s*$")
 
 
+def _count_matching(pattern, values) -> int:
+    """How many of `values` the compiled `pattern` matches at position 0.
+
+    Exactly `sum(bool(pattern.match(v)) for v in values)`, written as a loop
+    because that expression is the single hottest shape in this module: a
+    generator resumes its own frame once per item, and these run over every
+    cell of every column of every table. The three-patent call trace attributes
+    7.2M frame entries to genexprs of this form. Same predicate, same order,
+    same short-circuit structure at the call sites — only the frame is gone.
+    """
+    n = 0
+    for v in values:
+        if pattern.match(v):
+            n += 1
+    return n
+
+
 def _column_shapes(table: Table, data) -> list[str]:
     """What each column's VALUES look like — the positional evidence a
     header row without `namest` does not carry.
@@ -459,16 +520,43 @@ def _column_shapes(table: Table, data) -> list[str]:
         # as a good fit and drags the whole header one column left.
         if not vals:
             shapes.append("empty")
-        elif i == 0 and sum(bool(_CID_PAT.match(v)) for v in vals) > len(vals) * 0.6:
+        elif i == 0 and _count_matching(_CID_PAT, vals) > len(vals) * 0.6:
             shapes.append("cid")
-        elif sum(bool(_SHAPE_NUM.match(v)) for v in vals) > len(vals) * 0.6:
+        elif _count_matching(_SHAPE_NUM, vals) > len(vals) * 0.6:
             shapes.append("num")
-        elif sum(bool(_SHAPE_BIN.match(v)) for v in vals) > len(vals) * 0.6:
+        elif _count_matching(_SHAPE_BIN, vals) > len(vals) * 0.6:
             shapes.append("bin")
-        elif sum(bool(_CID_PAT.match(v)) for v in vals) > len(vals) * 0.6:
+        elif _count_matching(_CID_PAT, vals) > len(vals) * 0.6:
             shapes.append("cid")
         else:
             shapes.append("text")
+    return shapes
+
+
+def _shapes_of(table: Table, data) -> list[str]:
+    """`_column_shapes`, remembered on the table it describes.
+
+    `merge_header` -> `_choose_offsets` -> `_column_shapes` ran 49,230 times
+    over three patents for roughly 3,200 distinct tgroups, because every caller
+    that wants a header re-derives the body evidence behind it. The shapes are a
+    pure function of the table and the rows handed in, and a `Table` is written
+    once by `parse_tables`/`assemble_block` and never mutated afterwards — no
+    assignment to `.header_rows`, `.body_rows`, `.n_cols` or `Cell.text` exists
+    anywhere in the package outside those constructors.
+
+    The reuse test is `data is cached_data`, not equality and not a hash: the
+    entry holds its own reference to the row list, so the object cannot be
+    collected and its identity cannot be recycled underneath us while the entry
+    lives. Handed a different list, this recomputes.
+    """
+    got = getattr(table, "_shapes_cache", None)
+    if got is not None and got[0] is data:
+        return got[1]
+    shapes = _column_shapes(table, data)
+    try:
+        table._shapes_cache = (data, shapes)
+    except AttributeError:              # a Table variant with __slots__
+        pass
     return shapes
 
 
@@ -544,8 +632,8 @@ def _choose_offsets(table: Table, rows) -> list[int]:
     μM, nothing downstream could tell which was which. Sharing the offset makes
     that split unrepresentable rather than merely unlikely.
     """
-    _, data = _header_rows_of(table)
-    shapes = _column_shapes(table, data)
+    _, data = _split_rows(table)
+    shapes = _shapes_of(table, data)
 
     offsets = []
     for row in rows:
@@ -588,6 +676,9 @@ def _is_legend_row(row) -> bool:
     return len(text) > 55 and " " in text.strip()
 
 
+_HAS_ALPHA = re.compile(r"[A-Za-z]")
+
+
 def _looks_like_header_row(row) -> bool:
     """A row of labels rather than data.
 
@@ -600,7 +691,10 @@ def _looks_like_header_row(row) -> bool:
         return False
     if any(_VALUE_PAT.match(t) for t in texts):
         return False
-    return any(re.search(r"[A-Za-z]", t) for t in texts)
+    for t in texts:
+        if _HAS_ALPHA.search(t):
+            return True
+    return False
 
 
 def _header_rows_of(table: Table) -> tuple[list, list]:
@@ -628,6 +722,31 @@ def _header_rows_of(table: Table) -> tuple[list, list]:
         else:
             break
     return header, table.body_rows[i:] if header else table.body_rows
+
+
+def _split_rows(table: Table) -> tuple[list, list]:
+    """`_header_rows_of`, remembered on the table.
+
+    Same reasoning as `_shapes_of`, and the same immutability argument: the
+    split is decided by `table.header_rows` and `table.body_rows`, neither of
+    which is ever reassigned or mutated in place after the Table is built.
+    Callers only read what comes back — no `append`/`pop`/slice assignment on a
+    `hdr_rows`/`data_rows`/`data`/`body` binding exists in the package — and the
+    `thead` branch already returned `table.header_rows` itself, so nothing here
+    shares more than it did before.
+
+    `_header_rows_of` stays the uncached primitive: it is on the capability
+    tier's patchable list, so a model rewriting it must see the decision it
+    makes and nothing else. This wrapper is what the hot internal callers use.
+    """
+    got = getattr(table, "_split_cache", None)
+    if got is None:
+        got = _header_rows_of(table)
+        try:
+            table._split_cache = got
+        except AttributeError:          # a Table variant with __slots__
+            return got
+    return got
 
 
 def table_legend(table: Table) -> str:
@@ -732,6 +851,36 @@ def _join_header_lines(parts: list[str]) -> str:
     return text.strip()
 
 
+# mol/l and its prefixed variants: normalise to the canonical symbol used
+# throughout the corpus. Patents like US10266548 state the unit as
+# "mol/l" (or "mol/L") in the column header; without this mapping the
+# unit comes back as the raw string and the assay column gets no unit,
+# causing every record to be dropped as unusable.
+#
+# Both of these tables were dict LITERALS inside `_unit_from`, rebuilt on every
+# call that reached them. Lifting them out is why they are up here: a constant
+# is also something the capability tier can offer as a target, which a literal
+# buried in a function body never was.
+_MOL_UNIT = {
+    "mol/l": "mol/L",
+    "umol/l": "uM",
+    "µmol/l": "uM",
+    "μmol/l": "uM",
+    "nmol/l": "nM",
+    "mmol/l": "mM",
+    "pmol/l": "pM",
+}
+_CASED_UNIT = {"um": "uM", "µm": "uM", "μm": "uM", "nm": "nM", "mm": "mM",
+               "pm": "pM", "percent": "%"}
+
+
+# Memoised because it is pure and its answer is immutable — it reads `text`,
+# `_UNIT_PAT`, `_SPELLED_UNIT`, `_MOL_UNIT`, `_CASED_UNIT` and nothing else, and
+# returns a string or None, so there is no shared object for a caller to
+# corrupt. `build_columns` asks it three times per table (header, legend,
+# caption) and `extract_from_tables` twice more, over the same few strings on
+# every re-extraction: 127k searches of the corpus's most expensive pattern.
+@lru_cache(maxsize=16384)
 def _unit_from(text: str) -> str | None:
     m = _UNIT_PAT.search(text or "")
     if not m:
@@ -740,27 +889,69 @@ def _unit_from(text: str) -> str | None:
     low = raw.lower()
     if low in _SPELLED_UNIT:
         return _SPELLED_UNIT[low]
-    # mol/l and its prefixed variants: normalise to the canonical symbol used
-    # throughout the corpus. Patents like US10266548 state the unit as
-    # "mol/l" (or "mol/L") in the column header; without this mapping the
-    # unit comes back as the raw string and the assay column gets no unit,
-    # causing every record to be dropped as unusable.
-    _mol_map = {
-        "mol/l": "mol/L",
-        "mol/l": "mol/L",
-        "umol/l": "uM",
-        "µmol/l": "uM",
-        "μmol/l": "uM",
-        "nmol/l": "nM",
-        "mmol/l": "mM",
-        "pmol/l": "pM",
-    }
-    if low in _mol_map:
-        return _mol_map[low]
-    return {"um": "uM", "µm": "uM", "μm": "uM", "nm": "nM", "mm": "mM",
-            "pm": "pM", "percent": "%"}.get(low, raw)
+    if low in _MOL_UNIT:
+        return _MOL_UNIT[low]
+    return _CASED_UNIT.get(low, raw)
 
 
+# The three patterns `classify_column` matched with inline `re.search` literals.
+# Same patterns, same flags; `(?i)` becomes `re.I` because an inline global flag
+# must be the first thing in a pattern and `re.compile` is where it belongs.
+_CID_NOT_P_METRIC = re.compile(r"\bp?(?:ic|ec)\s*50|p(?:ki|kd|k_?i|k_?d)\b", re.I)
+_PCT_INH = re.compile(r"%\s*inh")
+_P_METRIC = re.compile(r"\bp\s*(?:ic|ec)\s*50\b|\bp\s*(?:ki|kd|k_?i|k_?d)\b", re.I)
+
+# How many distinct (header, samples) pairs to remember. A patent's whole
+# corpus of tables is a few thousand columns; the ceiling exists so a corpus
+# run cannot grow this without bound, not because anything approaches it.
+_COLUMN_CACHE_MAX = 20_000
+
+
+def _memoise_column(fn):
+    """Cache `classify_column` on its arguments, and NEVER share the result.
+
+    Purity, checked by reading the body: it reads `header`, `samples`, the
+    module-level `_HEADER_*`/`_LETTER_BIN`/`_PLUS_BIN`/`_NRUNS_ONLY`/
+    `_STAR_HASH_BIN`/`_CONC_UNIT` patterns, `_unit_from` (pure over the same
+    module constants), `split_top_level` (pure), and `_assay_lemma_re()` /
+    `_vocab()` (both `lru_cache`d over one file read, with no `cache_clear`
+    anywhere in the package). No global is written, no clock or filesystem is
+    read, nothing is appended to. Same arguments, same answer.
+
+    The copy is the part that is not optional. `Column` is a mutable dataclass
+    and `build_columns` mutates what this returns — `c.index = i`, `best.kind =
+    CID`, `best.assay_name = None`, `c.unit = ctx_unit`, `c.kind = ASSAY` — so
+    handing back the cached instance would let one table's classification
+    rewrite the answer every later table gets. That is exactly the shape of
+    silent extraction damage this module cannot afford, so the cache stores the
+    values and every caller receives its own object.
+
+    It is worth the care because the recomputation is real: `_header_coherence`
+    calls `classify_column(h, [])` once per candidate offset per header row and
+    it is pure in the header string, and `build_columns` re-classifies the same
+    columns on every re-extraction of the same table.
+    """
+    cache: dict[tuple, Column] = {}
+
+    @functools.wraps(fn)
+    def wrapper(header: str, samples: list[str]) -> Column:
+        key = (header, tuple(samples))
+        try:
+            got = cache.get(key)
+        except TypeError:               # unhashable sample — just compute it
+            return fn(header, samples)
+        if got is None:
+            got = fn(header, samples)
+            if len(cache) < _COLUMN_CACHE_MAX:
+                cache[key] = got
+        return Column(got.index, got.header, got.kind, got.unit, got.assay_name)
+
+    wrapper.cache_clear = cache.clear       # type: ignore[attr-defined]
+    wrapper.cache_size = lambda: len(cache)  # type: ignore[attr-defined]
+    return wrapper
+
+
+@_memoise_column
 def classify_column(header: str, samples: list[str]) -> Column:
     """Decide what a column holds, from its header first, its values second.
 
@@ -831,15 +1022,15 @@ def classify_column(header: str, samples: list[str]) -> Column:
     if _HEADER_CID.search(low) and not _HEADER_ASSAY.search(low):
         # Also guard against p-prefixed metrics being swallowed by CID:
         # "pIC50" should not match a CID pattern.
-        if not re.search(r'(?i)\bp?(?:ic|ec)\s*50|p(?:ki|kd|k_?i|k_?d)\b', low):
+        if not _CID_NOT_P_METRIC.search(low):
             return Column(-1, h, CID)
 
-    assay_lemmas, _, _ = _vocab()
-    is_assay = bool(_HEADER_ASSAY.search(low)) or any(a in low for a in assay_lemmas if len(a) > 2)
+    lemma_re = _assay_lemma_re()
+    is_assay = bool(_HEADER_ASSAY.search(low)) or bool(lemma_re.search(low))
     # Also recognise "% Inh" / "% inh" / "% inhibition" as assay indicators.
     # These appear in headers like "MAGL % Inh 1 uM (mouse)" and are not
     # caught by the standard assay regex or lemma list.
-    if not is_assay and re.search(r'%\s*inh', low):
+    if not is_assay and _PCT_INH.search(low):
         is_assay = True
     # p-prefixed potency metrics: "pIC50", "pEC50", "pKi", "pKd" etc.
     # The 'p' is directly attached to the metric name so word-boundary-based
@@ -847,7 +1038,7 @@ def classify_column(header: str, samples: list[str]) -> Column:
     # The header text itself is used as the unit so that emitted records carry
     # a meaningful unit (e.g. "pIC50") rather than None — a unit of None fails
     # the usability contract and causes the record to be dropped.
-    _p_metric_match = re.search(r'(?i)\bp\s*(?:ic|ec)\s*50\b|\bp\s*(?:ki|kd|k_?i|k_?d)\b', low)
+    _p_metric_match = _P_METRIC.search(low)
     if not is_assay and _p_metric_match:
         is_assay = True
     unit = _unit_from(h)
@@ -880,12 +1071,12 @@ def classify_column(header: str, samples: list[str]) -> Column:
             if multi_value_count > 0 and multi_value_count >= len([s for s in samples if s]) * 0.4:
                 return Column(-1, h, ASSAY, unit=unit, assay_name=h)
             # Fallback: each part of the header looks like an assay name.
-            parts_are_assay = sum(
-                1 for p in parts
-                if bool(_HEADER_ASSAY.search(p.lower()))
-                or any(a in p.lower() for a in assay_lemmas if len(a) > 2)
-                or bool(_HEADER_POTENCY.search(p.lower()))
-            )
+            parts_are_assay = 0
+            for p in parts:
+                pl = p.lower()
+                if (_HEADER_ASSAY.search(pl) or lemma_re.search(pl)
+                        or _HEADER_POTENCY.search(pl)):
+                    parts_are_assay += 1
             if parts_are_assay >= 1:
                 return Column(-1, h, ASSAY, unit=unit, assay_name=h)
 
@@ -897,19 +1088,25 @@ def classify_column(header: str, samples: list[str]) -> Column:
     if True:  # was: `if not h:` — now also fires for unrecognised short headers
         vals = [s for s in samples if s]
         if vals:
-            if sum(bool(_NRUNS_ONLY.match(v)) for v in vals) > len(vals) * 0.6:
+            if _count_matching(_NRUNS_ONLY, vals) > len(vals) * 0.6:
                 # Only promote to NRUNS when the header is empty; a named
                 # column of parenthesised numbers is unlikely.
                 if not h:
                     return Column(-1, h, NRUNS)
             # Star/hash bins (`*`, `**`, `###`) are ordinal grades like +/++/+++.
-            plus_or_letter = sum(
-                bool(_LETTER_BIN.match(v) or _PLUS_BIN.match(v)
-                     or _STAR_HASH_BIN.match(v.strip())) for v in vals
-            )
+            plus_or_letter = 0
+            for v in vals:
+                if (_LETTER_BIN.match(v) or _PLUS_BIN.match(v)
+                        or _STAR_HASH_BIN.match(v.strip())):
+                    plus_or_letter += 1
             if plus_or_letter > len(vals) * 0.6:
                 return Column(-1, h, ASSAY, assay_name=h if h else "unnamed assay (letter bin)")
     return Column(-1, h, UNKNOWN)
+
+
+# The bracket characters `split_top_level` tracks depth with. One search is
+# cheaper than the character loop it lets us skip.
+_BRACKET = re.compile(r"[\[\](){}]")
 
 
 def split_top_level(text: str) -> list[str]:
@@ -926,6 +1123,18 @@ def split_top_level(text: str) -> list[str]:
     comma to split on. The same header parsed two different ways depending on
     what sat under it.
     """
+    # With no bracket anywhere, `depth` can never leave 0 and every comma is a
+    # split point — which is precisely `str.split(",")`. The loop below is a
+    # per-character Python loop run 389k times over a 137-patent sweep, and the
+    # overwhelming majority of the strings handed to it are bracket-free cells
+    # like `1,234.5`. Same parts, same strip, same drop of empties.
+    s = text or ""
+    if "," not in s:
+        one = s.strip()
+        return [one] if one else []
+    if not _BRACKET.search(s):
+        return [p for p in (x.strip() for x in s.split(",")) if p]
+
     parts, depth, cur = [], 0, []
     for ch in text or "":
         if ch in "([{":
@@ -951,7 +1160,7 @@ def _label_bearing(table: Table, rows) -> list[int]:
     keep = []
     for i in range(table.n_cols):
         vals = [r[i].text.strip() for r in rows if len(r) > i and r[i].text.strip()]
-        if vals and sum(bool(_NRUNS_ONLY.match(v)) for v in vals) > len(vals) * 0.6:
+        if vals and _count_matching(_NRUNS_ONLY, vals) > len(vals) * 0.6:
             continue
         keep.append(i)
     return keep
@@ -977,7 +1186,7 @@ def _fit_inherited(inherited: list[str], table: Table, rows) -> list[str]:
 
 def build_columns(table: Table, inherited: list[str] | None = None,
                   data_rows=None, inherited_unit: str | None = None) -> list[Column]:
-    hdr_rows, body = _header_rows_of(table)
+    hdr_rows, body = _split_rows(table)
     headers = merge_header(table, hdr_rows)
     rows = body if data_rows is None else data_rows
     if inherited and not any(headers):
@@ -997,7 +1206,7 @@ def build_columns(table: Table, inherited: list[str] | None = None,
         # the header is not, so they win here.
         vals = [s.strip() for s in samples if s.strip()]
         if (c.kind == ASSAY and vals
-                and sum(bool(_NRUNS_ONLY.match(v)) for v in vals) > len(vals) * 0.6):
+                and _count_matching(_NRUNS_ONLY, vals) > len(vals) * 0.6):
             c = Column(i, c.header, NRUNS)
         cols.append(c)
 
@@ -1006,11 +1215,19 @@ def build_columns(table: Table, inherited: list[str] | None = None,
     if not any(c.kind == CID for c in cols):
         best, best_score = None, 0.0
         for c in cols:
-            vals = [r[c.index].text for r in rows
-                    if len(r) > c.index and r[c.index].text.strip()]
+            # `r[c.index].text` was indexed and re-read three times per row,
+            # and `.strip()` allocated a copy of every cell only to test it for
+            # emptiness. Same rows, same order, same predicate.
+            ci = c.index
+            vals = []
+            for r in rows:
+                if len(r) > ci:
+                    t = r[ci].text
+                    if t and not t.isspace():
+                        vals.append(t)
             if not vals:
                 continue
-            score = sum(bool(_CID_PAT.match(v)) for v in vals) / len(vals)
+            score = _count_matching(_CID_PAT, vals) / len(vals)
             if score > best_score:
                 best, best_score = c, score
         if best is not None and best_score >= 0.7:
@@ -1074,8 +1291,11 @@ def build_columns(table: Table, inherited: list[str] | None = None,
                         if len(r) > c.index and r[c.index].text.strip()]
                 if not vals:
                     continue
-                usable = sum(bool(_VALUE_PAT.match(v) or _LETTER_BIN.match(v)
-                                  or _PLUS_BIN.match(v)) for v in vals)
+                usable = 0
+                for v in vals:
+                    if (_VALUE_PAT.match(v) or _LETTER_BIN.match(v)
+                            or _PLUS_BIN.match(v)):
+                        usable += 1
                 if usable >= len(vals) * 0.7:
                     c.kind = ASSAY
                     c.assay_name = cap_name
@@ -1089,6 +1309,10 @@ def build_columns(table: Table, inherited: list[str] | None = None,
 # Hoisted to module level: the patch that introduced this compiled it inside
 # `parse_value`, which runs for every cell of every table in the corpus.
 _STAR_HASH_BIN = re.compile(r"([*]+|[#]+)")
+
+# The ASCII spellings of the three comparison qualifiers, folded to the symbol
+# the records carry. Was a dict literal rebuilt inside `parse_value`.
+_QUAL_CANON = {">=": "≥", "<=": "≤", "≈": "~"}
 
 
 def parse_value(cell: str) -> dict | None:
@@ -1139,11 +1363,19 @@ def parse_value(cell: str) -> dict | None:
     # operators and signs before attempting the main value regex. This lets
     # cells like `≥1.0e−005` match without complicating
     # the regex itself. The original `s` is preserved for `value_text`.
-    s_norm = s.replace('\u2212', '-').replace('\u2013', '-').replace('\u2014', '-')
-    s_norm = s_norm.replace('\u00a0', ' ').replace('\u2009', ' ')
-    s_norm = s_norm.replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2248', '~')
-    s_norm = s_norm.replace('\u2267', '>=').replace('\u2266', '<=')
-    s_norm = s_norm.replace('\u2a7e', '>=').replace('\u2a7d', '<=')
+    #
+    # Every character replaced below is non-ASCII, so an all-ASCII cell (which
+    # is nearly every cell in the corpus) cannot contain one and the eleven
+    # `str.replace` passes over it cannot change it. `str.isascii()` is a flag
+    # check on the string object, not a scan.
+    if s.isascii():
+        s_norm = s
+    else:
+        s_norm = s.replace('\u2212', '-').replace('\u2013', '-').replace('\u2014', '-')
+        s_norm = s_norm.replace('\u00a0', ' ').replace('\u2009', ' ')
+        s_norm = s_norm.replace('\u2265', '>=').replace('\u2264', '<=').replace('\u2248', '~')
+        s_norm = s_norm.replace('\u2267', '>=').replace('\u2266', '<=')
+        s_norm = s_norm.replace('\u2a7e', '>=').replace('\u2a7d', '<=')
     m = _VALUE_PAT.match(s_norm)
     if not m:
         # Also try the original in case normalization broke something.
@@ -1153,7 +1385,7 @@ def parse_value(cell: str) -> dict | None:
     qual = m.group("qual")
     if qual:
         qual = quals.get(qual.lower(), qual)
-        qual = {">=": "≥", "<=": "≤", "≈": "~"}.get(qual, qual)
+        qual = _QUAL_CANON.get(qual, qual)
     try:
         # `float` knows `6.49E-03` but not `6.49E−03`; the minus a typesetter
         # chose must not decide whether a measurement survives.
@@ -1176,7 +1408,15 @@ def parse_value(cell: str) -> dict | None:
 
 
 def _is_spacer(row) -> bool:
-    return not any(c.text.strip() for c in row)
+    # `not any(c.text.strip() for c in row)`, without the generator frame or
+    # the throwaway stripped copy of every cell. `t and not t.isspace()` is
+    # true on exactly the strings `t.strip()` is truthy on: `""` is falsy and
+    # `"".isspace()` is False, so the empty cell is handled by the first term.
+    for c in row:
+        t = c.text
+        if t and not t.isspace():
+            return False
+    return True
 
 
 # ── extraction ────────────────────────────────────────────────────
@@ -1790,7 +2030,7 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
                      or (s.count('-') + s.count('[') + s.count('(')) >= 3))
 
     for t in tables:
-        hdr_rows, data_rows = _header_rows_of(t)
+        hdr_rows, data_rows = _split_rows(t)
         headers = merge_header(t, hdr_rows)
         # A legend/caption unit stated once in a <tables> block applies to the
         # data tgroups that follow it under the same id.
@@ -2129,7 +2369,7 @@ def column_report(tables: list[Table]) -> list[dict]:
     by_table_id: dict[str, list[str]] = {}
     unit_by_table_id: dict[str, str] = {}
     for t in tables:
-        hdr_rows, data_rows = _header_rows_of(t)
+        hdr_rows, data_rows = _split_rows(t)
         headers = merge_header(t, hdr_rows)
         # A legend/caption unit stated once in a <tables> block applies to the
         # data tgroups that follow it under the same id.

@@ -333,10 +333,26 @@ def nearest_key_before(text: str) -> str:
     return ""
 
 
+# The two shapes `looks_like_key` tests for, as one pattern compiled at import.
+#
+# They were built inline and searched separately, which meant an f-string
+# interpolation, a lookup of a ~90-character pattern in `re`'s module cache and
+# TWO scans on every call — and `extract_from_patent` calls this on EVERY CELL
+# of every block (604,468 times over a 3-patent trace) before it calls it once
+# on the joined text.
+#
+# `bool(A.search(t)) or bool(B.search(t))` is `bool((?:A)|(?:B)).search(t)`:
+# each branch keeps its own group so alternation cannot straddle them, the
+# flags are the same on both, and only the boolean is used — which alternative
+# matched, and where, was never read. Built where `_SYMBOL`/`_DEFINES`/`_NUM`
+# are already defined, so a capability patch to any of those still lands.
+_KEY_HINT = re.compile(
+    r"(?:is\s+marked|\bkey\s*:|\*\s*key)"
+    rf"|(?:{_SYMBOL}{_DEFINES}(?:IC\s*50|EC\s*50|{_NUM}|[<>≤≥≦≧⩽⩾]))", re.I)
+
+
 def looks_like_key(text: str) -> bool:
     """Cheap test for whether text is worth running the full parser over."""
     if not text:
         return False
-    return bool(re.search(r"is\s+marked|\bkey\s*:|\*\s*key", text, re.I)) or \
-        bool(re.search(rf"{_SYMBOL}{_DEFINES}(?:IC\s*50|EC\s*50|{_NUM}|[<>≤≥≦≧⩽⩾])",
-                       text, re.I))
+    return bool(_KEY_HINT.search(text))
