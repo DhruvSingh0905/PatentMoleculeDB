@@ -1042,10 +1042,42 @@ def _bridge_gp_to_harvest_cids(
                InChIKey → merge (keep patent cid, drop GP{idx})
       Stage B: GP{idx} has InChIKey IK; assay_tables has cid C with
                IUPAC that OPSINs to IK → rename GP{idx} → C (so
-               HARVEST's assay rows flow through to this molecule)
+               HARVEST's assay rows flow through to this molecule).
+               Stage B may also OVERWRITE C's InChIKey when C already
+               holds a different one — see `_candidates_for`.
+      Stage C: restore any molecule A and B destroyed between them.
+
+    Stage C exists because A and B are individually defensible and jointly
+    lossy. A drops GP{M} on the grounds that patent cid C already holds
+    that InChIKey; B then re-points C at a different molecule, retracting
+    the only evidence that made A's drop safe. Measured on the 2026-08-05
+    corpus: 735 GP-embedded molecules across 9 patents ended the run with
+    no entry holding their InChIKey as primary — US9694016 lost 245 —
+    surviving only as strings in some other entry's `inchikey_aliases`,
+    which no downstream join reads as a molecule.
+
+    The invariant Stage C enforces: every InChIKey that is some entry's
+    primary on the way IN is some entry's primary on the way OUT. It is
+    insert-only into unclaimed cids, so it cannot cost an existing
+    binding.
 
     Returns the (potentially modified) example_index.
     """
+    # Snapshot every molecule handed to us, so Stage C can tell what was
+    # destroyed. GP-keyed records win the tie because their positional
+    # index is the only thing that says which patent cid the molecule
+    # belongs to. `dict(rec)` is required, not optional: Stage B mutates
+    # the target record in place, so a reference would show the
+    # overwritten InChIKey and the victim would look like a survivor.
+    entry_primary: dict[str, tuple[str, dict]] = {}
+    for cid, rec in example_index.items():
+        ik = (rec.get("inchikey") or "").strip()
+        if not ik:
+            continue
+        prev = entry_primary.get(ik)
+        if prev is None or (cid.startswith("GP") and not prev[0].startswith("GP")):
+            entry_primary[ik] = (cid, dict(rec))
+
     # Build InChIKey → list of (cid, rec) pairs in example_index
     ik_to_cids: dict[str, list] = {}
     for cid, rec in example_index.items():
@@ -1208,6 +1240,23 @@ def _bridge_gp_to_harvest_cids(
         or digit_alignment_trusted
     )
 
+    def _positional_cids(suffix: str) -> list[str]:
+        """The patent cids a `GP{suffix}` could positionally BE, best
+        first: the patent's own prefixed form (`I-0107`) before the bare
+        digit (`107`). Says nothing about whether they are free or
+        occupied — `_candidates_for` decides that for renaming, Stage C
+        for restoring. Shared so a restore can never land somewhere the
+        rename would not have gone.
+        """
+        if not suffix.isdigit():
+            return []
+        out: list[str] = []
+        if patent_prefixes and pad_width:
+            n_padded = str(int(suffix)).zfill(pad_width)
+            out += [f"{p}{n_padded}" for p in patent_prefixes]
+        out.append(suffix)
+        return out
+
     def _candidates_for(suffix: str) -> list[tuple[str, str]]:
         """Enumerate assay_tables candidate keys for a GP{suffix}.
         Patent-prefixed candidates first (preferred — they're the
@@ -1251,17 +1300,10 @@ def _bridge_gp_to_harvest_cids(
                 return "overwrite"
             return None
 
-        if patent_prefixes and pad_width and suffix.isdigit():
-            n_padded = str(int(suffix)).zfill(pad_width)
-            for p in patent_prefixes:
-                cand = f"{p}{n_padded}"
-                mode = _classify(cand)
-                if mode:
-                    cands.append((cand, mode))
-        if suffix.isdigit():
-            mode = _classify(suffix)
+        for cand in _positional_cids(suffix):
+            mode = _classify(cand)
             if mode:
-                cands.append((suffix, mode))
+                cands.append((cand, mode))
         return cands
 
     cids_to_rename: dict[str, tuple[str, str]] = {}  # gp_cid → (new_cid, mode)
@@ -1377,11 +1419,88 @@ def _bridge_gp_to_harvest_cids(
                     existing["inchikey_aliases"] = aliases
         n_renamed_b += 1
 
-    if n_merged_a or n_renamed_b:
+    # ── Stage C: restore molecules Stages A and B destroyed between them ──
+    #
+    # Insert-only, and only into cids nothing else claimed — so this can
+    # add a molecule but can never take one, nor move an assay row off the
+    # entry that earned it. That is what makes it safe to run
+    # unconditionally rather than behind another trust flag.
+    #
+    # Target order, and why:
+    #   1. the molecule's own positional cid, via the SAME enumeration
+    #      Stage B renames through. This is the rename Stage B would have
+    #      made had Stage A not eaten the record first — it introduces no
+    #      trust assumption the bridge was not already making, which is
+    #      why it is gated on the same `*_alignment_trusted` flags. 284 of
+    #      the 735 land here and re-attach 1,329 assay rows that were
+    #      otherwise orphaned (their cid existed in assay_tables with no
+    #      molecule to hang on); another 114 land on a free positional cid
+    #      that has no rows.
+    #   2. the cid it arrived under. For a Stage-A victim that is its GP
+    #      key, always free — nothing re-creates GP keys after Strategy 0.
+    #      337 land here: molecule kept, no cid claimed.
+    #
+    #   Counts are from an A/B replay of this function, old vs new, over
+    #   one reconstructed input per patent — NOT from a pipeline run, and
+    #   not from the shipped artifacts. Independently predicting the same
+    #   split from example_index + the GP cache gave 286/112/337, agreeing
+    #   to within 1%.
+    #   3. a `~displaced` suffix, for a molecule overwritten in place that
+    #      has no GP twin and therefore no free natural home. Ugly on
+    #      purpose — a visibly odd cid is recoverable, a molecule silently
+    #      deleted is not, and the alternative is to discard a structure we
+    #      hold. Expected to be rare in production: the obvious candidates
+    #      are Strategy 5's OPSIN keys, and those are written as ALIASES
+    #      only (`_strategy5_after_classification`, the `:926` branch), so
+    #      they are never in `entry_primary` and never restored. It fires
+    #      974-735=239 times in the offline A/B replay purely because that
+    #      replay's reconstruction has to promote such an alias back to a
+    #      primary to rebuild the pre-bridge state — treat that count as an
+    #      artefact of the harness, not a production estimate.
+    positional_restore_ok = (
+        positional_alignment_trusted
+        or prefix_alignment_trusted
+        or digit_alignment_trusted
+    )
+    post_primary = {
+        (r.get("inchikey") or "").strip() for r in example_index.values()
+    }
+    post_primary.discard("")
+    n_restored = 0
+    n_restored_onto_assay_cid = 0
+    for ik, (orig_cid, rec) in entry_primary.items():
+        if ik in post_primary:
+            continue
+        target = None
+        if positional_restore_ok and orig_cid.startswith("GP"):
+            target = next(
+                (c for c in _positional_cids(orig_cid[2:])
+                 if c not in example_index),
+                None,
+            )
+        if target is None and orig_cid not in example_index:
+            target = orig_cid
+        if target is None:
+            target = f"{orig_cid}~displaced"
+            if target in example_index:      # pathological; don't clobber
+                continue
+        rec = dict(rec)
+        if not target.startswith("GP") and "~" not in target:
+            rec["compound_id"] = f"Cpd. No. {target}"
+        rec["restored_from"] = orig_cid
+        example_index[target] = rec
+        post_primary.add(ik)
+        n_restored += 1
+        if target in assay_tables:
+            n_restored_onto_assay_cid += 1
+
+    if n_merged_a or n_renamed_b or n_restored:
         logger.info(
             "%s: bridge — %d GP+patent merged (Stage A), %d orphan GP renamed "
-            "(Stage B; %d Strategy-5 IK overwrites)",
+            "(Stage B; %d Strategy-5 IK overwrites), %d molecules restored "
+            "(Stage C; %d onto a cid that has assay rows)",
             patent_id, n_merged_a, n_renamed_b, n_overwritten,
+            n_restored, n_restored_onto_assay_cid,
         )
     return example_index
 
