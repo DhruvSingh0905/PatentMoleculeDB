@@ -25,6 +25,7 @@ import json
 import logging
 import sys
 
+from ...repair import guard
 from ...repair.capability import collect_gaps, repair_capabilities
 
 
@@ -64,7 +65,12 @@ def main() -> int:
         print("Run with --repair to patch the code (one call per layout).")
         return 1
 
-    report = repair_capabilities(limit=args.limit, patent_ids=pids, model=args.model)
+    # `--repair` IS the operator asking for the tree to move. `process_patent`
+    # reaches this same function through `autoheal` without asking, and gets a
+    # journaled proposal instead of a rewritten reader — see repair/guard.
+    with guard.operator_request():
+        report = repair_capabilities(limit=args.limit, patent_ids=pids,
+                                     model=args.model)
     if args.json:
         print(json.dumps(report, indent=2, default=str))
         return 0 if report["declined"] == 0 else 1

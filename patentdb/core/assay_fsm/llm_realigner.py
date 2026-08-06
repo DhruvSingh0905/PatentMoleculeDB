@@ -1,13 +1,30 @@
-"""Stage 5 — ALWAYS-FIRE LLM realigner.
+"""Stage 5 — the LLM realigner, behind `config.ASSAY_REALIGN_ENABLED`.
 
-Architectural commitment: this LLM call fires on every region the
-detector emits, *the first time a fingerprint is seen*. Cache hits
-return the cached result for free. Cache misses fire the LLM,
-cache the result, and persist.
+It called itself the ALWAYS-FIRE realigner and meant it: one LLM call per
+chunk of every region the detector emits, on every patent, with no feature
+flag — bounded only by a fingerprint cache and `PER_PATENT_REALIGN_CAP`.
+That commitment was made when the input was OCR of a picture of a document;
+OCR left the tree in `43d037e`, and the same tables now arrive as USPTO
+OASIS/CALS cells.
 
-There is NO `_is_garbled_assay_page` heuristic gate, no "fire only
-when baseline produced 0 rows" pattern. The LLM is co-equal with
-the FSM, not a fallback.
+Measured before gating it (22 corpus patents, replayed from cache, zero paid
+calls — see `tests/test_realign_gate.py` for the full trace): it costs $0.55
+per new patent and 270 chunks corpus-wide, and gating it off LOSES 9,358
+(cid, assay, value) triples of which 8,010 are reproduced by
+`sources.uspto_assays.extract_from_patent`, and 1,615 compounds of which
+1,610 are. Net: 5 compounds. Turning it off also GAINS 2,466 rows, because
+its rows occupy (compound, assay) slots that `_merge_into(gap_fill_only=
+True)` then denies to the free pattern library.
+
+The gate lives INSIDE `realign_region` and again inside
+`adaptive_extraction_cache.realign_table_via_llm`, not in
+`pipeline._process_region` — `43d037e` removed two dead functions that had
+carried the only `LLM_RECOVERY_ENABLED` check in their module, and a gate on
+the caller is undone by the next caller.
+
+Cache hits are gated too. A fingerprint hit is free, but it is still this
+tier's output, and the measurement above says those free rows displace the
+free pattern library's. OFF means off for both.
 
 This module reuses two existing pieces of infrastructure:
   - `core.adaptive_extraction_cache.realign_table_via_llm` — the
@@ -229,7 +246,7 @@ def realign_region(
     patent_id: str | None = None,
     cache: AdaptiveExtractionCache | None = None,
 ) -> LLMResult:
-    """Always-fire LLM realigner with fingerprint-cached results.
+    """LLM realigner with fingerprint-cached results. OFF unless asked.
 
     Args:
         region: A Region from `detect_regions(...)`.
@@ -238,9 +255,15 @@ def realign_region(
                creates a new one if None.
 
     Returns:
-        LLMResult with rows + units. Empty rows on LLM failure (caller
-        proceeds with FSM-only extraction in that case).
+        LLMResult with rows + units. Empty rows when the tier is disabled
+        or the LLM fails (caller proceeds with FSM-only extraction).
     """
+    from .. import config as _cfg
+    if not _cfg.ASSAY_REALIGN_ENABLED:
+        # Including the cache-hit path — see the module docstring.
+        return LLMResult(rows=[], units={}, notes="gated_off",
+                         fingerprint="", cache_hit=False, n_chunks=0)
+
     if cache is None:
         cache = AdaptiveExtractionCache()
 

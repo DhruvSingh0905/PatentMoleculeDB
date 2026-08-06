@@ -213,6 +213,15 @@ def maybe_escalate(patent_id: str, report) -> dict | None:
         # `max_calls=0`, so a patent whose pipeline run bought a rule was
         # re-examined as though it had not. The tier could then act on a
         # different set of gaps than the one `_wants_code_tier` escalated for.
+        #
+        # `apply` IS NOT PASSED, deliberately. This is the pipeline, and the
+        # pipeline did not ask for its reader to be rewritten — it asked for an
+        # extraction. `repair_capabilities` reads the omission as "nobody said"
+        # and defers to `guard`, which refuses the write, logs it loudly, and
+        # journals the verified proposal for `parser_health --force <id>`.
+        # This call used to resolve to `config.PARSER_REPAIR_APPLY` (default 1)
+        # and rewrite `sources/uspto_assays.py` mid-run; two agents lost
+        # measurements to it. Diagnosis is unchanged — only the write is gated.
         rep = repair_capabilities(patent_ids=[patent_id], limit=1,
                                   reports={patent_id: report})
     except Exception as e:
@@ -224,21 +233,30 @@ def maybe_escalate(patent_id: str, report) -> dict | None:
     finally:
         _healing.active = False
 
-    logger.warning("autoheal: %s — %d gap(s), %d applied, %d declined",
+    logger.warning("autoheal: %s — %d gap(s), %d applied, %d proposed (not "
+                   "written), %d declined",
                    patent_id, rep.get("gaps", 0), rep.get("applied", 0),
-                   rep.get("declined", 0))
+                   rep.get("proposed", 0), rep.get("declined", 0))
     for r in rep.get("results", []):
-        logger.warning("autoheal:   %s %s — %s",
-                       "APPLIED" if r.get("ok") else "declined",
-                       r.get("target"), str(r.get("why") or "")[:200])
+        # APPLIED means the tree moved. A patch that verified and was refused
+        # the write is PROPOSED — it used to print APPLIED, which is how a run
+        # that changed nothing read like a run that had healed itself.
+        state = ("APPLIED" if r.get("written") else
+                 "proposed" if r.get("ok") else "declined")
+        logger.warning("autoheal:   %s %s — %s", state, r.get("target"),
+                       str(r.get("why") or "")[:200])
     # A patch can APPLY on corpus coverage and still leave the patent that
     # asked for it at zero — measured, twice. That is not a reason to block the
     # patch; corpus coverage is the one condition that cannot be argued with.
     # It IS a reason not to record the capability as bought: releasing the key
     # lets a later run ask again, and `collect_gaps` will by then have read the
     # failed attempt out of the journal and put it in the next prompt.
+    # `written`, not `ok`: releasing the key is about a patch that LANDED and
+    # still left its patent at zero. A patch the guard refused bought nothing
+    # and landed nothing, so re-asking inside this same run would only earn a
+    # second refusal at the price of another full corpus verification.
     unresolved = [r for r in rep.get("results", [])
-                  if r.get("ok") and (r.get("gap_rows_recovered") or 0) <= 0]
+                  if r.get("written") and (r.get("gap_rows_recovered") or 0) <= 0]
     if unresolved:
         with _lock:
             _attempted.discard(key)

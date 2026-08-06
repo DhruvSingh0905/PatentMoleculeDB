@@ -28,8 +28,10 @@ import json
 import logging
 import sys
 
+from ...repair import guard
 from ...repair.parser_repair import (
-    apply_journaled, corpus_defects, journal_read, repair_reader, revert,
+    apply_journaled, corpus_defects, journal_read, journal_state,
+    reconcile_journal, repair_reader, revert,
 )
 
 
@@ -38,12 +40,23 @@ def _print_history() -> int:
     if not entries:
         print("no parser repairs recorded")
         return 0
+    # `applied` is a claim about the past; `live`/`stale` is whether the tree
+    # still holds that text, which is what decides whether `--revert` can work.
+    # They came apart — six entries claimed applied against a file identical to
+    # HEAD — and nothing showed an operator which was which.
+    live = {s["id"]: s for s in journal_state()}
     print(f"{len(entries)} journal entr(ies)\n")
     for e in entries:
         state = ("APPLIED" if e.get("applied") else
                  "declined" if e.get("action") == "patch" else e.get("action", "?"))
+        st = live.get(e.get("id"))
+        tail = ""
+        if st:
+            tail = f"  [{st['state']}]"
+            if st.get("duplicate_of"):
+                tail += f" re-application of {st['duplicate_of']}"
         print(f"  {e.get('id')}  {state:9s} {e.get('action')}  "
-              f"{e.get('signature', '')}")
+              f"{e.get('signature', '')}{tail}")
         if e.get("blast_radius"):
             print(f"      radius: {e['blast_radius']}")
         if e.get("why"):
@@ -65,6 +78,8 @@ def main() -> int:
     ap.add_argument("--repair", action="store_true",
                     help="diagnose, patch and apply (one model call per defect)")
     ap.add_argument("--history", action="store_true", help="show the repair journal")
+    ap.add_argument("--reconcile", action="store_true",
+                    help="mark applied entries whose text the tree no longer holds")
     ap.add_argument("--revert", metavar="ID", help="undo a journaled patch")
     ap.add_argument("--force", metavar="ID",
                     help="apply a journaled proposal the check declined")
@@ -76,12 +91,19 @@ def main() -> int:
 
     if args.history:
         return _print_history()
+    if args.reconcile:
+        print(json.dumps(reconcile_journal(), indent=2))
+        return 0
+    # Typing a journal id, or `--repair`, IS the operator asking for the tree to
+    # move. Nothing else in the process gets that permission — see repair/guard.
     if args.revert:
-        r = revert(args.revert)
+        with guard.operator_request():
+            r = revert(args.revert)
         print(json.dumps(r, indent=2))
         return 0 if r.get("ok") else 1
     if args.force:
-        r = apply_journaled(args.force)
+        with guard.operator_request():
+            r = apply_journaled(args.force)
         print(json.dumps(r, indent=2))
         return 0 if r.get("ok") else 1
 
@@ -101,7 +123,8 @@ def main() -> int:
         print("Run with --repair to fix them (one call per defect, not per patent).")
         return 1
 
-    report = repair_reader()
+    with guard.operator_request():
+        report = repair_reader()
     if args.json:
         print(json.dumps(report, indent=2, default=str))
         return 0 if report["declined"] == 0 else 1

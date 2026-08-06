@@ -70,6 +70,39 @@ BDB_REFERENCE_TSV = Path(os.environ.get("BDB_REFERENCE_TSV", "")) if os.environ.
 # regression debugging or cost-controlled re-runs.
 HARVEST_BURST_ENABLED = os.environ.get("HARVEST_BURST", "1") == "1"
 
+# ── The assay realigner (`assay_fsm/llm_realigner.realign_region`) ─
+# Stage 5 of the assay FSM: one Sonnet call per chunk of every detected
+# table region, on every patent. DEFAULT OFF.
+#
+# It called itself the "ALWAYS-FIRE LLM realigner" and had no flag at all —
+# bounded only by a fingerprint cache and PER_PATENT_REALIGN_CAP. Counting
+# chunks over the 22 corpus patents' GP descriptions (`chunk_region`, no LLM
+# touched): 270 chunks, mean 12.3/patent. Priced from the 644 realign-shaped
+# responses in `output_v2/cache`, whose token counts `api_cache.store_cached`
+# recorded (median $0.0391, mean $0.0449/call): $0.55 per NEW patent, $12.12
+# for the corpus, and US9718790's 49 chunks would hit the $1.50 cap and
+# truncate its own table mid-way.
+#
+# What it bought, replaying `extract_for_patent` over all 22 with the tier on
+# and off (HARVEST_BURST=0, so the free pattern-library gap-fill is present;
+# zero paid calls): rows 39,063 -> 41,529, i.e. turning it OFF produces 2,466
+# MORE, because its rows occupy (compound, assay) slots that
+# `_merge_into(gap_fill_only=True)` then denies the free library. Compounds
+# carrying any row: 12,461 -> 10,846, none gained.
+#
+# Of those 1,615 compounds, 1,610 are already carried by
+# `sources.uspto_assays.extract_from_patent`, which `process_patent` appends
+# unconditionally — net 5, two of them named `D` and `10`. Of 9,358 lost
+# (cid, assay, value) triples, 8,010 are reproduced by that same reader; 642
+# of the remaining 1,348 are US11254686's dimensionless `A2A/A1 ratio` rows
+# and clearances stamped "nM or assay units", which is the fabrication
+# `_DIMENSIONLESS` exists to block on that exact patent.
+#
+# So: a per-patent spend up to the cap, ungated, for 5 compounds the
+# deterministic CALS reader misses. ASSAY_REALIGN=1 restores it — the case
+# for that is a source the CALS reader cannot read, not a USPTO grant.
+ASSAY_REALIGN_ENABLED = os.environ.get("ASSAY_REALIGN", "0") == "1"
+
 # MINERU_OCR_ENABLED lived here and is gone with the code it gated.
 #
 # It defaulted off already, but "off by default" still left an OCR engine one
@@ -362,15 +395,18 @@ PER_PATENT_LM_CAP = 0.20  # USD
 # above the soft cap so normal multi-strategy spend doesn't trip it.
 PER_PATENT_LM_HARD_CAP = 1.00  # USD
 
-# Per-patent image-pipeline cost cap (Sonnet/Opus Vision + Sonnet layout calls)
-# Separate from LM cap so a Tier-B patent can spend on diagrams without burning LM budget
-PER_PATENT_IMAGE_CAP = 0.50  # USD
 
-# Per-patent LLM-realigner cap — the always-fire assay-table extractor. Bigger
-# than the LM cap because one large multi-column table can legitimately need
-# 15-20 chunked LLM calls (US11254686's 645-row table ≈ $1). Separate bucket so
-# it doesn't starve IUPAC name recovery, but still bounded so a runaway can't
-# eat the global budget. The global COST_CEILING is the final backstop.
+# Per-patent LLM-realigner cap — reached only under `ASSAY_REALIGN=1`; this
+# was the tier's ONLY bound while it had no flag. Bigger than the LM cap
+# because one large multi-column table can legitimately need 15-20 chunked LLM
+# calls (US11254686's 645-row table ≈ $1). Separate bucket so it doesn't starve
+# IUPAC name recovery, but still bounded so a runaway can't eat the global
+# budget. The global COST_CEILING is the final backstop.
+#
+# It is a ceiling, not a budget: US9718790 chunks to 49 calls ≈ $2.20, so
+# hitting this cap TRUNCATES that patent's table part-way (llm_realigner logs
+# COST-GATED and breaks the chunk loop). Raise it deliberately or accept a
+# partial read; there is no third outcome.
 PER_PATENT_REALIGN_CAP = 1.50  # USD
 
 # Drug-likeness filter — read by `smiles_utils.passes_lipinski`.

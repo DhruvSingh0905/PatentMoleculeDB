@@ -42,7 +42,7 @@ import re
 from pathlib import Path
 
 from ..core import config
-from . import value_check
+from . import guard, value_check
 from .oracle import diff, sample_patent, target_note
 from .parser_repair import journal_append, verify_patch
 
@@ -1086,23 +1086,39 @@ def repair_capabilities(*, apply: bool | None = None, limit: int | None = None,
                         patent_ids: list[str] | None = None,
                         model: str | None = None,
                         reports: dict | None = None) -> dict:
-    """Find capability gaps, buy one patch each, verify, APPLY, journal.
+    """Find capability gaps, buy one patch each, verify, journal, and — when
+    somebody asked for it — APPLY.
 
-    Applies without asking, for the same reason `repair_reader` does: a fix that
-    waits on a switch is a queue, and the gap is costing records while it waits.
-    Safety is the verifier and the journal, not permission — every proposal,
-    taken or declined, is recorded with its full before/after source and the
-    per-patent coverage it moved.
+    It used to apply unconditionally, on the reasoning that a fix waiting on a
+    switch is a queue and safety is the journal rather than permission. That
+    reasoning holds for an operator who ran `capability_repair --repair`. It
+    does not hold for `process_patent`, which arrives here through `autoheal`
+    having asked for an extraction — and which rewrote `uspto_assays.py`
+    underneath the runs that were measuring it. See repair/guard.py.
+
+    `apply` is now a TRI-STATE. True/False is a caller naming its intent and
+    wins outright; `None` — the pipeline's case — defers to `guard`, which
+    grants the write only inside `operator_request()` or under `SELF_PATCH=1`.
+    Nothing is lost when it refuses: the proposal is journaled with its full
+    before/after source and `parser_health --force <id>` applies it later.
     """
     from .parser_repair import baseline_counts
     from ..sources.uspto_xml import assemble_blocks, parse_tables
 
-    do_apply = config.PARSER_REPAIR_APPLY if apply is None else apply
+    # TRI-STATE, deliberately. `None` means "nobody said", and that is the case
+    # `process_patent` is in — it reaches this tier through `autoheal`, having
+    # asked for an extraction, not for its reader to be rewritten. It used to
+    # read `config.PARSER_REPAIR_APPLY` here, whose default is 1, so the
+    # pipeline resolved to True and the tree moved under the run measuring it.
+    # `None` now defers to `guard`, which asks whether an operator ASKED.
+    # An explicit True/False from a caller (a repair CLI, a test) still wins.
+    do_apply = apply
     gaps = collect_gaps(patent_ids, reports=reports)
     if limit:
         gaps = gaps[:limit]
     if not gaps:
-        return {"gaps": 0, "applied": 0, "declined": 0, "results": []}
+        return {"gaps": 0, "applied": 0, "declined": 0, "proposed": 0,
+                "results": []}
 
     # The FULL corpus baseline, exactly as before — `verify_patch` compares its
     # sum against a corpus-wide probe total, and a narrower population would put
@@ -1112,7 +1128,7 @@ def repair_capabilities(*, apply: bool | None = None, limit: int | None = None,
     # repair/ledger.py for the key and for why populational scoping was rejected.
     base = baseline_counts()
     results = []
-    applied = declined = 0
+    applied = declined = proposed = 0
     xml_dir = config.OUTPUT_DIR / "uspto_xml"
 
     for g in gaps:
@@ -1129,18 +1145,25 @@ def repair_capabilities(*, apply: bool | None = None, limit: int | None = None,
             if outcome is None:
                 continue                       # declined; climb the ladder
             results.append(outcome)
-            if outcome.get("ok"):
+            # `applied` counts WRITES, not verdicts. It used to count
+            # `outcome["ok"]`, which is `verify_patch`'s opinion — so a patch
+            # that verified and was never written still reported "1 applied",
+            # and `process_patent` re-extracted on the strength of it, believing
+            # the reader underneath it had changed. Three states, not two.
+            if outcome.get("written"):
                 applied += 1
+            elif outcome.get("ok"):
+                proposed += 1
             else:
                 declined += 1
             break
         else:
             declined += 1
     return {"gaps": len(gaps), "applied": applied, "declined": declined,
-            "results": results}
+            "proposed": proposed, "results": results}
 
 
-def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
+def _try_one(g: dict, table, model: str, base: dict, do_apply: bool | None,
              *, last: bool) -> dict | None:
     """One model's attempt at one gap. None means "declined, try the next".
 
@@ -1275,10 +1298,29 @@ def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
             and verdict.get("per_patent", {}).get(q, 0) != base[q]},
     }
     entry["below_best"] = verdict.get("below_best") or {}
-    if verdict.get("ok") and do_apply:
+    # Every write goes through `guard`, which asks whether anybody ASKED for the
+    # tree to move — see repair/guard.py for the four-hop chain that let an
+    # ordinary extraction run rewrite `uspto_assays.py`. `do_apply` is still
+    # honoured as a veto; it is no longer the only thing standing here.
+    if verdict.get("ok"):
+        outcomes = {}
         for mod, text in edited.items():
-            mod.write_text(text)
-        entry["applied"] = True
+            outcomes[mod] = guard.write_tracked_source(
+                mod, text, what=targets, explicit=do_apply)
+        entry["applied"] = any(o == guard.Outcome.WRITTEN for o in outcomes.values())
+        # A cached proposal replayed onto a tree that already holds it changed
+        # nothing, and must not be journaled as a fourth application of itself.
+        if not entry["applied"]:
+            states = sorted(set(outcomes.values()))
+            entry["write_outcome"] = ",".join(states)
+            entry.setdefault("objections", []).append(
+                "not applied: " + ", ".join(states))
+            if guard.Outcome.REFUSED in states:
+                logger.warning(
+                    "capability: %s verified a patch to %s for %s and did NOT "
+                    "write it — no operator asked. Apply it with "
+                    "`parser_health --force <id>`.",
+                    g["patent"], targets, parts[0]["module"])
     jid = _journal(entry)
     if entry["applied"]:
         # The tree has moved, so every ledger entry is now stale — and the probe
@@ -1289,7 +1331,8 @@ def _try_one(g: dict, table, model: str, base: dict, do_apply: bool,
         # the patched tree.
         from .parser_repair import adopt_baseline
         adopt_baseline(verdict, journal_id=jid)
-    return {"ok": bool(verdict.get("ok")), "journal_id": jid, "model": model,
+    return {"ok": bool(verdict.get("ok")), "written": bool(entry["applied"]),
+            "journal_id": jid, "model": model,
             "fingerprint": g["fingerprint"], "target": targets,
             "rows_at_stake": g["rows_at_stake"],
             "diagnosis": prop.get("diagnosis", ""), "why": verdict.get("why", ""),

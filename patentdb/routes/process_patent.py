@@ -2135,6 +2135,11 @@ def process_patent(
         that `extract_text_index` used to return.
     """
     initial_spend = cost_tracker.patent_spend(patent_id)
+    # Baseline for the per-route breakdown, taken beside `initial_spend` and
+    # for the same reason: both numbers in the audit's `cost` block describe
+    # THIS run, and a cumulative `by_route` beside a per-run `lm_usd` would not
+    # sum to it the second time a process ran the same patent.
+    initial_routes = cost_tracker.all_route_spend(patent_id)
 
     # ── STAGE 1 — text sources ────────────────────────────────────
     text, src_format, text_md, md_format = _resolve_text_sources(patent_id)
@@ -2461,13 +2466,29 @@ def process_patent(
         # every figure quoted about it an estimate. Per the backtrace rule in
         # CLAUDE.md, a number nothing produces is not a result.
         #
-        # `patent_spend` is language-model spend only; image spend has its own
-        # bucket and its own cap, so both are reported rather than summed into
-        # one figure that hides which ceiling a patent is near.
+        # `by_route` shipped `{}` on every patent this project has processed,
+        # because `record()` only filled it inside a `cost_tracker.attribute()`
+        # block and `attribute()` had zero callers. The route is now DERIVED
+        # from the stack at the spend site (`cost_tracker.derive_route`), so a
+        # path cannot opt out of being counted and a path added later is
+        # counted without anyone editing this file. Keys are
+        # `module:function` — the function that emitted the spend, which is
+        # what the backtrace rule asks for.
+        #
+        # `image_usd` is gone with the bucket behind it. `per_patent_image` had
+        # one writer, `cost_tracker.record_image()`, and that had zero callers
+        # anywhere in the tree, so the field was structurally 0.0 on every run
+        # ever written — a reported number that could not vary.
+        #
+        # Rounded to 6 dp, not 4: one repair-loop synthesis costs ~$0.002 and a
+        # Haiku call less, and a route that rounds to 0.0 reads as a route that
+        # did not fire.
         "cost": {
             "lm_usd": round(final_spend, 4),
-            "image_usd": round(cost_tracker.patent_image_spend(patent_id), 4),
-            "by_route": cost_tracker.all_route_spend(patent_id),
+            "by_route": {
+                route: round(usd, 6) for route, usd in
+                cost_tracker.route_spend_since(patent_id, initial_routes).items()
+            },
             "lm_cap_usd": config.PER_PATENT_LM_CAP,
             "lm_cap_hit": cost_tracker.patent_lm_exceeded(patent_id),
         },

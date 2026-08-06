@@ -9,11 +9,13 @@ loads cached page text, dispatches to `extract_page`, and aggregates
 results. Drop-in replacement for the legacy
 `extract_assays_for_patent`.
 
-The pipeline NEVER returns "empty silently" — if a page has any
-detectable assay-table region, the LLM realigner fires (cache miss)
-or returns the cached result (cache hit). If a page has NO assay
-region (truly non-assay content), the function returns {} with that
-status reflected in the diagnostic dict.
+Stage 5, the LLM realigner, used to fire on every region of every patent
+with no flag; it is now behind `config.ASSAY_REALIGN_ENABLED`, default
+OFF, and the gate is inside `llm_realigner.realign_region` rather than
+here. With it off this pipeline is fully deterministic and free, and its
+assay rows come from the FSM plus the pattern-library gap-fill below.
+Measured cost of that default: `llm_realigner`'s docstring and
+`tests/test_realign_gate.py`.
 """
 from __future__ import annotations
 
@@ -153,7 +155,9 @@ def _process_region(
     n_cols = detect_n_columns(rows1)
     fsm_rows = align_rows(stream, expected_n_columns=n_cols) if n_cols else rows1
 
-    # Stage 5: ALWAYS-FIRE LLM realigner (fingerprint-cached)
+    # Stage 5: LLM realigner (fingerprint-cached), OFF unless ASSAY_REALIGN=1.
+    # Called unconditionally on purpose — the flag is checked inside, so this
+    # call site cannot be the one that forgets it.
     llm_result: LLMResult = realign_region(
         region, patent_id=patent_id, cache=cache,
     )

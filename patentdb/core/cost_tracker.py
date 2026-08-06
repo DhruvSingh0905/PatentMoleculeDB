@@ -1,10 +1,19 @@
-"""Cost tracking with threshold alerts and ceiling enforcement."""
+"""Cost tracking with threshold alerts, ceiling enforcement and per-route
+attribution.
+
+Every paid call in the package ends at `CostTracker.record()` — the three
+`core/api_client.py` entry points and the four `repair/` sites that drive
+`client.messages.create` themselves. That makes `record()` the one place where
+attribution can be taken WITHOUT asking the caller for it, which is the only
+kind of attribution that survives contact with a growing codebase: see
+`derive_route` below.
+"""
 
 from __future__ import annotations
 
 import logging
+import sys
 import threading
-from contextlib import contextmanager
 
 from . import config
 
@@ -14,6 +23,65 @@ logger = logging.getLogger(__name__)
 class CostCeilingExceeded(Exception):
     """Raised when cumulative API cost exceeds the hard ceiling."""
     pass
+
+
+# ── Route attribution ──────────────────────────────────────────────
+#
+# TRANSPORT, not routes. A frame in one of these modules describes HOW a call
+# was made, never WHY, and attributing to it would put the corpus's entire LM
+# bill under `core.api_client:call_claude_text` — a decomposition that answers
+# nothing. The walk skips them and keeps going outward until it reaches the
+# code that wanted the answer.
+_TRANSPORT_MODULES = frozenset({
+    "patentdb.core.cost_tracker",
+    "patentdb.core.api_client",
+})
+
+_PKG_PREFIX = "patentdb."
+
+
+def derive_route() -> str:
+    """Name the route responsible for the spend being recorded right now.
+
+    Read off the call stack, not off an argument. The alternatives were both
+    tried and both are opt-in at the call site:
+
+      * the `attribute(route)` context manager this replaces — it shipped with
+        ZERO callers, so `route_audit.json`'s `by_route` was `{}` on every
+        patent this project has ever processed;
+      * a `contextvars.ContextVar` set once per stage — invisible inside a
+        `ThreadPoolExecutor` worker, and `iupac_to_smiles` makes its paid calls
+        from a 10-worker pool (`core/iupac_to_smiles.py:1079`). The largest LM
+        consumer in the pipeline would have been the one path it could not see.
+
+    Anything derived from the stack, by contrast, cannot be forgotten: a paid
+    path added tomorrow is attributed the first time it spends, under its own
+    `module:function`, with no edit here and nothing to register. The cost of
+    that is a label that changes when a function is renamed — cheap, and
+    visible, next to a bucket that silently stays empty.
+
+    Returns `"<module below patentdb.>:<function>"`, e.g.
+    `"repair.synthesize:propose"` or `"core.iupac_to_smiles:_llm_direct_smiles"`.
+
+    Known collision, stated so nobody reads more into a label than it holds:
+    `iupac_burst` and `iupac_burst_targeted` are separately gated entry points
+    that both spend through `harvest/agent_iupac_extract.extract_iupac_pairs`,
+    so they share one bucket. The label names the function that made the call,
+    which is the contract; separating the two callers means walking further out
+    of the stack, and no cost question has needed it yet.
+    """
+    frame = sys._getframe(1)
+    while frame is not None:
+        module = frame.f_globals.get("__name__") or "?"
+        if module not in _TRANSPORT_MODULES:
+            if module.startswith(_PKG_PREFIX):
+                module = module[len(_PKG_PREFIX):]
+            return f"{module}:{frame.f_code.co_name}"
+        frame = frame.f_back
+    # Only reachable if the whole stack is transport, which cannot happen from
+    # `record()`. Named rather than dropped: an unattributable dollar is still
+    # a dollar, and a silent zero is the failure this module exists to end.
+    return "unattributed:?"
 
 
 class CostTracker:
@@ -30,22 +98,17 @@ class CostTracker:
         self._patent_alerted: set[str] = set()
         # Per-patent LM spend tracker (for $0.20/patent cap)
         self.per_patent: dict[str, float] = {}
-        # Per-patent image-pipeline spend (Vision layout calls + Vision SMILES fallbacks)
-        # Separate from per_patent so image work doesn't trip the LM cap and vice versa
-        self.per_patent_image: dict[str, float] = {}
         # Per-patent LLM-realigner spend (the always-fire table extractor). Kept
         # SEPARATE from per_patent so a big assay table (US11254686: 17 chunks,
         # ~$1) doesn't instantly trip the $0.20 IUPAC cap and starve name
         # recovery. Has its own, more generous cap (PER_PATENT_REALIGN_CAP).
         self.per_patent_realign: dict[str, float] = {}
-        # Per-patent per-route LM spend, populated only inside `attribute(route)`
-        # context managers. This is the "isolated" cost source the audit
-        # uses for Markush ROI — diffing total_cost across Step 2.7 was
-        # unreliable because async upstream calls could land in the diff.
+        # Per-patent per-route LM spend. Every call `record()` sees lands here
+        # under the route `derive_route()` reads off the stack, regardless of
+        # which per-patent BUDGET the call belongs to — the buckets above are
+        # three separate caps, not three separate ledgers, and a decomposition
+        # that omitted the realigner would omit the largest cap of the three.
         self.per_patent_route: dict[str, dict[str, float]] = {}
-        # Thread-local stack of active route names. Each thread has its own
-        # stack so concurrent route calls don't poison each other.
-        self._attrib_local = threading.local()
         # Guards every mutation of the counters above. `iupac_to_smiles` runs a
         # 10-worker ThreadPoolExecutor that makes paid calls, and `record()`
         # does read-modify-write (`self.total_cost += cost`, `d[k] = d.get(k,0)
@@ -99,6 +162,11 @@ class CostTracker:
         if discount > 0:
             cost = cost * (1.0 - discount)
 
+        # Taken OUTSIDE the lock: it only reads this thread's own frames, and
+        # it must be taken here rather than deeper because the stack below this
+        # point is `record`'s own.
+        route = derive_route()
+
         # Everything below mutates shared counters. Held under one lock so a
         # concurrent worker can't interleave a read-modify-write and lose spend.
         with self._lock:
@@ -127,15 +195,22 @@ class CostTracker:
                         patent_id, self.per_patent[patent_id],
                         config.PER_PATENT_LM_HARD_CAP, config.PER_PATENT_LM_CAP,
                     )
-                # Attribute to the innermost active route (if any). This makes
-                # Markush ROI cost robust to async upstream calls that complete
-                # mid-Markush — only calls actually inside the `with attribute(...)`
-                # block accumulate to that route's bucket.
-                stack = getattr(self._attrib_local, "stack", None)
-                if stack:
-                    route = stack[-1]
-                    bucket = self.per_patent_route.setdefault(patent_id, {})
-                    bucket[route] = bucket.get(route, 0.0) + cost
+            # Attribution, for EVERY category — deliberately outside the two
+            # budget branches above. `by_route` answers "where did this
+            # patent's money go", and the realigner is money.
+            #
+            # A call with no `patent_id` cannot be attributed to a patent and
+            # is dropped here rather than filed under a blank key; the
+            # per-patent budgets already ignore it for exactly the same reason,
+            # so this loses nothing `per_patent` was not already losing. Three
+            # live sites spend without one and are therefore invisible to BOTH
+            # the cap and the breakdown: `harvest/agent1_targets.extract_targets`
+            # and `harvest/agent2_activities.extract_activities` /
+            # `._extract_row_patterns`, the non-batch fallbacks. Fixing that is
+            # one keyword argument at each site, not a change here.
+            if patent_id:
+                bucket = self.per_patent_route.setdefault(patent_id, {})
+                bucket[route] = bucket.get(route, 0.0) + cost
 
             # Check thresholds
             for threshold in config.COST_THRESHOLDS:
@@ -172,7 +247,6 @@ class CostTracker:
     def reset_patent(self, patent_id: str):
         """Reset per-patent counters (called at start of each patent run)."""
         self.per_patent[patent_id] = 0.0
-        self.per_patent_image[patent_id] = 0.0
         self.per_patent_realign[patent_id] = 0.0
         self.per_patent_route[patent_id] = {}
 
@@ -181,62 +255,32 @@ class CostTracker:
         return self.per_patent.get(patent_id, 0.0)
 
     # ── Per-route attribution ────────────────────────────────────
-    @contextmanager
-    def attribute(self, route: str):
-        """Attribute all `record()` costs inside the block to `route`.
-
-        Use as:
-            with cost_tracker.attribute("markush_enumeration"):
-                run_markush_enumeration(...)
-
-        Costs from API calls actually issued inside the block are added
-        to `per_patent_route[patent_id][route]`. Async upstream calls
-        that complete during the block are NOT attributed to this route
-        (they were issued under a different attribution scope or none
-        at all). This is the isolation property that `patent_spend()`
-        diffs lack.
-
-        Nesting is supported (innermost wins); the stack is per-thread
-        so parallel route calls don't poison each other.
-        """
-        stack = getattr(self._attrib_local, "stack", None)
-        if stack is None:
-            stack = []
-            self._attrib_local.stack = stack
-        stack.append(route)
-        try:
-            yield
-        finally:
-            stack.pop()
-
-    def route_spend(self, patent_id: str, route: str) -> float:
-        """Return cost attributed to a specific route for a patent."""
-        return self.per_patent_route.get(patent_id, {}).get(route, 0.0)
-
     def all_route_spend(self, patent_id: str) -> dict[str, float]:
-        """Return per-route cost map for a patent."""
-        return dict(self.per_patent_route.get(patent_id, {}))
+        """Return the cumulative per-route cost map for a patent."""
+        with self._lock:
+            return dict(self.per_patent_route.get(patent_id, {}))
 
-    # ── Image-pipeline budget (separate counter) ──────────────────
-    def record_image(self, cost: float, patent_id: str = ""):
-        """Record image-pipeline spend (Vision layout / Vision fallback).
+    def route_spend_since(self, patent_id: str,
+                          baseline: dict[str, float]) -> dict[str, float]:
+        """Per-route spend accumulated since `baseline` was taken.
 
-        Image cost is ALSO tracked under total_cost via the underlying
-        record() call in api_client; this method is only for the per-patent
-        image-only counter that gates the image cascade.
+        `route_audit.json`'s `lm_usd` is `patent_spend(pid) - initial_spend`,
+        i.e. what THIS run spent. Writing a cumulative `by_route` beside a
+        per-run `lm_usd` would produce two numbers from different populations
+        in one block — the single most common error in this project's history
+        — the moment a process ran the same patent twice (which
+        `calltrace_run --overhead` does three times in a row).
+
+        Routes that spent nothing since the baseline are omitted, so an empty
+        dict means this run bought nothing, not that attribution failed.
         """
-        if patent_id:
-            with self._lock:
-                self.per_patent_image[patent_id] = (
-                    self.per_patent_image.get(patent_id, 0.0) + cost)
-
-    def patent_image_exceeded(self, patent_id: str) -> bool:
-        """True if patent's image-pipeline spend has hit PER_PATENT_IMAGE_CAP."""
-        return self.per_patent_image.get(patent_id, 0.0) >= config.PER_PATENT_IMAGE_CAP
-
-    def patent_image_spend(self, patent_id: str) -> float:
-        """Return current image-pipeline spend for a patent."""
-        return self.per_patent_image.get(patent_id, 0.0)
+        current = self.all_route_spend(patent_id)
+        delta = {}
+        for route, total in current.items():
+            spent = total - baseline.get(route, 0.0)
+            if spent > 0:
+                delta[route] = spent
+        return delta
 
     def summary(self) -> dict:
         """Return a summary of costs."""
@@ -246,9 +290,8 @@ class CostTracker:
             "total_output_tokens": self.total_output_tokens,
             "call_count": self.call_count,
             "per_patent": {k: round(v, 4) for k, v in self.per_patent.items()},
-            "per_patent_image": {k: round(v, 4) for k, v in self.per_patent_image.items()},
             "per_patent_route": {
-                pid: {r: round(c, 4) for r, c in routes.items()}
+                pid: {r: round(c, 6) for r, c in routes.items()}
                 for pid, routes in self.per_patent_route.items()
             },
         }

@@ -1,35 +1,25 @@
-"""Adaptive LLM-populated cache of table extraction rules.
+"""Structural table fingerprint, its JSON-backed cache, and the row realigner.
 
-Why this exists
----------------
-Static regex parsers handle predictable table formats well, but patents
-introduce new formats every time a new pharma family is filed. Examples
-of formats that break baseline parsers:
+The name is historical. The module was written to buy an extraction RULE from
+a model when the baseline parser under-read a table, cache it by structural
+fingerprint, and replay it free on every patent with the same shape. That half
+never had a caller and is gone (see the note below `logger`); what is left is
+the fingerprint function, the file-backed cache several tiers share, and
+`realign_table_via_llm` — the one paid entry point, behind
+`config.ASSAY_REALIGN_ENABLED`, default OFF.
 
-  - Header column "CC50" recognized only as a chemistry term, not an
-    assay (US11312727 p220 — silently dropped, GT coverage 56%)
-  - Side-by-side two-up tables where the parser only reads the left half
-  - Bleed-through OCR where atom labels (OH, O) split data rows
-  - Header rows wrapped across two lines
+Two consumers reach the cache through this class:
+  - `assay_fsm.llm_realigner` — the realigner's per-region row cache
+  - `assay_fsm.harvest.orchestrator` — HARVEST's per-chunk cache
+and `harvest.iupac_orchestrator` reads the same FILE through its own
+`_read_cache()`. All three key their entries with a namespace prefix
+(`plaintext:`, `iupac:`, `iupac_targeted:`) to keep those spaces apart.
 
-Per the rebuild plan: "Adaptive caches over hand-curated rules. When a
-new edge case shows up, fire a single low-cost LM call to learn the
-mapping, cache it, never ask the LM again."
-
-This module:
-  1. Detects when the baseline parser likely UNDER-extracted (column
-     mismatch, row count anomaly, missing assay keywords)
-  2. Builds a stable fingerprint from the page's header + structural
-     shape (NOT patent-specific content)
-  3. Looks up the fingerprint in cache; if hit, returns the cached rule
-  4. If miss, fires ONE LM call to derive a structured rule
-  5. Validates the rule (must produce ≥1 row, valid numerics)
-  6. Caches the rule keyed on fingerprint — reusable across patents
-     with the same table shape
-
-Generic — same logic runs on every patent. The cache key is structural
-(header tokens, column count, row patterns), not content (no patent IDs,
-no compound names).
+The fingerprint is deliberately content-blind — header tokens, column count,
+row-count bucket, cell shape — so it carries no patent ids and no compound
+names. `llm_realigner` nevertheless prefixes the patent id onto its key: a
+purely structural key returned patent A's rows for patent B, verified across
+14 patents sharing this file.
 """
 from __future__ import annotations
 
@@ -37,8 +27,7 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import asdict, dataclass, field
-from datetime import date
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config
@@ -48,39 +37,20 @@ from .assay_name_guard import is_valid_assay_name
 logger = logging.getLogger(__name__)
 
 
-# ── Public dataclasses ──────────────────────────────────────────────
-
-
-@dataclass
-class AssayColumn:
-    """One assay column derived by the LLM from page text."""
-    header_text: str               # raw header as it appears on the page
-    canonical_name: str            # e.g., "IC50", "EC50", "CC50", "FRET_IC50"
-    unit: str                      # "μM", "nM", "M", "%"
-    col_position: int = -1         # 0-indexed column position (when known)
-
-
-@dataclass
-class ExtractionRule:
-    """Structured rule for parsing a specific table format.
-
-    Produced by the LLM when the baseline regex parser misses columns
-    or rows. Stored in `AdaptiveExtractionCache` keyed on the page's
-    structural fingerprint so future pages with the same shape reuse
-    the rule for free.
-    """
-    compound_id_col: str           # raw header text of the compound-ID column
-    assay_cols: list[AssayColumn] = field(default_factory=list)
-    qualifier_chars: list[str] = field(default_factory=lambda: ["<", ">", "≤", "≥"])
-    value_format: str = "decimal"  # "decimal" | "scientific" | "letter_grade"
-    legend: dict[str, float] = field(default_factory=dict)  # for letter-grade tables: {"A": 0.075, ...}
-    notes: str = ""
+# The `ExtractionRule` / `AssayColumn` pair that used to head this module is
+# gone, with `derive_rule_via_llm`, `_RULE_PROMPT`, `detect_column_miss` and
+# `AdaptiveExtractionCache.get`/`.put`. Between them they were the rule half
+# the docstring describes, and `derive_rule_via_llm` was the second of this
+# file's two ungated `call_claude_text` sites.
+#
+# They had ZERO callers anywhere outside `_attic`. `iupac_orchestrator` and
+# `harvest/orchestrator` share the same JSON FILE but reach it through
+# `_read_cache()` or `cache._cache[...]` directly, never through the
+# ExtractionRule accessors, so nothing ever produced or consumed a rule. The
+# live surface is the fingerprint + the row realigner below.
 
 
 # ── Fingerprint builder ─────────────────────────────────────────────
-
-
-_HEADER_LIKE_RE = re.compile(r"\b(IC50|EC50|CC50|Ki|Kd|FRET|EC_50|IC_50)\b", re.IGNORECASE)
 
 
 def fingerprint_table_shape(
@@ -123,51 +93,27 @@ def fingerprint_table_shape(
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
-# ── Trigger detection ───────────────────────────────────────────────
-
-
-def detect_column_miss(
-    page_text: str,
-    extracted_assay_names: set[str],
-) -> list[str]:
-    """Return assay-keyword tokens present in the page text but NOT in
-    the extracted assay-name set. Drives the firer's trigger condition.
-
-    Conservative — only flags well-known assay tokens (IC50, EC50, Ki,
-    CC50, etc.) that aren't covered by the existing extraction. Missing
-    novel/exotic assays is acceptable; over-firing the LLM is not.
-    """
-    found_keywords = {m.group(0).upper().replace("_", "")
-                      for m in _HEADER_LIKE_RE.finditer(page_text)}
-    extracted_norm = {re.sub(r"[^A-Z0-9]", "", n.upper()) for n in extracted_assay_names}
-
-    missed: list[str] = []
-    for kw in sorted(found_keywords):
-        kw_norm = re.sub(r"[^A-Z0-9]", "", kw)
-        # Already covered if any extracted assay name contains this keyword
-        if any(kw_norm in n for n in extracted_norm):
-            continue
-        missed.append(kw)
-    return missed
-
-
 # ── Cache implementation ────────────────────────────────────────────
 
 
 class AdaptiveExtractionCache:
-    """JSON-backed cache of LLM-derived extraction rules.
+    """JSON-backed cache shared by the realigner and the HARVEST tiers.
 
     File layout:
         output_v2/text_extraction/_cache/adaptive_extraction_rules.json
         {
-          "<fingerprint_hash>": {
-            "rule": { ExtractionRule fields ... },
+          "<namespace>:<...>:<fingerprint_hash>": {
+            "rule": { whatever the owning tier stores — rows, pairs, ... },
             "first_observed": "<patent_id>",
             "n_uses": 4,
             "last_used": "2026-05-02"
           },
           ...
         }
+
+    Every reader goes through `_cache` directly and writes its own entry
+    shape; the typed `get`/`put` accessors that used to hydrate an
+    `ExtractionRule` had no callers and are gone with it.
     """
 
     def __init__(self, cache_path: Path | None = None):
@@ -188,86 +134,6 @@ class AdaptiveExtractionCache:
     def _save(self) -> None:
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         self.cache_path.write_text(json.dumps(self._cache, indent=2))
-
-    def get(self, fingerprint: str) -> ExtractionRule | None:
-        entry = self._cache.get(fingerprint)
-        if not entry:
-            return None
-        try:
-            rule_dict = entry["rule"]
-            assay_cols = [AssayColumn(**c) for c in rule_dict.get("assay_cols", [])]
-            rule = ExtractionRule(
-                compound_id_col=rule_dict["compound_id_col"],
-                assay_cols=assay_cols,
-                qualifier_chars=rule_dict.get("qualifier_chars", ["<", ">"]),
-                value_format=rule_dict.get("value_format", "decimal"),
-                legend=rule_dict.get("legend", {}),
-                notes=rule_dict.get("notes", ""),
-            )
-            entry["n_uses"] = entry.get("n_uses", 0) + 1
-            entry["last_used"] = str(date.today())
-            self._save()
-            return rule
-        except Exception as e:
-            logger.warning(f"Cached rule {fingerprint} hydrate failed: {e!r}")
-            return None
-
-    def put(
-        self,
-        fingerprint: str,
-        rule: ExtractionRule,
-        first_observed_patent: str,
-    ) -> None:
-        self._cache[fingerprint] = {
-            "rule": {
-                "compound_id_col": rule.compound_id_col,
-                "assay_cols": [asdict(c) for c in rule.assay_cols],
-                "qualifier_chars": rule.qualifier_chars,
-                "value_format": rule.value_format,
-                "legend": rule.legend,
-                "notes": rule.notes,
-            },
-            "first_observed": first_observed_patent,
-            "n_uses": 1,
-            "last_used": str(date.today()),
-        }
-        self._save()
-
-
-# ── LLM rule derivation ─────────────────────────────────────────────
-
-
-_RULE_PROMPT = """\
-You are a patent assay-table extraction assistant. The page below
-contains an assay table that the baseline parser PARTIALLY extracted.
-
-Baseline parser found these assay columns: {extracted_names}
-But the page text mentions these additional assay keywords that may
-correspond to columns the parser missed: {missed_keywords}
-
-Output a JSON extraction rule that lists ALL assay columns in the table,
-including any the parser missed. Be precise about column position
-(0-indexed, where compound_id is typically position 0).
-
-Page text (truncated):
-<<<
-{page_text}
->>>
-
-Output JSON ONLY, no prose. Schema:
-{{
-  "compound_id_col": "<exact header text of the compound-ID column>",
-  "assay_cols": [
-    {{"header_text": "<as it appears>", "canonical_name": "IC50|EC50|CC50|Ki|Kd|FRET_IC50|...",
-      "unit": "μM|nM|M|%|...", "col_position": <0-indexed int>}},
-    ...
-  ],
-  "qualifier_chars": ["<", ">", "≤", "≥"],
-  "value_format": "decimal|scientific|letter_grade",
-  "legend": {{"A": 0.075, ...}},  // empty object if not letter-grade
-  "notes": "<one short sentence on what was non-obvious>"
-}}
-"""
 
 
 # ── Row-realignment firer ───────────────────────────────────────────
@@ -441,6 +307,13 @@ def realign_table_via_llm(
     (252 compounds) and US10214537 TABLE 11 (600+ compounds), causing
     the JSON parser to fail and the firer to return no rows.
     """
+    if not config.ASSAY_REALIGN_ENABLED:
+        # Second half of the gate. `llm_realigner.realign_region` checks it
+        # too; this one is what a NEW call site cannot get around. `43d037e`
+        # deleted two functions that between them held the only
+        # `LLM_RECOVERY_ENABLED` check in their module, and the flag went
+        # with them.
+        return None
     truncated = page_text[:max_text_chars]
     prompt = _REALIGN_PROMPT.format(page_text=truncated)
     try:
@@ -513,86 +386,3 @@ def realign_table_via_llm(
     units = {str(k): str(v) for k, v in (parsed.get("units") or {}).items()
              if v and is_valid_assay_name(k)}
     return RealignedTable(rows=rows, units=units, notes=str(parsed.get("notes") or ""))
-
-
-def derive_rule_via_llm(
-    page_text: str,
-    extracted_assay_names: list[str],
-    missed_keywords: list[str],
-    max_text_chars: int = 4000,
-) -> ExtractionRule | None:
-    """Fire one LM call to derive a structured extraction rule.
-
-    Returns the rule on success, None on parse failure. Caller is
-    responsible for caching.
-    """
-    truncated = page_text[:max_text_chars]
-    prompt = _RULE_PROMPT.format(
-        extracted_names=extracted_assay_names or "(none)",
-        missed_keywords=missed_keywords,
-        page_text=truncated,
-    )
-    try:
-        raw = call_claude_text(prompt, max_tokens=1500)
-    except Exception as e:
-        logger.warning(f"adaptive firer LM call failed: {e!r}")
-        return None
-
-    if not raw:
-        return None
-
-    # Strip leading/trailing prose if any (model sometimes wraps in markdown)
-    raw_stripped = raw.strip()
-    if raw_stripped.startswith("```"):
-        raw_stripped = re.sub(r"^```(?:json)?\s*", "", raw_stripped)
-        raw_stripped = re.sub(r"\s*```$", "", raw_stripped)
-
-    try:
-        parsed = json.loads(raw_stripped)
-    except json.JSONDecodeError:
-        # Retry: extract first {...} block
-        m = re.search(r"\{.*\}", raw_stripped, re.DOTALL)
-        if not m:
-            logger.warning(f"adaptive firer: LM output not JSON-parseable: {raw_stripped[:200]!r}")
-            return None
-        try:
-            parsed = json.loads(m.group(0))
-        except json.JSONDecodeError as e:
-            logger.warning(f"adaptive firer: JSON parse failed even after extraction: {e!r}")
-            return None
-
-    try:
-        assay_cols_raw = [
-            AssayColumn(**{k: v for k, v in c.items()
-                           if k in {"header_text", "canonical_name", "unit", "col_position"}})
-            for c in parsed.get("assay_cols", [])
-        ]
-        # GUARD: same `is_valid_assay_name` filter — a rule whose columns
-        # are placeholders (`Activity1`, `col_0`, …) or non-assays
-        # (`[M+H]`, `Method`, `Molecular Weight`) must NEVER be cached;
-        # the AdaptiveExtractionCache's structural fingerprint would
-        # otherwise replay these on every patent with a similar shape.
-        assay_cols = [c for c in assay_cols_raw
-                      if is_valid_assay_name(c.canonical_name)
-                      or is_valid_assay_name(c.header_text)]
-        n_dropped = len(assay_cols_raw) - len(assay_cols)
-        if n_dropped:
-            logger.info("adaptive firer: guard dropped %d placeholder/non-assay column(s)",
-                        n_dropped)
-        rule = ExtractionRule(
-            compound_id_col=parsed.get("compound_id_col", ""),
-            assay_cols=assay_cols,
-            qualifier_chars=parsed.get("qualifier_chars", ["<", ">", "≤", "≥"]),
-            value_format=parsed.get("value_format", "decimal"),
-            legend=parsed.get("legend", {}) or {},
-            notes=parsed.get("notes", ""),
-        )
-    except Exception as e:
-        logger.warning(f"adaptive firer: rule construction failed: {e!r}")
-        return None
-
-    if not rule.compound_id_col or not rule.assay_cols:
-        logger.warning("adaptive firer: rule missing required fields, dropping")
-        return None
-
-    return rule

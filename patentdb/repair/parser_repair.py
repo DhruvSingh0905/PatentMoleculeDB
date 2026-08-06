@@ -36,8 +36,14 @@ not available. Combined with "every other patent must stay clean, the suite must
 stay green, and extraction totals must not fall", the acceptance test is cheap,
 precise and hard to game.
 
-Nothing here writes to the working tree unless `PARSER_REPAIR_APPLY` is set.
-The default is to verify a patch fully and hand back the diff.
+Nothing here writes to the working tree unless somebody ASKED — see
+repair/guard.py. The default is to verify a patch fully, journal it, and hand
+back the diff.
+
+That sentence used to read "unless `PARSER_REPAIR_APPLY` is set", which was
+true and misleading in the same breath: the flag defaults to 1, so the
+documented default behaviour was the opposite of what the module did. An
+extraction run rewrote `sources/uspto_assays.py` under that default.
 """
 from __future__ import annotations
 
@@ -52,6 +58,7 @@ from pathlib import Path
 
 from ..core import config
 from ..sources.uspto_xml import parse_fidelity
+from . import guard
 
 logger = logging.getLogger(__name__)
 
@@ -646,7 +653,8 @@ def repair_reader(func_name: str = "_parse_row", *, apply: bool | None = None,
     wrong once.
     """
     module = Path(__file__).resolve().parent.parent / "sources" / "uspto_xml.py"
-    apply = config.PARSER_REPAIR_APPLY if apply is None else apply
+    # TRI-STATE — see repair/guard.py. `None` no longer resolves to the
+    # PARSER_REPAIR_APPLY default (1); it defers to whether an operator ASKED.
     defects = corpus_defects(limit=limit)
     report = {"defects": len(defects), "applied": 0, "declined": 0, "results": []}
     if not defects:
@@ -680,7 +688,14 @@ def repair_reader(func_name: str = "_parse_row", *, apply: bool | None = None,
                  for k in base if k != "_clean"
                  and after_counts.get(k, 0) != base[k]}
 
-        will_apply = bool(verdict.get("ok")) and apply
+        # The WRITE HAPPENS FIRST, so `applied` in the journal is what the tree
+        # actually did rather than what this loop intended. `applied: True` on
+        # an entry whose text never reached the file is the specific lie that
+        # made entries 0034-0038 unreadable, and it is what `revert` trusts.
+        outcome = guard.Outcome.REFUSED
+        if verdict.get("ok"):
+            outcome = guard.write_tracked_source(module, patched, what=func_name,
+                                                 explicit=apply)
         entry_id = journal_append({
             "action": "patch", "module": str(module), "function": func_name,
             "signature": d.signature, "blast_radius": d.blast_radius,
@@ -692,7 +707,8 @@ def repair_reader(func_name: str = "_parse_row", *, apply: bool | None = None,
             "total_usable_before": sum(v for k, v in base.items() if k != "_clean"),
             "total_usable_after": verdict.get("total_usable"),
             "coverage_moved": moved,
-            "applied": will_apply,
+            "applied": outcome == guard.Outcome.WRITTEN,
+            "write_outcome": outcome,
         })
         verdict["journal_id"] = entry_id
         verdict["coverage_moved"] = moved
@@ -704,15 +720,19 @@ def repair_reader(func_name: str = "_parse_row", *, apply: bool | None = None,
                            "`parser_health --force %s` applies it anyway)",
                            entry_id, verdict.get("why"), entry_id.split("-")[0])
             continue
-        if will_apply:
-            module.write_text(patched)
+        if outcome == guard.Outcome.WRITTEN:
             adopt_baseline(verdict, journal_id=entry_id)
             report["applied"] += 1
             logger.info("parser_repair: %s APPLIED for %s (%s) — revert with "
                         "`parser_health --revert %s`",
-                        entry_id, d.signature, d.blast_radius, entry_id.split("-")[0])
+                        entry_id, d.signature, d.blast_radius,
+                        entry_id.split("-")[0])
         else:
             verdict["patch"] = after
+            logger.warning(
+                "parser_repair: %s verified a patch to %s and did NOT write it "
+                "(%s). Apply it with `parser_health --force %s`.",
+                entry_id, module.name, outcome, entry_id.split("-")[0])
     return report
 
 
@@ -780,6 +800,93 @@ def journal_find(entry_id: str) -> dict | None:
     return None
 
 
+def _entry_parts(entry: dict) -> list[dict]:
+    """The (module, before, after) triples an entry moved. One or several."""
+    return entry.get("patches") or [{"module": entry.get("module", ""),
+                                     "before_source": entry.get("before_source", ""),
+                                     "after_source": entry.get("after_source", "")}]
+
+
+def journal_state() -> list[dict]:
+    """For every entry claiming `applied`, is its text still IN the tree?
+
+    `applied: True` is a claim about the past that readers use as a claim about
+    the present, and the two came apart. Six entries — `0030`, `0031`, `0034`,
+    `0035`, `0036`, `0037` — say applied, while `sources/uspto_assays.py` is
+    byte-identical to HEAD and holds none of them. Three of those are the SAME
+    proposal replayed from the model cache: an id is
+    `sha256(after_source + signature)[:8]`, so `0030`/`0034`/`0036` sharing
+    `09a09002` is proof, not resemblance.
+
+    `live` means `revert(id)` would find its text and succeed. `stale` means it
+    would refuse — which is the safe answer and always was, but it is only safe
+    by accident of the text having moved, and nothing showed an operator which
+    of the twenty applied entries were which before they typed the command.
+    """
+    out = []
+    cache: dict[str, str] = {}
+    seen: dict[str, str] = {}
+    for e in journal_read():
+        if not e.get("applied") or e.get("action") not in (
+                "capability_patch", "patch", "force-apply"):
+            continue
+        parts = _entry_parts(e)
+        present = []
+        for p in parts:
+            mod = p.get("module") or ""
+            if mod not in cache:
+                try:
+                    cache[mod] = Path(mod).read_text()
+                except OSError:
+                    cache[mod] = ""
+            present.append(bool(p.get("after_source")) and
+                           p["after_source"] in cache[mod])
+        live = bool(present) and all(present)
+        sig = e.get("id", "")[5:]
+        out.append({
+            "id": e.get("id"), "action": e.get("action"),
+            "target": e.get("target") or e.get("function"),
+            "modules": sorted({Path(p.get("module") or "").name for p in parts}),
+            "state": "live" if live else "stale",
+            # A duplicate is the same after_source AND signature as an earlier
+            # entry — the id suffix already encodes exactly that pair.
+            "duplicate_of": seen.get(sig),
+        })
+        seen.setdefault(sig, e.get("id"))
+    return out
+
+
+def reconcile_journal() -> dict:
+    """Mark, without deleting, which applied entries the tree no longer holds.
+
+    The journal is the revert mechanism and the only record of what this loop
+    has done, so nothing is ever removed from it. Reconciliation appends ONE
+    `reconcile` entry naming the stale ids and the duplicates, which is the
+    record a later reader needs in order to trust `--history`.
+
+    Idempotent: reconciling twice with an unchanged tree appends nothing.
+    """
+    state = journal_state()
+    stale = [s["id"] for s in state if s["state"] == "stale"]
+    dupes = {s["id"]: s["duplicate_of"] for s in state if s["duplicate_of"]}
+    payload = {"stale": stale, "duplicates": dupes}
+    for e in reversed(journal_read()):
+        if e.get("action") == "reconcile":
+            if e.get("stale") == stale and e.get("duplicates") == dupes:
+                return {"appended": False, "stale": len(stale),
+                        "duplicates": len(dupes), "id": e.get("id")}
+            break
+    jid = journal_append({
+        "action": "reconcile", "applied": False,
+        "why": (f"{len(stale)} applied entr(ies) name text the tree no longer "
+                f"holds; {len(dupes)} are re-applications of an earlier "
+                f"proposal (same after_source + signature)."),
+        **payload,
+    })
+    return {"appended": True, "stale": len(stale), "duplicates": len(dupes),
+            "id": jid}
+
+
 def revert(entry_id: str) -> dict:
     """Put back exactly what was there before that entry was applied."""
     entry = journal_find(entry_id)
@@ -790,19 +897,30 @@ def revert(entry_id: str) -> dict:
     # A capability patch may span several functions and modules; undoing one
     # half of a paired change leaves the tree in a state neither version ever
     # ran in, so the whole group goes back or none of it does.
-    parts = entry.get("patches") or [{"module": entry["module"],
-                                      "before_source": entry["before_source"],
-                                      "after_source": entry["after_source"]}]
+    parts = _entry_parts(entry)
     for part in parts:
         m = Path(part["module"])
+        # CONTRACT, not judgement. `str.replace("", x, 1)` PREPENDS — it does
+        # not no-op — so an entry with an empty `after_source` would inject its
+        # whole before-image at the top of a tracked file and report success.
+        # `0002-58499a23` carries exactly that (both fields empty, so it is
+        # inert today) and every `not in` test passes vacuously for "".
+        if not part.get("after_source") or not part.get("before_source"):
+            return {"ok": False, "why": (f"{entry['id']} records an empty "
+                                         f"before/after source for {m.name}; "
+                                         f"reverting it would corrupt the file")}
         if part["after_source"] not in m.read_text():
             return {"ok": False, "why": (f"{m.name} no longer contains the text "
                                          f"{entry['id']} wrote — it has been "
-                                         f"edited since; revert by hand")}
+                                         f"edited since (see `--reconcile`); "
+                                         f"revert by hand")}
     for part in parts:
         m = Path(part["module"])
-        m.write_text(m.read_text().replace(part["after_source"],
-                                           part["before_source"], 1))
+        # `explicit=True`: an operator typed a journal id. That IS the request.
+        guard.write_tracked_source(
+            m, m.read_text().replace(part["after_source"],
+                                     part["before_source"], 1),
+            what=f"revert {entry['id']}", explicit=True)
     module = Path(parts[0]["module"])
     journal_append({
         "action": "revert", "reverted": entry["id"], "module": str(module),
@@ -819,18 +937,22 @@ def apply_journaled(entry_id: str) -> dict:
     entry = journal_find(entry_id)
     if entry is None:
         return {"ok": False, "why": f"no journal entry {entry_id!r}"}
-    parts = entry.get("patches") or [{"module": entry["module"],
-                                      "before_source": entry["before_source"],
-                                      "after_source": entry["after_source"]}]
+    parts = _entry_parts(entry)
     for part in parts:
         m = Path(part["module"])
+        if not part.get("after_source") or not part.get("before_source"):
+            return {"ok": False, "why": (f"{entry['id']} records an empty "
+                                         f"before/after source for {m.name}; "
+                                         f"applying it would corrupt the file")}
         if part["before_source"] not in m.read_text():
             return {"ok": False, "why": f"{m.name} no longer matches the "
                                         f"pre-image {entry['id']} was written against"}
     for part in parts:
         m = Path(part["module"])
-        m.write_text(m.read_text().replace(part["before_source"],
-                                           part["after_source"], 1))
+        guard.write_tracked_source(
+            m, m.read_text().replace(part["before_source"],
+                                     part["after_source"], 1),
+            what=f"force-apply {entry['id']}", explicit=True)
     module = Path(parts[0]["module"])
     journal_append({
         "action": "force-apply", "forced": entry["id"], "module": str(module),

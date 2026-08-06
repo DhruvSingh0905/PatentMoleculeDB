@@ -223,7 +223,9 @@ def run_one(label: str, model: str, pids: list[str], *, patch: bool,
     if patch and not dry_run:
         from ...repair.capability import repair_capabilities
         try:
-            rep = repair_capabilities(patent_ids=pids, model=model)
+            # `--patch` is the operator asking; the bakeoff restores the tree
+            # between rungs itself. See repair/guard.
+            rep = repair_capabilities(patent_ids=pids, model=model, apply=True)
             for r in rep["results"]:
                 patches.append({
                     "fingerprint": r.get("fingerprint"), "target": r.get("target"),

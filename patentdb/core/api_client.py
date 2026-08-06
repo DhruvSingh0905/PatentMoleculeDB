@@ -17,7 +17,7 @@ from tenacity import (
 )
 
 from . import config
-from .cost_tracker import cost_tracker
+from .cost_tracker import cost_tracker, derive_route
 from .api_cache import get_cached, store_cached
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,12 @@ def _log_api_call(
         "latency_ms": round(latency_ms, 1),
         "success": success,
         "patent_id": patent_id,
+        # The same derivation `cost_tracker.record` uses — this function is in
+        # the transport layer too, so the walk skips it and names the caller.
+        # `route_audit.json` decomposes a patent's bill; this decomposes the
+        # individual calls, including the FAILED ones, which never reach
+        # `record()` and so appear in no per-route total.
+        "route": derive_route(),
         "compound_id": compound_id,
         "error": error,
     }

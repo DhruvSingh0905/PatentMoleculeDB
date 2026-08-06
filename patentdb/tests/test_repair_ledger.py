@@ -234,20 +234,28 @@ def test_adopt_baseline_stamps_the_tree_as_it_is_now(led, monkeypatch):
 def test_a_landed_patch_adopts_the_probe_only_after_it_is_written():
     """Structural, because the alternative is a test that rewrites `sources/`.
 
-    Both apply sites must call `adopt_baseline` AFTER `write_text`, and the
-    capability site must call it only when the patch was actually applied —
-    `verify_patch` returning ok is not the same as `PARSER_REPAIR_APPLY`
-    allowing the write.
+    Both apply sites must call `adopt_baseline` AFTER the write, and only when
+    the patch was actually applied — `verify_patch` returning ok is not the
+    same as the write being permitted.
+
+    The write itself is now `guard.write_tracked_source`, not a bare
+    `write_text`: an extraction run used to reach both of these sites and
+    rewrite `sources/uspto_assays.py` underneath the measurements. The ordering
+    this test pins is unchanged and is what stops a baseline being adopted for
+    a tree that never existed.
     """
     import inspect
 
     from patentdb.repair import capability, parser_repair
 
     reader = inspect.getsource(parser_repair.repair_reader)
-    assert reader.index("module.write_text(patched)") < reader.index("adopt_baseline")
+    assert reader.index("guard.write_tracked_source") < reader.index("adopt_baseline")
+    assert "guard.Outcome.WRITTEN" in reader, (
+        "adopting on an intent to write rather than on the write itself would "
+        "record a corpus the tree never had")
 
     cap = inspect.getsource(capability._try_one)
-    assert cap.index("mod.write_text(text)") < cap.index("adopt_baseline")
+    assert cap.index("guard.write_tracked_source") < cap.index("adopt_baseline")
     assert 'if entry["applied"]:' in cap, (
         "adopting on a verdict rather than on the write would record a corpus "
         "the tree never had")
