@@ -6,16 +6,21 @@ likely truncated, OCR-corrupted, or the LLM cut a name mid-word. A
 targeted re-extraction with a wider chunk + reformulated prompt usually
 recovers a valid IUPAC.
 
-Two-attempt cascade per suspicious cid (user-approved):
-    Attempt 1: focused single-cid prompt (~$0.003) on a 2k window
-    Attempt 2: wider chunk (~$0.005) on a 6k window
-Stops on first OPSIN-success with MW >= 150.
+ONE batched call per patent: `retry_impossible_fragments` hands every
+suspicious cid to `iupac_burst_targeted`, which groups overlapping cid
+windows so several cids share a chunk.
 
-Idempotent — uses `iupac_burst_targeted` underneath, which caches by
-chunk fingerprint. Re-runs are $0.
+A per-cid `_attempt1_focused` / `_attempt2_wide` cascade used to live
+here and was superseded by that batched call — but the two functions
+were left behind with zero callers, and they held the module's ONLY
+`LLM_RECOVERY_ENABLED` check (added by `4c26f96`). So the flag gated
+dead code while the live call went out ungated. Both are removed and the
+gate now sits inside `iupac_burst_targeted` itself.
 
-Patent-agnostic. No per-patent flags. Only fires on cids matching
-`is_suspicious()`.
+Idempotent — `iupac_burst_targeted` caches by chunk fingerprint, so
+re-runs are $0. OFF by default (`LLM_RECOVERY=1` to enable).
+
+Patent-agnostic. Only fires on cids matching `is_suspicious()`.
 """
 from __future__ import annotations
 
@@ -26,10 +31,6 @@ from pathlib import Path
 from .iupac_to_smiles import _try_opsin
 from .smiles_utils import get_inchikey, molecular_weight, validate_smiles
 from .cost_tracker import cost_tracker
-from .assay_fsm.harvest.iupac_orchestrator import (
-    _chunk_fingerprint, _read_cache, _write_cache, _find_cid_context_windows,
-)
-from .assay_fsm.harvest.agent_iupac_extract import extract_iupac_pairs
 
 logger = logging.getLogger(__name__)
 
@@ -161,88 +162,6 @@ def _build_retry_record(cid: str, iupac: str, smiles: str, attempt: int) -> dict
         "source": f"retry_attempt_{attempt}",
         "extraction_method": f"impossible_fragment_retry_attempt_{attempt}",
     }
-
-
-_FOCUSED_PROMPT = """\
-You are reading a chemistry patent excerpt. The excerpt mentions
-compound number {cid}. Extract the IUPAC chemical name for compound {cid}
-from this text. Return ONLY the IUPAC name on a single line, no other
-text. If the IUPAC isn't clearly present, return "UNKNOWN".
-
-Excerpt:
----BEGIN---
-{chunk}
----END---
-
-The IUPAC for compound {cid}:"""
-
-
-def _attempt1_focused(
-    patent_id: str,
-    text: str,
-    cid: str,
-    cache: dict,
-) -> str:
-    """Attempt 1: focused single-cid prompt, ~2k char window."""
-    windows = _find_cid_context_windows(text, cid, window_chars=2000)
-    if not windows:
-        return ""
-    offset, chunk = windows[0]
-    fp = _chunk_fingerprint(chunk + f"|focused:{cid}")
-    cache_key = f"retry_focused:{fp}"
-    if cache_key in cache:
-        cached = cache[cache_key]
-        return cached.get("iupac", "")
-    from .api_client import call_claude_text
-    prompt = _FOCUSED_PROMPT.format(cid=cid, chunk=chunk)
-    from . import config as _cfg
-    if not _cfg.LLM_RECOVERY_ENABLED:
-        response = None
-    else:
-        response = call_claude_text(
-            prompt=prompt,
-            patent_id=patent_id,
-            max_tokens=300,
-        )
-    iupac = ""
-    if response and "UNKNOWN" not in response.upper()[:30]:
-        # Take first line; strip trailing punctuation
-        iupac = response.strip().split("\n")[0].strip().rstrip(".")
-    cache[cache_key] = {"iupac": iupac, "offset": offset}
-    return iupac
-
-
-def _attempt2_wide(
-    patent_id: str,
-    text: str,
-    cid: str,
-    cache: dict,
-) -> str:
-    """Attempt 2: wider chunk re-extract via the existing iupac_burst_targeted
-    machinery. Returns the LLM-extracted IUPAC for `cid` or empty.
-    """
-    windows = _find_cid_context_windows(text, cid, window_chars=6000)
-    if not windows:
-        return ""
-    offset, chunk = windows[0]
-    fp = _chunk_fingerprint(chunk + f"|wide:{cid}")
-    cache_key = f"retry_wide:{fp}"
-    if cache_key in cache:
-        cached = cache[cache_key]
-        for p in cached.get("pairs", []):
-            if p.get("compound_id") == cid:
-                return p.get("iupac_name", "")
-        return ""
-    result = extract_iupac_pairs(chunk, patent_id=patent_id)
-    cache[cache_key] = {
-        "pairs": result.pairs,
-        "_target_cid": cid,
-        "_offset": offset,
-    }
-    for p in result.pairs:
-        if p.get("compound_id") == cid:
-            return p.get("iupac_name", "")
-    return ""
 
 
 def _opsin_with_validation(iupac: str) -> tuple[str, str]:

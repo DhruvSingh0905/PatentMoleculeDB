@@ -974,18 +974,18 @@ def extract_compounds_from_clean_text(
             calls Strategy 5 explicitly *after* route classification, so
             it asks for `skip_strategy_5=True` to avoid double-firing.
             Legacy callers (`extract_text_index`) leave it False.
-        text_source_format: One of "google_html", "mineru_markdown",
+        text_source_format: One of "google_html", "uspto_xml",
             "google_html_fetched". Controls whether the iupac_to_smiles
-            cascade engages OCR-cleanup stages (rule_clean, autocorrect,
-            vision_ocr, LLM_clean). "google_html" is treated as clean
+            cascade engages the OCR-cleanup stages (rule_clean, relaxed
+            OPSIN, LLM_clean). "google_html" is treated as clean
             (skips those stages); anything else gets the full cascade.
             Also gates Strategy 0 — GP-embedded compounds only fire when
             the source is HTML (the cache is HTML-derived).
-        cascade_mode: "full" (default) runs the 5-stage cascade
-            (PubChem → OPSIN → rule_clean → autocorrect → vision → LLM).
+        cascade_mode: "full" (default) runs the whole cascade
+            (PubChem → OPSIN → rule_clean → relaxed OPSIN → LLM).
             "fast" runs only Stages 0-2 (PubChem, OPSIN, rule_clean) —
-            no LLM, no vision, no autocorrect. Used by the markdown
-            secondary pass in `process_patent` so it stays under the
+            no LLM. Used by the secondary density
+            pass in `process_patent` so it stays under the
             15-min budget when GP-embedded already supplies most of the
             compounds; the markdown pass is only filling gaps anyway,
             so candidates that need LLM cleanup will be picked up by
@@ -1091,7 +1091,7 @@ def extract_compounds_from_clean_text(
         )
 
         # cascade_mode="fast": only Stage 1 OPSIN (strict on noisy source) +
-        # Stage 2 rule_clean. No LLM, no vision, no autocorrect — keeps
+        # Stage 2 rule_clean. No LLM — keeps
         # the markdown secondary pass under budget.
         is_clean = text_source_format == "google_html"
         if cascade_mode == "fast":
@@ -1111,7 +1111,7 @@ def extract_compounds_from_clean_text(
         else:
             # cascade_mode="full": is_clean_text=True only for actual clean HTML.
             # MinerU markdown carries OCR errors (pyrolo, [1.2,4], <|ref|> tags)
-            # that need the full cascade (rule_clean → autocorrect → vision_ocr → LLM).
+            # that need the full cascade (rule_clean → relaxed OPSIN → LLM).
             _convert_single(compound, is_clean_text=is_clean, route_hint=route_hint)
 
         if compound.processing_status == "validated":

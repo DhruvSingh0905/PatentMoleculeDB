@@ -9,9 +9,11 @@ much reconstruction each source forces us to do:
   2. google_html — Google Patents HTML. Clean prose, but no table structure,
                    and its machine-read chemistry is unreliable (measured at
                    0.2% exact-match against BindingDB; see docs/notes/).
-  3. mineru_ocr  — PDF→Markdown OCR. Recovers table structure by inference and
-                   pays for it in `<|ref|>` tags, bbox pollution, merged rows
-                   and character errors. Last resort.
+There used to be a third tier, `mineru_ocr` — PDF→Markdown OCR, which
+recovered table structure by inference and paid for it in `<|ref|>` tags,
+bbox pollution, merged rows and character errors. It is gone: the pipeline
+neither generates nor reads OCR. When neither tier below answers from disk,
+`routes/process_patent._resolve_text_sources` FETCHES rather than OCRs.
 
 `resolve` walks the tiers in order and returns the first that yields text,
 recording which tier answered so provenance survives downstream. A tier that
@@ -32,12 +34,12 @@ logger = logging.getLogger(__name__)
 class SourceResult:
     text: str
     tables: list          # list[uspto_xml.Table] when tier 1 answered, else []
-    tier: str             # "uspto_xml" | "google_html" | "mineru_ocr" | "none"
+    tier: str             # "uspto_xml" | "google_html" | "none"
     structured_tables: bool   # True only when cells came from real markup
 
 
 def resolve(patent_id: str, *, allow_tiers: tuple[str, ...] = (
-    "uspto_xml", "google_html", "mineru_ocr",
+    "uspto_xml", "google_html",
 )) -> SourceResult:
     """Return the best available text+tables for `patent_id`."""
 
@@ -61,24 +63,18 @@ def resolve(patent_id: str, *, allow_tiers: tuple[str, ...] = (
             # "the patent had no compounds".
             logger.warning("source %s: uspto_xml errored: %r", patent_id, e)
 
-    # Tiers 2 and 3 stay behind the existing loader, which already implements
-    # the GP-then-MinerU order. Kept as one call so there is a single place
-    # that knows the legacy resolution rules.
-    if "google_html" in allow_tiers or "mineru_ocr" in allow_tiers:
+    # Tier 2 stays behind the existing loader so there is a single place
+    # that knows the on-disk resolution rules.
+    if "google_html" in allow_tiers:
         from ..core.patent_text import load_patent_description
-        prefer = "auto"
-        if "google_html" not in allow_tiers:
-            prefer = "markdown"
-        elif "mineru_ocr" not in allow_tiers:
-            prefer = "html"
         try:
-            text, fmt = load_patent_description(patent_id, prefer_format=prefer)
+            text, fmt = load_patent_description(patent_id, prefer_format="html")
         except FileNotFoundError:
             text, fmt = "", "none"
         if text:
-            tier = "google_html" if fmt == "google_html" else "mineru_ocr"
-            logger.info("source %s: %s (%d chars)", patent_id, tier, len(text))
-            return SourceResult(text, [], tier, False)
+            logger.info(
+                "source %s: google_html (%d chars)", patent_id, len(text))
+            return SourceResult(text, [], "google_html", False)
 
     logger.warning("source %s: no tier produced text", patent_id)
     return SourceResult("", [], "none", False)

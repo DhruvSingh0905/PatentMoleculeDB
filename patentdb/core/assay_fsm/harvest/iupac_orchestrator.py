@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .agent_iupac_extract import extract_iupac_pairs
 from ..iupac_pattern_library import IupacPattern, IupacPatternLibrary
+from ... import config
 
 logger = logging.getLogger(__name__)
 
@@ -325,8 +326,32 @@ def iupac_burst_targeted(
 
     NO per-patent cap check — caller controls total budget. The user
     explicitly requested compute-unconstrained behavior here.
+
+    Gated by `LLM_RECOVERY_ENABLED` (env `LLM_RECOVERY`, default 0).
+
+    The gate is HERE and not at the call sites because that is exactly
+    how this path came to be ungated. Commit `4c26f96` added the
+    `LLM_RECOVERY_ENABLED` check to `impossible_fragment_retry`'s
+    `_attempt1_focused` — a function with zero callers — while the two
+    LIVE callers of this function (`process_patent
+    ._targeted_fill_missing_cids` and `impossible_fragment_retry
+    .retry_impossible_fragments`) went out behind no flag at all.
+    `IUPAC_BURST` does not cover this: it gates `iupac_burst`, the broad
+    density-ranked pass, which is a different function.
+
+    A per-call-site gate is one forgotten copy away from the same
+    defect; a gate on the spend itself cannot be bypassed by adding a
+    caller.
     """
     if not missing_cids or not text:
+        return {}
+
+    if not config.LLM_RECOVERY_ENABLED:
+        logger.info(
+            "iupac_burst_targeted: DISABLED (LLM_RECOVERY=1 to enable) — "
+            "%s had %d cids to fill; returning none",
+            patent_id, len(missing_cids),
+        )
         return {}
 
     library = library or IupacPatternLibrary.default()

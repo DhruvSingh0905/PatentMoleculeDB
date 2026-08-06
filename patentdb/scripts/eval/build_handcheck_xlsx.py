@@ -76,6 +76,72 @@ _PATENT_VALID_CACHE: dict = {}
 _CID_POS_CACHE: dict = {}
 
 
+# ── Property-table detection (moved here from the deleted output_validator)
+#
+# These two helpers were the only part of `core/assay_fsm/output_validator.py`
+# worth keeping. That module GATED on this heuristic and measured 707 real
+# `RORγ Binding IC50` rows deleted on US10273259 alone, so it was removed
+# (see `tests/test_output_validator_removed.py`). Here the same signal is
+# only ever REPORTED in a hand-check workbook, which is what it is good for:
+# a human looks at the flagged row and decides.
+#
+# A patent interleaves real ASSAY tables (IC50/Ki/EC50/% inhibition) with
+# PROPERTY tables — HPLC retention time, [M+H] mass, MW, logP. These markers
+# appear in PROPERTY-table headers and never in real assay-table headers
+# (which carry concentration units μM/nM):
+_PROPERTY_HEADER_RE = re.compile(
+    r"\(\s*min\s*\)"                     # retention time unit
+    r"|\[\s*M\s*[+\-]\s*[HN][a]?\s*\]"   # [M+H] / [M-H] / [M+Na] mass
+    r"|\bm/?z\b"                          # mass/charge
+    r"|retention\s+time"
+    r"|molecular\s+weight|\bMW\b"
+    r"|\blog\s?[PD]\b"                    # logP / logD
+    r"|melting\s+point|\bm\.?p\.?\b",
+    re.IGNORECASE,
+)
+
+
+def _property_table_spans(text: str) -> list[tuple[int, int]]:
+    """Return [start,end) spans of PROPERTY tables (retention/mass/MW),
+    detected by a property marker in each `TABLE N` header. Real assay
+    tables (IC50/Ki headers with μM/nM) are not matched."""
+    if not text:
+        return []
+    spans: list[tuple[int, int]] = []
+    tables = list(re.finditer(r"TABLE\s+\d+", text, re.IGNORECASE))
+    for i, m in enumerate(tables):
+        end = tables[i + 1].start() if i + 1 < len(tables) else min(len(text), m.start() + 4000)
+        header = text[m.start():m.start() + 170]
+        if _PROPERTY_HEADER_RE.search(header):
+            spans.append((m.start(), end))
+    return spans
+
+
+def _value_strings(value: float) -> set[str]:
+    """Plausible string representations of `value` that might appear
+    in a table cell. Includes the natural decimal form plus rounded
+    forms at 1-4 places, but NEVER coarser than the value's own
+    precision (else we'd round 0.025 to "0" and match every cell
+    that contains a bare zero — catastrophic false positive).
+    """
+    out: set[str] = {f"{value:g}"}
+    # Generate fixed-precision forms ONLY at precisions that don't
+    # truncate the value. e.g. for 0.025 we produce {"0.025", "0.0250"}
+    # but skip "0" (.0f) and "0.03" (.2f) since both lose information.
+    for p in (1, 2, 3, 4):
+        s = f"{value:.{p}f}"
+        if abs(float(s) - value) < 1e-9:
+            out.add(s)
+    # Strip trailing zeros from the .Xf forms so "1.40" matches "1.4"
+    out.update({s.rstrip("0").rstrip(".") for s in list(out) if "." in s})
+    out.discard("")
+    # Final guard: never emit "0" (or empty) as a candidate for a
+    # nonzero value — it'd match arbitrary "0" cells.
+    if value != 0:
+        out.discard("0")
+    return out
+
+
 def _v2_value_in_patent(patent_id: str, cid: str, value) -> bool:
     """True iff (cid, value) co-occur in the patent OUTSIDE a property table."""
     if value is None or not cid:
@@ -83,9 +149,6 @@ def _v2_value_in_patent(patent_id: str, cid: str, value) -> bool:
     if patent_id not in _PATENT_VALID_CACHE:
         try:
             from patentdb.core.patent_text import load_patent_description
-            from patentdb.core.assay_fsm.output_validator import (
-                _property_table_spans,
-            )
             txt, _ = load_patent_description(patent_id, prefer_format="auto")
             txt = txt or ""
             _PATENT_VALID_CACHE[patent_id] = (txt, _property_table_spans(txt))
@@ -97,7 +160,6 @@ def _v2_value_in_patent(patent_id: str, cid: str, value) -> bool:
     key = (patent_id, cid)
     if key not in _CID_POS_CACHE:
         _CID_POS_CACHE[key] = [m.start() for m in re.finditer(re.escape(cid) + r"(?!\d)", text)]
-    from patentdb.core.assay_fsm.output_validator import _value_strings
     # v2 stores µM; patents report in µM OR nM. Check both the µM form and the
     # nM form (value×1000) so e.g. v2 0.006 µM matches the patent's "6" (nM).
     vstrs = set(_value_strings(value))

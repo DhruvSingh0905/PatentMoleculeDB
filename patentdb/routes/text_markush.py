@@ -63,6 +63,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 from ..core import config
+from ..core.patent_text import load_gp_description, load_uspto_description
 from ..core.substituent_vocab import expand_substituent
 from ..markush.context import (
     _is_valid_rgroup_option,
@@ -124,17 +125,6 @@ class MarkushDict:
             "r_groups": {label: asdict(entry) for label, entry in self.r_groups.items()},
             "audit": self.audit,
         }
-
-
-# ── Page enumeration ────────────────────────────────────────────────
-
-def _list_text_pages(patent_id: str) -> list[Path]:
-    """Return all `page_NNNN.md` files for the patent in document order."""
-    pages_dir = config.DATA_DIR / patent_id / "all_pages"
-    if not pages_dir.exists():
-        logger.warning(f"No all_pages/ directory for {patent_id}: {pages_dir}")
-        return []
-    return sorted(pages_dir.glob("page_*.md"))
 
 
 # ── Per-page R-group parsing (with provenance) ──────────────────────
@@ -278,12 +268,6 @@ def _parse_text(text: str) -> dict[str, list[str]]:
         if options:
             page_groups.setdefault(label, []).extend(options)
     return page_groups
-
-
-def _parse_page(page_path: Path) -> dict[str, list[str]]:
-    """Symbolic R-group parse scoped to ONE PaddleX page (for per-page
-    provenance). Thin wrapper over `_parse_text`."""
-    return _parse_text(page_path.read_text(errors="replace"))
 
 
 def _resolve_to_markush_dict(
@@ -502,37 +486,25 @@ def extract_markush_dict_hybrid(
 def extract_markush_dict(patent_id: str) -> MarkushDict:
     """Extract the authoritative R-group dictionary for `patent_id`.
 
-    Symbolic-only (no LM calls) — for the LOW-difficulty fast path
-    that covers most patents. Returns a MarkushDict whose `.labels`
+    Symbolic-only (no LM calls). Returns a MarkushDict whose `.labels`
     set is the gate the image-side detector will use to distinguish
     real Markush placeholders from CIP stereo descriptors.
 
-    For HIGH-difficulty patents where the symbolic pass returns
-    nothing, the caller can fall back to `markush.context.
-    extract_markush_multiagent` (LM-driven). That fallback is NOT
-    invoked here by default — it is opt-in to keep cost predictable.
+    Sources the patent's own grant XML, falling back to the Google
+    Patents description. This used to walk
+    `DATA_DIR/{pid}/all_pages/page_*.md` one page at a time so it could
+    attach `source_pages` provenance — that tier is gone with MinerU, and
+    with it the page numbering, so `source_pages` is now always [].
+
+    Losing it costs the pipeline nothing: `process_patent` calls
+    `extract_markush_dict_hybrid(patent_id, text)`, which runs
+    `extract_markush_dict_from_text` over the harvest text and never
+    touched this function. This is the CLI/one-off entry point.
     """
-    pages = _list_text_pages(patent_id)
-    n_pages = len(pages)
-
-    # Per-page parse so we can attach source_pages provenance
-    # (same regex as _symbolic_r_group_parse, but page-scoped)
-    label_to_options: dict[str, list[str]] = {}
-    label_to_pages: dict[str, set[int]] = {}
-    for page_path in pages:
-        m = _PAGE_NUM_RE.search(page_path.name)
-        page_num = int(m.group(1)) if m else -1
-        page_groups = _parse_page(page_path)
-        for label, opts in page_groups.items():
-            label_to_options.setdefault(label, []).extend(opts)
-            if page_num >= 0:
-                label_to_pages.setdefault(label, set()).add(page_num)
-
-    # Resolve text options → SMILES + build the dict (shared with the
-    # harvest-text entry point; see _resolve_to_markush_dict).
-    return _resolve_to_markush_dict(
-        patent_id, "symbolic", n_pages, label_to_options, label_to_pages,
-    )
+    text = load_uspto_description(patent_id) or load_gp_description(patent_id)
+    if not text:
+        logger.warning("no text source for %s — empty Markush dict", patent_id)
+    return extract_markush_dict_from_text(patent_id, text or "")
 
 
 def write_markush_dict(md: MarkushDict, out_dir: Path | None = None) -> Path:

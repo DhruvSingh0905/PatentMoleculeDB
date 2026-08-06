@@ -29,7 +29,7 @@ from ..core import config
 from ..core.assay_name_guard import is_retention_time_name
 from ..core.name_boundary import looks_like_spectra, terminate_name
 from ..core.cost_tracker import cost_tracker
-from ..core.patent_text import load_patent_description
+from ..core.patent_text import load_patent_description, load_uspto_description
 from ..core.route_classifier import classify_route, RouteDecision
 from ..core.impossible_fragment_retry import retry_impossible_fragments
 from ..core.assay_fsm.harvest.iupac_orchestrator import iupac_burst
@@ -39,7 +39,6 @@ from .google_patents import (
     fetch_patent_text,
 )
 from .google_patents_tables import extract_table_compounds_from_gp
-from .google_tables import extract_table_compounds
 from .google_ms_stubs import harvest_ms_stubs
 
 logger = logging.getLogger(__name__)
@@ -83,13 +82,20 @@ class PatentResult:
 # ── Internals ──────────────────────────────────────────────────────
 
 
-# Pattern for `## Example N` (or `## Example N:`) markdown headers
-# followed by an IUPAC name on the next non-empty line. Patent-agnostic
-# — most US patents that use markdown-extracted text from MinerU OCR
-# have this structure. The cid mapping is AUTHORITATIVE: the patent
-# itself labels each compound, no position-counting needed.
+# Pattern for an `Example N` header alone on a line, followed by an IUPAC
+# name on the next non-empty line. Patent-agnostic. The cid mapping is
+# AUTHORITATIVE: the patent itself labels each compound, no
+# position-counting needed.
+#
+# The `##` prefix is OPTIONAL. It was mandatory while this read MinerU
+# markdown, where `##` is the OCR renderer's heading marker — nothing the
+# patent itself contains. Against the grant XML, whose block tags become
+# bare newlines, a required `##` matches nothing at all. Making it
+# optional is what lets one pattern serve both, and it MATCHES MORE:
+# US8952177 goes 168 -> 190 headers, US10544143 37 -> 51, US10273259
+# 31 -> 48, with no id found in the markdown that the XML misses.
 _EXAMPLE_HEADER_PAT = re.compile(
-    r"^##\s+Example\s+(\d+(?:[A-Z]{1,4})?)\s*:?\s*\n+([^\n#]{20,500})",
+    r"^\s*(?:##\s+)?Example\s+(\d+(?:[A-Z]{1,4})?)\s*:?\s*$\n+\s*([^\n#]{20,500})",
     re.MULTILINE,
 )
 
@@ -226,7 +232,7 @@ def _merge_example_iupacs_from_gp_description(
                 source=CompoundSource.EXEMPLIFIED,
             )
             # is_clean_text=True — GP description is OCR-clean, so skip
-            # the rule/autocorrect/vision stages and go straight to LLM.
+            # the OCR-cleanup stages and go straight to LLM.
             _convert_single(compound, is_clean_text=True, route_hint="page_extraction")
             if compound.canonical_smiles and validate_smiles(compound.canonical_smiles):
                 smiles = compound.canonical_smiles
@@ -300,9 +306,28 @@ def _merge_explicit_example_iupacs(
     patent_id: str, example_index: dict, *, data_dir=None,
 ) -> int:
     """Override example_index entries with IUPACs lifted from the patent's
-    own `## Example N` markdown headers. AUTHORITATIVE — the patent
-    explicitly labels each compound under each header, so this trumps
-    Strategy 4's brittle position-based numbering.
+    own `Example N` headers. AUTHORITATIVE — the patent explicitly labels
+    each compound under each header, so this trumps Strategy 4's brittle
+    position-based numbering.
+
+    Reads the patent's own GRANT XML (then the GP description), not MinerU
+    markdown. It used to glob `{data_dir}/{pid}/all_pages/page_*.md` and
+    was the single largest markdown-only contributor to shipped output:
+    92 records across the corpus, 85 of them InChIKeys no other route
+    produced (74 on US8952177 alone — 26% of that patent).
+
+    Repointing loses none of them. The XML carries a SUPERSET of the same
+    headers, measured by counting matches of each pattern on both sources:
+
+        US8952177    markdown 168  ->  XML 190   (0 md-only ids)
+        US10544143   markdown  37  ->  XML  51   (0 md-only ids)
+        US10273259   markdown  31  ->  XML  48   (0 md-only ids)
+
+    The markdown pattern required a literal `##` heading, which is a
+    MinerU rendering artifact rather than anything the patent contains;
+    the line-anchored form below matches the same headers in the XML's
+    block-tag-derived line breaks AND the ones MinerU's page splitting
+    had broken.
 
     For each match:
       - Run OPSIN on the IUPAC text (with rule_clean fallback)
@@ -313,26 +338,30 @@ def _merge_explicit_example_iupacs(
 
     Returns: number of cids overridden or added.
     """
-    from ..core import config
     from ..core.iupac_to_smiles import _try_opsin, rule_based_clean
+    from ..core.patent_text import load_gp_description
     from ..core.smiles_utils import (
         canonicalize_smiles, get_inchikey, validate_smiles, molecular_weight,
     )
 
-    if data_dir is None:
-        data_dir = config.DATA_DIR
-    pages_dir = Path(data_dir) / patent_id / "all_pages"
-    if not pages_dir.exists():
-        return 0
+    # `data_dir` is vestigial — the source is the patent's own text now.
+    _ = data_dir
 
     from ..core.iupac_to_smiles import _convert_single
     from ..core.models import Compound, CompoundSource, IupacSource
 
+    # XML first (the patent's own words), GP description second. Both are
+    # scanned: they render the same headers differently and neither is a
+    # strict superset of the other on every patent. Duplicate cids are
+    # harmless — the InChIKey comparison below no-ops on a repeat.
+    sources = [
+        load_uspto_description(patent_id),
+        load_gp_description(patent_id),
+    ]
+
     n_overrides = n_added = n_llm_rescued = 0
-    for page_file in sorted(pages_dir.glob("page_*.md")):
-        try:
-            text = page_file.read_text(encoding="utf-8")
-        except Exception:
+    for text in sources:
+        if not text:
             continue
         for m in _EXAMPLE_HEADER_PAT.finditer(text):
             cid = m.group(1).strip()
@@ -474,9 +503,11 @@ _SOURCE_RANK = {
     "opsin_direct":                      2,   # OPSIN on raw IUPAC text — clean
     "google_patents_table_opsin":        3,   # GP HTML table parser
     "rule_cleaned":                      4,   # rule-based OCR fix → OPSIN
-    "autocorrected":                     5,
-    "vision_ocr":                        6,
-    "vision_ocr_cleaned":                7,
+    # `autocorrected` / `vision_ocr` / `vision_ocr_cleaned` sat at 5-7.
+    # Both cascade stages were unreachable and are gone (see
+    # `core/iupac_to_smiles` module docstring), so no record can carry
+    # those methods and a rank for them would never be consulted.
+    "opsin_relaxed_stereo_dropped":      5,   # connectivity ok, stereo dropped
     "llm_cleaned":                       8,   # LLM produced IUPAC may keep tail artifacts
     "llm_direct_smiles":                 9,
     "iupac_harvest_targeted":           10,
@@ -1510,74 +1541,72 @@ def _resolve_text_sources(patent_id: str) -> tuple[str, str, str, str]:
 
     Returns (primary_text, primary_format, secondary_text, secondary_format).
 
-    Primary is HTML (clean, no OCR artifacts) when available, falling back
-    to MinerU markdown or live HTTP fetch. Secondary is the *other* source
-    when both exist — density extraction runs on both because they're
-    complementary (HTML has GP-embedded SMILES + clean Examples section;
-    markdown has per-page tables and figure-attached IUPAC blocks the
-    HTML's section-stripping discards).
+    Primary is Google Patents HTML (clean, no OCR artifacts) when
+    available. When nothing is on disk we PULL — first the GP scrape,
+    then the patent's own USPTO grant/publication XML. Secondary is now
+    always ("", ""); the tuple shape is kept because `_collect_pre_
+    extraction` and the tests take four values.
+
+    **No OCR.** This function used to shell out to MinerU whenever a
+    patent had no `page_*.md`, and a stack sample caught the cost: 3,317
+    of 3,335 samples blocked in `subprocess.communicate`, ~5-10 min per
+    patent, for a tier-3 source ranked below the GP HTML it already had.
+    Both the OCR call and the markdown read are gone. The replacement is
+    the fetch chain below — every source it can reach is a download of
+    the document itself, not a re-reading of a picture of it.
 
     Raises RuntimeError if no text source is available.
     """
-    # Stage 0: ensure MinerU OCR has been run. The FSM / HARVEST table
-    # parser needs `<table>` structure to produce real assay-column names
-    # (without it, every assay name collapses to a `col_N` placeholder).
-    # `run_mineru_for_patent` is idempotent: if `{pid}/all_pages/` already
-    # has pages it returns instantly; otherwise it downloads the PDF and
-    # runs MinerU (~5-10 min CPU). Failures are logged but non-fatal —
-    # extraction continues on GP description alone.
-    pages_dir = config.DATA_DIR / patent_id / "all_pages"
-    has_pages = pages_dir.exists() and any(pages_dir.glob("page_*.md"))
-    if not has_pages and config.MINERU_OCR_ENABLED:
+    text, src_format = load_patent_description(patent_id, prefer_format="auto")
+
+    if not text:
+        # Tier 2 — pull the Google Patents scrape. Populates
+        # `output_v2/gpatents_cache/{pid}.json` for every later reader.
+        logger.info(
+            "process_patent %s: no text on disk — fetching Google Patents",
+            patent_id,
+        )
+        td = fetch_patent_text(patent_id)
+        if td is not None:
+            text = td.get("description", "") + "\n" + td.get("claims", "")
+            src_format = "google_html_fetched"
+
+    if not text:
+        # Tier 1 by rank, last by availability — the patent's own XML.
+        # `fetch_grant_xml` writes `output_v2/uspto_xml/{pid}.xml`, which
+        # is what `load_uspto_description` reads, so one fetch serves the
+        # assay CALS path too. Pre-2002 grants legitimately have none
+        # (`UsptoUnavailable`); that is not an error worth raising over.
+        logger.info(
+            "process_patent %s: no GP text — fetching USPTO XML", patent_id,
+        )
         try:
-            from ..core.mineru_runner import run_mineru_for_patent
-            logger.info(
-                "process_patent %s: no MinerU pages on disk — running OCR now "
-                "(one-time, ~5-10 min)",
-                patent_id,
-            )
-            run_mineru_for_patent(patent_id)
+            from ..sources import uspto_xml as _uspto
+            _uspto.fetch_grant_xml(patent_id)
+            text = load_uspto_description(patent_id)
+            if text:
+                src_format = "uspto_xml"
         except Exception as e:
             logger.warning(
-                "process_patent %s: MinerU OCR failed (%r) — continuing with "
-                "GP description only; assay-column names will degrade to col_N",
-                patent_id, e,
+                "process_patent %s: USPTO XML fetch failed (%r)", patent_id, e,
             )
 
-    text, src_format = load_patent_description(patent_id, prefer_format="auto")
     if not text:
-        td = fetch_patent_text(patent_id)
-        if td is None:
-            raise RuntimeError(f"no text source available for {patent_id}")
-        text = td.get("description", "") + "\n" + td.get("claims", "")
-        src_format = "google_html_fetched"
+        raise RuntimeError(f"no text source available for {patent_id}")
+
     logger.info(
         "process_patent %s: primary text source = %s (%d chars)",
         patent_id, src_format, len(text),
     )
-    text_md, md_format = "", ""
-    if src_format in ("google_html", "google_html_fetched"):
-        try:
-            text_md, md_format = load_patent_description(
-                patent_id, prefer_format="markdown",
-            )
-            if text_md:
-                logger.info(
-                    "process_patent %s: secondary text source = %s "
-                    "(%d chars) — running density extraction on both",
-                    patent_id, md_format, len(text_md),
-                )
-        except FileNotFoundError:
-            pass
-    return text, src_format, text_md, md_format
+    return text, src_format, "", ""
 
 
 def _collect_pre_extraction(
     patent_id: str,
     text: str,
     src_format: str,
-    text_md: str,
-    md_format: str,
+    text_md: str = "",
+    md_format: str = "",
 ) -> dict:
     """STAGE 2 — pre-extraction merge (no LLM cost).
 
@@ -1585,11 +1614,14 @@ def _collect_pre_extraction(
     cleanly-deduplicated example_index. Sources fired in this stage:
         - Strategy 0 (GP-embedded SMILES from HTML, free)
         - Strategies 1-4 density on HTML (full cascade, may use LLM)
-        - Strategies 1-4 density on MinerU markdown (fast cascade, no LLM)
-        - tables_html: HTML <table> blocks via MinerU
         - tables_gp: GP HTML "Cpd. No. ... Chemical Name" sequences
-        - explicit_example_header: ## Example N markdown headers (overrides)
+        - explicit_example_header: `Example N` headers in the grant XML
+          / GP description (overrides)
         - ms_stubs: MS-only entries for compounds not extracted elsewhere
+
+    `text_md` / `md_format` are always "" — they carried the MinerU
+    markdown tier, which no longer exists. The parameters remain so the
+    caller's tuple unpack and the existing tests keep their shape.
 
     The merge uses _SOURCE_RANK + _looks_clean to pick the cleanest IUPAC
     when multiple sources produce the same molecule.
@@ -1614,22 +1646,19 @@ def _collect_pre_extraction(
         skip_strategy_5=True,
         text_source_format=src_format,
     )
-    examples_md: list = []
-    if text_md:
-        examples_md = extract_compounds_from_clean_text(
-            patent_id, text_md,
-            skip_strategy_5=True,
-            text_source_format=md_format,
-            cascade_mode="fast",
-        )
-        logger.info(
-            "process_patent %s: secondary (markdown) density extraction → %d compounds",
-            patent_id, len(examples_md),
-        )
-    tables_html = extract_table_compounds(patent_id)
+    # The secondary density pass over MinerU markdown, and `tables_html`
+    # (`google_tables.extract_table_compounds`, which globbed
+    # `all_pages/page_*.md`), are both gone with the OCR tier.
+    #
+    # `tables_html` cost nothing to lose in structures: measured over the
+    # 15 corpus patents that have markdown on disk it returned 1,157
+    # compounds and 1,134 names but **0 SMILES** — the route never calls
+    # the cascade, so it only ever seeded cid->name pairs. The GP table
+    # route below is the one that resolves molecules
+    # (`google_patents_table_opsin`, 855 shipped records).
     tables_gp = extract_table_compounds_from_gp(patent_id)
 
-    all_pre_compounds = list(examples) + list(examples_md) + list(tables_html) + list(tables_gp)
+    all_pre_compounds = list(examples) + list(tables_gp)
     pre_example_index = _compounds_to_example_index(all_pre_compounds)
     # GP description is OCR-clean and patent-agnostic; run it FIRST so
     # its (cid → IUPAC → InChIKey) mappings populate example_index
@@ -1642,9 +1671,9 @@ def _collect_pre_extraction(
 
     logger.info(
         "process_patent %s: pre-extraction → %d cids "
-        "(examples=%d, examples_md=%d, tables_html=%d, tables_gp=%d, %d with SMILES)",
+        "(examples=%d, tables_gp=%d, %d with SMILES)",
         patent_id, len(pre_example_index),
-        len(examples), len(examples_md), len(tables_html), len(tables_gp),
+        len(examples), len(tables_gp),
         sum(1 for r in pre_example_index.values() if r.get("canonical_smiles")),
     )
     return pre_example_index
@@ -1890,14 +1919,21 @@ def _run_text_dominant(
         ]
         for cid, arr in raw_assays.items()
     }
-    # 1b. Output validator — drop spurious assay rows whose (cid, value)
-    #     doesn't appear inside any <table> block in the source markdown.
-    #     Catches NMR coupling constants (J=X.X Hz), MS m/z fragments,
-    #     and other non-table numeric values that HARVEST misattributed.
-    from ..core.assay_fsm.output_validator import filter_assays_to_table_blocks
-    assay_tables, _ = filter_assays_to_table_blocks(
-        assay_tables, patent_id, config.DATA_DIR,
-    )
+    # 1b. There is no output validator here any more.
+    #
+    #     `core/assay_fsm/output_validator.py` used to run at this point to
+    #     drop rows whose (cid, value) it could not corroborate. Its
+    #     corroboration machinery was dead code (no callers) and its two
+    #     keep/drop branches read `validation_reason` / `source_quote`,
+    #     which the row dict built above does not carry — the burst writes
+    #     that field as `source`. The one branch still able to fire was a
+    #     property-table heuristic, and replaying the corpus from cache
+    #     measured it deleting 707 rows on US10273259 (46% of the patent,
+    #     110 whole compounds), 681 of them the patent's PRIMARY assay
+    #     `RORγ Binding IC50 μM`, 77% of a sampled 60 verifiable against
+    #     the flattened raw grant XML.
+    #
+    #     See `tests/test_output_validator_removed.py` for the full trace.
     n_assay_compounds = len(assay_tables)
 
     # 2. Strategy 5 broad — overwrite on noisy markdown sources.

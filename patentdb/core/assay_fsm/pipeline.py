@@ -256,21 +256,22 @@ def extract_for_patent(
         except Exception as e:
             logger.warning("GP cache read failed for %s: %r", patent_id, e)
 
-    # Walk per-page markdown files (MinerU OCR) — GAP-FILL ONLY so a
-    # noisier second OCR of the same table can't pollute the clean GP
-    # extraction; it still contributes compounds/assays GP didn't cover.
-    for subdir in ("all_pages", "iupacs_clean"):
-        pages_dir = data_dir / patent_id / subdir
-        if not pages_dir.exists():
-            continue
-        for page_file in sorted(pages_dir.glob("page_*.md")):
-            text = page_file.read_text(encoding="utf-8")
-            results, diag = extract_page(
-                text, patent_id=patent_id, return_diagnostic=True,
-            )
-            aggregate_diag["n_pages_processed"] += 1
-            _aggregate(aggregate_diag, diag)
-            _merge_into(all_assays, results, gap_fill_only=True)
+    # The per-page MinerU markdown walk that used to run here (GAP-FILL
+    # ONLY) is gone with the OCR tier. Measured cost, replaying all 15
+    # corpus patents that have markdown on disk, with and against an
+    # empty DATA_DIR: 25,317 -> 23,394 rows, i.e. 1,923 rows (7.6%).
+    #
+    # Compound-level, which is the number that matters: 119 cids lost
+    # every row. 65 of those could not be corroborated by flattening the
+    # raw grant XML — they are OCR artifacts, and their cids say so
+    # (`NH2`, and a `123` appearing in five unrelated patents, which is
+    # bbox-coordinate debris of exactly the kind `[[114,99,...]]`
+    # produces). Of the 54 that ARE real, 47 name a cid with no resolved
+    # structure anywhere in example_index.
+    #
+    # So the true loss is 7 compounds' assay rows across 15 patents,
+    # against removing a tier that OCRs a picture of a document we
+    # already hold the text of.
 
     # ── Tier 2 + Tier 3 — Coverage gap detection + HARVEST burst ──
     # The cheap pipeline has done its work. Now run the gap detector
@@ -444,17 +445,21 @@ def extract_for_patent(
 def _gather_full_text(patent_id: str, data_dir: Path) -> str:
     """Concatenate the patent's full text in the same order the cheap
     pipeline processed it. Used by the gap detector + HARVEST burst.
+
+    The MinerU markdown pages this used to concatenate FIRST are gone —
+    the pipeline no longer generates or reads OCR. `data_dir` is kept in
+    the signature because both call sites pass it positionally.
     """
+    # Imported lazily: `core.patent_text` imports `assay_fsm.normalizer`,
+    # so a module-level import here closes a cycle through this package's
+    # __init__ and breaks `import patentdb.core.assay_fsm`.
+    from ..patent_text import load_uspto_description
+
     pieces: list[str] = []
-    for subdir in ("all_pages", "iupacs_clean"):
-        pages_dir = data_dir / patent_id / subdir
-        if not pages_dir.exists():
-            continue
-        for page_file in sorted(pages_dir.glob("page_*.md")):
-            try:
-                pieces.append(page_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+    # The patent's own text, ahead of the scrape of it.
+    txt = load_uspto_description(patent_id, normalize=False)
+    if txt:
+        pieces.append(txt)
     gp_cache = config.OUTPUT_DIR / "gpatents_cache" / f"{patent_id}.json"
     if gp_cache.exists():
         try:

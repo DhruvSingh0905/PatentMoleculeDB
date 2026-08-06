@@ -70,26 +70,21 @@ BDB_REFERENCE_TSV = Path(os.environ.get("BDB_REFERENCE_TSV", "")) if os.environ.
 # regression debugging or cost-controlled re-runs.
 HARVEST_BURST_ENABLED = os.environ.get("HARVEST_BURST", "1") == "1"
 
-# Regenerate missing MinerU markdown by SHELLING OUT TO OCR.
+# MINERU_OCR_ENABLED lived here and is gone with the code it gated.
 #
-# `process_patent._resolve_text_sources` runs MinerU whenever a patent has no
-# `page_*.md` on disk. Its own comment says "one-time, ~5-10 min", and a stack
-# sample caught it: 3,317 of 3,335 samples blocked in `subprocess.communicate`
-# under `run_mineru_for_patent`. Seven corpus patents lack that markdown, so a
-# corpus run spends roughly an hour inside OCR.
+# It defaulted off already, but "off by default" still left an OCR engine one
+# env var away from a production run. `process_patent._resolve_text_sources`
+# shelled out to MinerU whenever a patent had no `page_*.md`; a stack sample
+# caught 3,317 of 3,335 samples blocked in `subprocess.communicate`, ~5-10 min
+# per patent, GBs of model weights, to produce a tier-3 source ranked BELOW
+# the Google Patents HTML already on disk. The runner also wrote to
+# `REPO_ROOT/{pid}/all_pages` while every reader looked in
+# `DATA_DIR/{pid}/all_pages`, so enabling it produced pages nothing read.
 #
-# That is often not worth it. The description source is Google Patents for
-# every patent in the corpus (`load_patent_description` returns google_html
-# 22/22), and assay values come from the USPTO XML CALS. What MinerU output
-# still feeds is `output_validator`, which corroborates a (cid, value) against
-# a MinerU `<table>` block OR the GP flat description — either rescues a row,
-# so its absence weakens but does not break the check.
-#
-# DEFAULT OFF. Shelling out to an OCR engine is not something an extraction
-# run should do implicitly: it costs 5-10 min per patent, loads GBs of model
-# weights, and produces a tier-3 source that `load_patent_description` ranks
-# BELOW the Google Patents HTML it already has. Set MINERU_OCR=1 to allow it.
-MINERU_OCR_ENABLED = os.environ.get("MINERU_OCR", "0") == "1"
+# The pipeline now neither generates nor reads OCR. Where a patent has no
+# text, `_resolve_text_sources` PULLS: Google Patents first, then the
+# patent's own USPTO grant XML. Measured over the corpus: 22/22 patents have
+# both, and 0 had markdown as their only source.
 
 # Strategy 5's paid IUPAC->SMILES recovery batch (process_patent, the
 # `opsin_failures` arm). DEFAULT OFF.

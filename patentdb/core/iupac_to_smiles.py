@@ -1,10 +1,24 @@
-"""Step 2.2 — IUPAC → SMILES via 3-stage fault-tolerant pipeline.
+"""Step 2.2 — IUPAC → SMILES via a fault-tolerant cascade.
 
-Stage 1: OPSIN direct (free, deterministic, guaranteed correct if succeeds)
-Stage 2: Rule-based cleaning → OPSIN retry (free)
-Stage 3: Sonnet cleaning with error context → OPSIN retry (cheap)
+Stage 0:  PubChem name lookup (free, network, stereo-aware)
+Stage 1:  OPSIN direct (free, deterministic, correct if it succeeds)
+Stage 2:  Rule-based cleaning → OPSIN retry (free)
+Stage 2d: Relaxed OPSIN — permissive flags, stereo may be dropped (free)
+Stage 3a: LLM normalize the name → OPSIN retry   (OFF: LLM_NAME_REPAIR)
+Stage 3b: LLM direct SMILES, last resort         (OFF: LLM_NAME_REPAIR)
 
-No LLM-generated SMILES. All SMILES come from OPSIN (deterministic compiler).
+Two further stages used to sit between 2 and 2d and are gone, because
+neither could ever execute:
+
+  - **Levenshtein autocorrect** imported `.ocr_autocorrect`, a module that
+    has never existed here, inside `except ImportError: pass`. It raised
+    and was swallowed on every call.
+  - **Vision OCR** required `compound.source_page`, which no constructor
+    feeding this cascade sets (see
+    `tests/test_cascade_dead_stages_removed.py` for the trace).
+
+Both existed to repair MinerU OCR damage, and MinerU is no longer read.
+Removing them changed 0 records across all 22 corpus patents.
 """
 
 from __future__ import annotations
@@ -169,70 +183,7 @@ def _try_pubchem(name: str) -> str | None:
     return None
 
 
-def _is_truncated(name: str) -> bool:
-    """Check if IUPAC name is truncated."""
-    # Unbalanced parens/brackets
-    if name.count('(') != name.count(')') or name.count('[') != name.count(']'):
-        return True
-    # Ends with a trailing hyphen (cut off mid-name)
-    if name.rstrip().endswith('-'):
-        return True
-    return False
-
-
-def _vision_ocr_name(patent_id: str, page_num: int, compound_id: str) -> str | None:
-    """Render a PDF page and ask Claude Vision to extract the complete IUPAC name.
-
-    Used for compounds where the source markdown truncated the name
-    (image-only PDF pages with garbled table extraction).
-    """
-    from .api_client import call_claude_vision
-    from pathlib import Path
-    import fitz
-    from PIL import Image
-
-    pdf_path = config.DATA_DIR / patent_id / f"{patent_id}.pdf"
-    if not pdf_path.exists():
-        return None
-
-    try:
-        doc = fitz.open(str(pdf_path))
-        if page_num >= len(doc):
-            doc.close()
-            return None
-
-        page = doc[page_num]
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 144 DPI, enough for text
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        doc.close()
-
-        # Save temporarily
-        img_path = config.IMAGES_DIR / patent_id / f"ocr_p{page_num:04d}.png"
-        img_path.parent.mkdir(parents=True, exist_ok=True)
-        img.save(str(img_path))
-
-        response = call_claude_vision(
-            prompt=f"This is a page from a pharmaceutical patent. "
-                   f"Find the complete IUPAC chemical name for compound '{compound_id}' on this page. "
-                   f"The name may be in a table. Extract the COMPLETE name with all parentheses balanced. "
-                   f"Output ONLY the IUPAC name, nothing else.",
-            image_path=img_path,
-            patent_id=patent_id,
-            compound_id=f"{compound_id}_vision_ocr",
-        )
-
-        if response:
-            name = response.strip().split("\n")[0].strip()
-            if len(name) > 20 and name.count('(') == name.count(')'):
-                return name
-
-    except Exception as e:
-        logger.warning(f"Vision OCR failed for {patent_id} p{page_num}: {e}")
-
-    return None
-
-
-CLEANING_PROMPT = """OPSIN (a deterministic IUPAC-to-structure parser) failed to parse this chemical name. Your job: normalize the name into the form OPSIN can parse, WITHOUT changing the molecule's identity.
+CLEANING_PROMPT ="""OPSIN (a deterministic IUPAC-to-structure parser) failed to parse this chemical name. Your job: normalize the name into the form OPSIN can parse, WITHOUT changing the molecule's identity.
 
 Raw name (from patent): {raw_name}
 OPSIN error: {error}
@@ -477,9 +428,9 @@ def _convert_single(
     Args:
         compound: Compound with `iupac_name` set.
         is_clean_text: True when name source is high-quality clean text
-            (e.g., Google Patents XML). Skips OCR-targeted stages
-            (rule_clean, autocorrect, vision OCR) since they add 0 wins on
-            clean text per gauntlet evidence and waste compute.
+            (e.g., Google Patents XML). Skips the OCR-targeted stages
+            (rule_clean, relaxed OPSIN) since they add 0 wins on clean
+            text per gauntlet evidence and waste compute.
         route_hint: Tags the compound's structured provenance with the route
             this conversion is happening under. See `_finalize` for valid
             values. Defaults to inferring from the existing extraction_method.
@@ -523,19 +474,6 @@ def _convert_single(
                 compound.inferred_stereochemistry = stereo_stripped
                 return _finalize(compound, smiles, stage="rule_cleaned", route_hint=route_hint)
 
-        # Stage 2c: Levenshtein autocorrect → OPSIN (catches novel OCR typos)
-        # (optional module — skip silently if absent so the cascade still
-        # progresses to LLM cleanup which handles the same cases anyway)
-        try:
-            from .ocr_autocorrect import autocorrect_iupac
-            autocorrected = autocorrect_iupac(cleaned)
-            if autocorrected != cleaned:
-                smiles, error = _try_opsin(autocorrected, strict=strict_opsin)
-                if smiles:
-                    return _finalize(compound, smiles, stage="autocorrected", route_hint=route_hint)
-        except ImportError:
-            pass
-
         # Stage 2d: relaxed OPSIN — last free attempt before anything paid.
         # Retries the raw and cleaned names with OPSIN's permissive flags
         # (see `_try_opsin`). Only reached once every strict parse above has
@@ -555,26 +493,6 @@ def _convert_single(
                     stage="opsin_relaxed_stereo_dropped",
                     route_hint=route_hint,
                 )
-
-        # Stage 2b: If name is truncated (unbalanced parens from garbled source),
-        # render the PDF page and ask Claude Vision to read the complete name.
-        if _is_truncated(raw_name) and compound.source_page is not None:
-            vision_name = _vision_ocr_name(
-                compound.patent_id, compound.source_page,
-                compound.example_number or "unknown",
-            )
-            if vision_name:
-                # Vision OCR output is treated as clean (the LLM rewrote
-                # it — no MinerU markup left). Drop strict gating here.
-                smiles, error = _try_opsin(vision_name, strict=False)
-                if smiles:
-                    compound.iupac_name = vision_name
-                    return _finalize(compound, smiles, stage="vision_ocr", route_hint=route_hint)
-                vision_cleaned = rule_based_clean(vision_name)
-                smiles, error = _try_opsin(vision_cleaned, strict=False)
-                if smiles:
-                    compound.iupac_name = vision_name
-                    return _finalize(compound, smiles, stage="vision_ocr_cleaned", route_hint=route_hint)
 
     # Per-patent LM cost cap guard — Stages 3a/3b skipped if exceeded
     if cost_tracker.patent_lm_exceeded(compound.patent_id):
@@ -653,8 +571,8 @@ def _finalize(
     Args:
         compound: Compound being finalized.
         smiles: Raw SMILES from the converter.
-        stage: One of {pubchem_direct, opsin_direct, rule_cleaned, autocorrected,
-            vision_ocr, vision_ocr_cleaned, llm_cleaned, llm_direct_smiles, ...}.
+        stage: One of {pubchem_direct, opsin_direct, rule_cleaned,
+            opsin_relaxed_stereo_dropped, llm_cleaned, llm_direct_smiles, ...}.
         route_hint: Optional route this compound came from
             ("google_patents_example", "google_patents_table", "image_pipeline",
              "synthesis_block", "page_extraction", etc.). If None, falls back to
@@ -715,7 +633,7 @@ def _finalize(
                 )
 
     # Set stereo trust based on extraction method
-    if stage in ("llm_direct_smiles", "vision_ocr", "vision_ocr_cleaned"):
+    if stage == "llm_direct_smiles":
         compound.stereo_trusted = False
     if compound.inferred_stereochemistry:
         compound.stereo_trusted = False

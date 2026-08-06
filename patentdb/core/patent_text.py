@@ -131,23 +131,19 @@ def load_full_patent_text(
     *,
     normalize: bool = True,
 ) -> str:
-    """Concatenated full patent text — per-page markdown files +
-    Google Patents description.
+    """Concatenated full patent text — USPTO XML then Google Patents.
 
     Used by the FSM pipeline for end-to-end assay extraction.
 
-    USPTO XML LEADS. This concatenated markdown pages FIRST and the GP
-    description second, with the patent's own XML absent — so the OCR'd text
-    came before both cleaner sources, and any scorer that takes the first
-    match of a compound got the OCR'd rendering of it. Same inversion as
-    `load_patent_description` had, in the function next to it.
+    USPTO XML LEADS. This concatenated MinerU markdown pages FIRST and the
+    GP description second, with the patent's own XML absent — so the OCR'd
+    text came before both cleaner sources, and any scorer that takes the
+    first match of a compound got the OCR'd rendering of it.
 
-    Order now: XML, then GP, then markdown. Concatenation means nothing is
-    lost either way; it is which copy a first-match scan reaches first that
-    changes.
+    The markdown tier is gone entirely now, not merely demoted: MinerU is
+    no longer generated OR read. `data_dir` is retained only so the many
+    existing callers keep working.
     """
-    if data_dir is None:
-        data_dir = config.DATA_DIR
     pieces: list[str] = []
     xml_text = load_uspto_description(patent_id, normalize=False)
     if xml_text:
@@ -155,15 +151,6 @@ def load_full_patent_text(
     desc_first = load_gp_description(patent_id, normalize=False)
     if desc_first:
         pieces.append(desc_first)
-    for subdir in ("all_pages", "iupacs_clean"):
-        pages_dir = data_dir / patent_id / subdir
-        if not pages_dir.exists():
-            continue
-        for page_file in sorted(pages_dir.glob("page_*.md")):
-            try:
-                pieces.append(page_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
     out = "\n".join(pieces)
     if normalize and out:
         out = normalize_page(out)
@@ -198,24 +185,26 @@ def load_patent_description(
     US11292791.
 
     Resolution order with `prefer_format="auto"`:
-        1. output_v2/uspto_xml/{patent_id}.xml         (the patent's own text)
-        2. output_v2/gpatents_cache/{patent_id}.json   (HTML scrape)
-        3. {data_dir}/{patent_id}/all_pages/page_*.md  (MinerU markdown)
+        1. output_v2/gpatents_cache/{patent_id}.json   (HTML scrape)
+        2. output_v2/uspto_xml/{patent_id}.xml         (the patent's own text)
 
-    With `prefer_format="markdown"` or `prefer_format="html"`, that source
-    is required — a missing file raises FileNotFoundError. Useful for
-    A/B comparisons (Gate D in the plan).
+    With `prefer_format="html"` or `"uspto_xml"`, that source is required —
+    a missing file raises FileNotFoundError. Useful for A/B comparisons.
 
-    Markdown pages are concatenated in lexical `page_*.md` order with
-    "\\n\\n" separators so the existing density-scoring strategies
-    (1–4) operate on a single blob, identical to the HTML path. No
-    per-page granularity is exposed.
+    **There is no MinerU markdown tier.** It used to sit below both of
+    these and is gone: the pipeline neither generates nor reads OCR any
+    more. Measured across the 22-patent corpus before removal, all 22
+    patents had BOTH a GP description and a grant XML on disk, and 0 had
+    markdown as their only text — so `auto` never reached the markdown
+    branch for any of them. Callers that want an on-disk source they do
+    not have should let `routes/process_patent._resolve_text_sources`
+    fetch one; this module only reads disk.
 
     Returns ("", source_format) if no source produces text.
     """
-    if data_dir is None:
-        data_dir = config.DATA_DIR
-    pages_dir = data_dir / patent_id / "all_pages"
+    # `data_dir` is unused now that the markdown tier is gone; kept in the
+    # signature because several callers pass it positionally.
+    _ = data_dir
 
     # USPTO XML is NOT preferred for description TEXT, and the attempt to make
     # it so was reverted. It remains tier 1 for ASSAY TABLES (`uspto_assays`
@@ -263,25 +252,25 @@ def load_patent_description(
                 f"no HTML cache for {patent_id} at {gp_cache_path(patent_id)}"
             )
 
-    # 2. Markdown fallback — patents not on Google Patents
-    if prefer_format in ("auto", "markdown"):
-        if pages_dir.exists():
-            page_files = sorted(pages_dir.glob("page_*.md"))
-            if page_files:
-                pieces = []
-                for pf in page_files:
-                    try:
-                        pieces.append(pf.read_text(encoding="utf-8"))
-                    except Exception as e:
-                        logger.warning("read failed for %s: %r", pf, e)
-                if pieces:
-                    text = "\n\n".join(pieces)
-                    if normalize:
-                        text = normalize_page(text)
-                    return text, "mineru_markdown"
-        if prefer_format == "markdown":
-            raise FileNotFoundError(
-                f"no markdown pages for {patent_id} at {pages_dir}"
+    # 3. The patent's own grant/publication XML — LAST, not first.
+    #
+    #    Reached only when there is no GP cache. That ordering is
+    #    deliberate and the comment above records what inverting it cost:
+    #    `google_patents.py` gates Strategy 0 on
+    #    `text_source_format == "google_html"`, so handing back
+    #    "uspto_xml" while a GP cache existed switched off
+    #    `gp_embedded_meta` — 65% of the corpus's resolved structures.
+    #
+    #    As a FALLBACK it cannot do that: if there is no GP cache there is
+    #    no GP-embedded harvest to lose, and the patent's own text beats
+    #    returning nothing. This is the tier that replaced MinerU.
+    if prefer_format == "auto":
+        text = load_uspto_description(patent_id, normalize=normalize)
+        if text:
+            logger.info(
+                "%s: no GP cache — falling back to the patent's own XML "
+                "(%d chars)", patent_id, len(text),
             )
+            return text, "uspto_xml"
 
     return "", "none"
