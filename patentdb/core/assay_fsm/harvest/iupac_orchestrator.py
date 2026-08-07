@@ -329,9 +329,9 @@ def iupac_burst_targeted(
 
     Gated by `LLM_RECOVERY_ENABLED` (env `LLM_RECOVERY`, default 0).
 
-    The gate is HERE and not at the call sites because that is exactly
-    how this path came to be ungated. Commit `4c26f96` added the
-    `LLM_RECOVERY_ENABLED` check to `impossible_fragment_retry`'s
+    The gate is inside THIS FUNCTION and not at the call sites because
+    that is exactly how this path came to be ungated. Commit `4c26f96`
+    added the `LLM_RECOVERY_ENABLED` check to `impossible_fragment_retry`'s
     `_attempt1_focused` — a function with zero callers — while the two
     LIVE callers of this function (`process_patent
     ._targeted_fill_missing_cids` and `impossible_fragment_retry
@@ -342,21 +342,24 @@ def iupac_burst_targeted(
     A per-call-site gate is one forgotten copy away from the same
     defect; a gate on the spend itself cannot be bypassed by adding a
     caller.
+
+    It gates the SPEND, which is why it sits down in the chunk loop next
+    to the cost gate rather than at the top of the function. Placed above
+    `_read_cache()` it also refused answers that were already bought:
+    replaying a cached chunk opens no socket and costs nothing, and on
+    US11566007 that placement threw away 19 cids of paid IUPAC names for
+    no saving. The cost gate one screen below already draws the line in
+    the right place — after the cache-hit `continue`, before the call —
+    and `tests/test_iupac_burst_cost.py:126` states that placement as the
+    contract for the broad burst, naming this function as the model.
     """
     if not missing_cids or not text:
-        return {}
-
-    if not config.LLM_RECOVERY_ENABLED:
-        logger.info(
-            "iupac_burst_targeted: DISABLED (LLM_RECOVERY=1 to enable) — "
-            "%s had %d cids to fill; returning none",
-            patent_id, len(missing_cids),
-        )
         return {}
 
     library = library or IupacPatternLibrary.default()
     cache = _read_cache()
     new_pairs: dict[str, str] = {}
+    n_bought = n_blocked = 0
 
     logger.info(
         "iupac_burst_targeted: %s — searching for %d missing cids",
@@ -410,6 +413,27 @@ def iupac_burst_targeted(
                     new_pairs.setdefault(cid, nm)
             continue
 
+        # RECOVERY GATE: `LLM_RECOVERY=0` means "buy nothing", not "answer
+        # nothing". It sits here, below the cache-hit `continue` and beside
+        # the cost gate, because both gate the same thing — a NEW paid chunk.
+        # `continue` rather than the cost gate's `break`: spend only grows, so
+        # once the cap is hit no later chunk can be afforded, but this flag is
+        # constant for the whole run and the chunks after this one may well be
+        # cached. Breaking here would discard them.
+        #
+        # `assay_fsm/llm_realigner` decides this the OTHER way — its
+        # `ASSAY_REALIGN_ENABLED=0` refuses cache hits too, pinned by
+        # `tests/test_realign_gate.py::test_cache_hits_are_gated_too`. Both are
+        # right; do not "fix" one to match the other. That tier's rows occupy
+        # (compound, assay) slots that `_merge_into(gap_fill_only=True)` then
+        # denies to the free pattern library, so a free-because-cached row
+        # there still costs free rows — 2,466 of them, measured. This tier
+        # fills a cid that has no structure at all, so nothing is contending
+        # for the slot and replaying a cached chunk displaces nothing.
+        if not config.LLM_RECOVERY_ENABLED:
+            n_blocked += 1
+            continue
+
         # COST GATE: this loop fires one synchronous LLM call per chunk and
         # was previously uncapped — the path that ran the per-patent spend to
         # ~$3.50 (97 sync calls on a 2-patent run). Stop making NEW calls once
@@ -431,6 +455,7 @@ def iupac_burst_targeted(
             break
 
         result = extract_iupac_pairs(chunk_text, patent_id=patent_id)
+        n_bought += 1
         cache[cache_key] = {
             "pairs": result.pairs,
             "pattern_meta": result.pattern_meta,
@@ -458,7 +483,18 @@ def iupac_burst_targeted(
             chunk_idx, offset, cids[:3], len(result.pairs),
         )
 
-    _write_cache(cache)
+    # Only when something was actually bought. A gated run has added nothing,
+    # and `adaptive_extraction_rules.json` is 3.5 MB of paid output shared with
+    # the assay burst — rewriting it for no change is a chance to lose it.
+    if n_bought:
+        _write_cache(cache)
+    if n_blocked:
+        logger.info(
+            "iupac_burst_targeted: %s — LLM_RECOVERY=0 blocked %d/%d NEW "
+            "chunks (set LLM_RECOVERY=1 to buy them); %d cached chunks were "
+            "still served",
+            patent_id, n_blocked, len(deduped), len(deduped) - n_blocked,
+        )
     logger.info(
         "iupac_burst_targeted: %s → %d new pairs (target was %d cids)",
         patent_id, len(new_pairs), len(missing_cids),

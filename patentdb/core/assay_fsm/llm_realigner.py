@@ -26,6 +26,17 @@ Cache hits are gated too. A fingerprint hit is free, but it is still this
 tier's output, and the measurement above says those free rows displace the
 free pattern library's. OFF means off for both.
 
+`iupac_burst_targeted` decides this the OTHER way — `LLM_RECOVERY=0` serves
+its cached chunks and blocks only new ones. Both are right, and the next
+reader should not "fix" one to match the other. The difference is what the
+tier competes with. This one fills a (compound, assay) slot that
+`_merge_into(gap_fill_only=True)` then closes to the free pattern library, so
+a free-because-cached row here still COSTS free rows; turning it off gains
+2,466 of them. The targeted burst fills a cid that has no structure at all —
+nothing else is contending for the slot, so replaying a cached chunk displaces
+nothing and refusing it just loses the compound. A gate is a claim about the
+tier's cost, and a cached row's cost is not the same number in both places.
+
 This module reuses two existing pieces of infrastructure:
   - `core.adaptive_extraction_cache.realign_table_via_llm` — the
     actual LLM call (Sonnet, structured-JSON output)

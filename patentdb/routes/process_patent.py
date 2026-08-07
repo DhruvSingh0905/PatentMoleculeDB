@@ -451,6 +451,212 @@ def _merge_explicit_example_iupacs(
     return n_overrides + n_added
 
 
+# A compound id printed AFTER its name, which is the one shape neither pass
+# above can see — both anchor on `Example N` preceding the name.
+#
+#     US20240335431A1   <name> [Example 24];        (a claim's compound list)
+#     US11312727        Synthesis of <name> (Compound 1)
+#
+# `Intermediate` is deliberately NOT in the keyword set. US11312727 numbers
+# intermediates in the same space as its examples: `intermediate 5a` is
+# 1-(allyloxy)-2-(chloro(phenyl)methyl)benzene while `Compound 5A` is
+# (18R,Z)-12-hydroxy-18-phenyl-…-11,13-dione — unrelated molecules whose ids
+# differ only by case. Admitting intermediates added 227 cids to that patent
+# and scored 3 agreeing against 79 disagreeing InChIKeys on the 82 of them
+# BindingDB cites. For the same reason the id's letter suffix must be
+# UPPERCASE, matching `_EXAMPLE_HEADER_PAT`'s grammar: `5a` and `5A` are one
+# id to every downstream normaliser.
+#
+# `,(?!\s*step)` drops `(example 3, step (ii))` — US9718825's way of citing a
+# PROCEDURE. The name in front of it belongs to the intermediate being made,
+# not to example 3, and both of that patent's two hits were this shape.
+_TRAILING_ID_PAT = re.compile(
+    r"[\[(]\s*(?i:example|compound|cpd\.?\s*(?:no\.?\s*)?)\s*"
+    r"(\d+[A-Z]{0,4})\s*(?:[\])]|,(?!(?i:\s*step\b)))"
+)
+
+# How far back a name may reach, and how many whitespace-separated tokens it
+# may span. A systematic name is one token; the multi-token allowance exists
+# for the tails that legitimately carry a space — `1·formic acid`, and the
+# `bis(propan-2-yl-d 7 )benzamide` spacing the grant XML puts around a
+# subscript.
+_TRAILING_NAME_CHARS = 400
+_TRAILING_NAME_TOKENS = 5
+
+# What may be prepended to the last token: something carrying chemical
+# punctuation, or one of the few English words a name tail really does
+# contain. Everything else is prose and ends the name — which is how
+# `to give <name>` keeps the verb out without enumerating verbs.
+_CHEM_TOKEN = re.compile(r"[0-9·\-()\[\]{}]")
+_NAME_TAIL_WORDS = frozenset({"acid", "salt", "hydrate", "solvate", "ester"})
+
+# `<name> 1·formic acid` — a counter-ion joined by a middle dot. OPSIN cannot
+# parse the stoichiometry and the salt is not what the patent claims; the two
+# passes above already strip `as the TFA salt` for exactly this reason. Seven
+# of US20240335431A1's 55 compounds are this shape.
+_COUNTER_ION_TAIL = re.compile(r"\s+\d*\s*·\s*\S+(?:\s+acid)?\s*$")
+
+
+def _name_ending_at(text: str, end: int) -> str:
+    """The chemical name that ENDS at offset `end`, read backwards.
+
+    Walks tokens right-to-left and stops at the first one that is not
+    name-shaped, so the boundary comes from the grammar rather than from a
+    list of phrases — the lesson `core/name_boundary` was written for. It can
+    only ever return a SUFFIX of the true name, never more than it, which is
+    the safe direction to be wrong in: a clipped name fails OPSIN and is
+    dropped, while an over-long one gets a plausible wrong structure.
+    """
+    pre = text[max(0, end - _TRAILING_NAME_CHARS):end]
+    # A name does not wrap a paragraph boundary. The grant XML's block tags
+    # become newlines, and one entry of a claim's compound list per line is
+    # exactly how US20240335431A1 renders.
+    if "\n" in pre:
+        pre = pre[pre.rfind("\n") + 1:]
+    tokens = pre.split()
+    if not tokens:
+        return ""
+    name = [tokens[-1]]
+    for tok in reversed(tokens[:-1]):
+        if len(name) >= _TRAILING_NAME_TOKENS:
+            break
+        # A separator ends the previous entry: `…benzamide [Example 1]; <next>`
+        # in flat GP text, `consisting of: <first>` at the head of the list.
+        if tok.endswith((";", ":", ".")):
+            break
+        if not (_CHEM_TOKEN.search(tok) or tok.lower() in _NAME_TAIL_WORDS):
+            break
+        name.insert(0, tok)
+    return " ".join(name)
+
+
+def _merge_trailing_id_example_iupacs(
+    patent_id: str, example_index: dict,
+) -> int:
+    """Lift `<name> [Example N]` / `<name> (Compound N)` pairs — the id AFTER
+    the name.
+
+    Runs after both leading-`Example N` passes and only ADDS: a trailing
+    marker is weaker evidence than a header, because the same shape is how a
+    patent cites a compound it is USING as a reagent. When the cid already
+    carries a structure, that structure stays.
+
+    Returns the number of cids added.
+    """
+    from ..core.iupac_to_smiles import (
+        _convert_single, _try_opsin, prefetch_cascade, rule_based_clean,
+    )
+    from ..core.models import Compound, CompoundSource, IupacSource
+    from ..core.patent_text import load_gp_description
+    from ..core.smiles_utils import (
+        canonicalize_smiles, get_inchikey, validate_smiles, molecular_weight,
+    )
+
+    # Both sources, same as the pass above: they render the same markers
+    # differently and neither is a superset of the other on every patent.
+    candidates: dict[str, str] = {}
+    for text in (load_uspto_description(patent_id), load_gp_description(patent_id)):
+        if not text:
+            continue
+        for m in _TRAILING_ID_PAT.finditer(text):
+            cid = m.group(1)
+            if cid in candidates:
+                continue
+            existing = example_index.get(cid)
+            if existing and (existing.get("canonical_smiles") or "").strip():
+                continue
+            raw = _name_ending_at(text, m.start())
+            if not raw:
+                continue
+            name = terminate_name(re.sub(r"\s+", " ", raw))
+            if not name or len(name) < 20:
+                continue
+            name = re.sub(
+                r"\s+as\s+the\s+\w+\s+salt\s*$", "", name, flags=re.IGNORECASE,
+            )
+            name = _COUNTER_ION_TAIL.sub("", name).strip()
+            if len(name) < 20:
+                continue
+            candidates[cid] = name
+
+    if not candidates:
+        return 0
+
+    # One batched JVM launch per ~500 names for the whole patent, not one per
+    # name — `prefetch_cascade` warms the memo `_try_opsin` reads, so the loop
+    # below needs no other change. US20250163061A1 alone has 64 names here.
+    prefetch_cascade(list(candidates.values()))
+
+    n_added = n_llm_rescued = 0
+    for cid, name in candidates.items():
+        cleaned = re.sub(
+            r"^(?:racemic|rac\.?|meso)\s+", "", name, flags=re.IGNORECASE,
+        ).strip()
+        smiles, _err = _try_opsin(cleaned, strict=False)
+        stage_label = "trailing_id_example"
+        if not smiles:
+            rc = rule_based_clean(cleaned)
+            if rc != cleaned:
+                smiles, _err = _try_opsin(rc, strict=False)
+                if smiles:
+                    stage_label = "trailing_id_example_rule_cleaned"
+        if not (smiles and validate_smiles(smiles)):
+            # The rest of the cascade — including the free relaxed-OPSIN
+            # stage, which is what rescues the three stereo-heavy names in
+            # US20240335431A1 that strict mode rejects.
+            compound = Compound(
+                patent_id=patent_id,
+                example_number=cid,
+                iupac_name=name,
+                iupac_source=IupacSource.PATENT_VERBATIM,
+                source=CompoundSource.EXEMPLIFIED,
+            )
+            _convert_single(
+                compound, is_clean_text=False, route_hint="page_extraction",
+            )
+            if compound.canonical_smiles and validate_smiles(compound.canonical_smiles):
+                smiles = compound.canonical_smiles
+                name = compound.iupac_name or name
+                stage_label = f"trailing_id_example_{compound.extraction_method}"
+                n_llm_rescued += 1
+            else:
+                continue
+
+        canon = canonicalize_smiles(smiles)
+        if not canon:
+            continue
+        mw = molecular_weight(canon)
+        if mw is None or mw < 150:
+            continue
+
+        rec = {
+            "compound_id": f"Example {cid}",
+            "iupac_name": name,
+            "canonical_smiles": canon,
+            "inchikey": get_inchikey(canon) or "",
+            "source": "examples",
+            "extraction_method": stage_label,
+        }
+        # An MS stub is a cid with no structure — filling it in is the point,
+        # so carry its measured masses across rather than dropping them.
+        existing = example_index.get(cid)
+        if existing:
+            for k in ("ms_mh_plus_calcd", "ms_mh_plus_found"):
+                if existing.get(k) is not None:
+                    rec[k] = existing[k]
+        example_index[cid] = rec
+        n_added += 1
+
+    if n_added:
+        logger.info(
+            "%s: trailing-id Example pass — %d cids added from %d markers "
+            "(%d needed the full cascade; that is where relaxed OPSIN sits, "
+            "so it is not a paid count)",
+            patent_id, n_added, len(candidates), n_llm_rescued,
+        )
+    return n_added
+
+
 def _merge_ms_stubs(patent_id: str, example_index: dict) -> None:
     """Add MS-data-only stubs for compound_ids that only appear in the
     patent's MS section (no IUPAC name in prose). Mutates index in place.
@@ -1075,7 +1281,9 @@ def _bridge_gp_to_harvest_cids(
                IUPAC that OPSINs to IK → rename GP{idx} → C (so
                HARVEST's assay rows flow through to this molecule).
                Stage B may also OVERWRITE C's InChIKey when C already
-               holds a different one — see `_candidates_for`.
+               holds a different one — see `_candidates_for` — unless
+               C's own `iupac_name` OPSINs to the InChIKey C already
+               holds, in which case the overwrite is refused.
       Stage C: restore any molecule A and B destroyed between them.
 
     Stage C exists because A and B are individually defensible and jointly
@@ -1288,6 +1496,97 @@ def _bridge_gp_to_harvest_cids(
         out.append(suffix)
         return out
 
+    # ── A record's own name is evidence about which structure belongs ──
+    #
+    # `overwrite` replaces the target's `canonical_smiles` and `inchikey`
+    # with GP's and files the displaced key under `inchikey_aliases`. It
+    # never touches `iupac_name`. So whenever the structure it displaces
+    # is the one that name describes, the record ships a name and a
+    # structure for two DIFFERENT molecules — a row that still looks
+    # complete and cannot be used, which is the exact failure the
+    # module's founding rule is about.
+    #
+    # Measured over the 22 shipped `example_index.json` of the 2026-08-06
+    # corpus (written by `_write_outputs`; read, not recomputed): 1,151
+    # records carry `inchikey_aliases`. 1,087 OPSIN their own `iupac_name`
+    # to a key that is IN that alias list and is NOT their primary; **0**
+    # agree with their primary; 64 have a name OPSIN cannot parse. In all
+    # 1,087 the name's molecule has a different molecular FORMULA from the
+    # structure shipped beside it — different compounds, not a stereo
+    # layer OPSIN dropped — and in all 1,087 the name's molecule is
+    # already present on another cid of the same patent, 1,068 of them
+    # self-consistently (that cid's own name OPSINs to it). The overwrite
+    # was not correcting a bad structure; it was moving a good one onto a
+    # cid that already had the right one.
+    #
+    # The name is used as a VETO and nothing else:
+    #   * it is consulted only for a candidate already classified
+    #     `overwrite`, so Stage A's InChIKey merge and Stage B's `fresh` /
+    #     `fill` renames never reach it;
+    #   * it can refuse a rename, never cause one;
+    #   * every way of not knowing — a name OPSIN cannot parse, a name
+    #     that resolves to some third structure, a record with no name —
+    #     returns False and leaves the previous behaviour untouched. An
+    #     overwrite the target's name does not CONTRADICT still happens.
+    # A refused overwrite is also not a lost molecule: the GP record is
+    # simply not renamed, so it stays in `example_index` under its own GP
+    # cid, and Stage C has nothing to restore because nothing was
+    # displaced.
+    vetoed_targets: set[str] = set()
+
+    # Every name the veto could ask about, resolved up front in ONE
+    # batched JVM launch per `_OPSIN_BATCH_CHUNK` names (`prefetch_opsin`,
+    # 14af6fc) rather than one launch per name — the corpus asks about
+    # ~3k names, seconds batched against ~10 minutes one at a time.
+    if overwrite_trusted:
+        _veto_names: set[str] = set()
+        for _gp_cid, _ik in orphan_gp:
+            for _cand in _positional_cids(_gp_cid[2:]):
+                if _cand not in assay_tables:
+                    continue
+                _rec = example_index.get(_cand)
+                if not _rec or not (_rec.get("inchikey") or "").strip():
+                    continue
+                _nm = (_rec.get("iupac_name") or "").strip()
+                if _nm:
+                    _veto_names.add(_nm)
+        if _veto_names:
+            from ..core.iupac_to_smiles import prefetch_opsin
+            prefetch_opsin(sorted(_veto_names))
+
+    _name_ik: dict[str, str] = {}
+
+    def _name_backs_current_structure(cid: str) -> bool:
+        """Does `cid`'s own `iupac_name` OPSIN to the InChIKey it HOLDS?
+
+        Exact full-InChIKey agreement only. A connectivity-layer match
+        would let a name whose stereo differs veto a rename, and this
+        gate's failure direction has to be "let the bridge do what it did
+        before", never "block on a resemblance". The 1,087 measured
+        disagreements are full-key exact against the displaced alias, so
+        the strict comparison costs nothing.
+
+        `_try_opsin` + `get_inchikey` (not the cascade) deliberately:
+        it is the free local pair every route that writes these records
+        derives its key with — `_merge_example_iupacs_from_gp_description`
+        (`gp_description_example_header`, 407 of the 849 measured below),
+        `_merge_explicit_example_iupacs`, `_strategy5_after_classification`
+        — so the veto re-asks the producer's own question rather than
+        introducing a second opinion, and the paid cascade stages have no
+        business inside a bridge decision.
+        """
+        rec = example_index.get(cid) or {}
+        cur = (rec.get("inchikey") or "").strip()
+        nm = (rec.get("iupac_name") or "").strip()
+        if not cur or not nm:
+            return False
+        if nm not in _name_ik:
+            from ..core.iupac_to_smiles import _try_opsin
+            from ..core.smiles_utils import get_inchikey
+            smi, _ = _try_opsin(nm)
+            _name_ik[nm] = (get_inchikey(smi) or "") if smi else ""
+        return bool(_name_ik[nm]) and _name_ik[nm] == cur
+
     def _candidates_for(suffix: str) -> list[tuple[str, str]]:
         """Enumerate assay_tables candidate keys for a GP{suffix}.
         Patent-prefixed candidates first (preferred — they're the
@@ -1305,7 +1604,10 @@ def _bridge_gp_to_harvest_cids(
                              (positional alignment empirically
                              validated), otherwise we'd risk mis-
                              association on patents where GP{N} doesn't
-                             line up with the patent's Example N.
+                             line up with the patent's Example N — AND
+                             only when the target's own `iupac_name`
+                             does not OPSIN to the InChIKey it already
+                             holds (`_name_backs_current_structure`).
 
         The IK-missing branch lets us recover patents like US11292791
         where Strategy 5 added bare-digit entries (``"1"``, ``"31"``)
@@ -1328,6 +1630,13 @@ def _bridge_gp_to_harvest_cids(
             if not existing_ik:
                 return "fill"
             if overwrite_trusted:
+                if _name_backs_current_structure(c):
+                    # The target's own name names the structure already
+                    # there. Overwriting would leave `iupac_name`
+                    # describing one molecule and `canonical_smiles`
+                    # another — see the veto block above.
+                    vetoed_targets.add(c)
+                    return None
                 return "overwrite"
             return None
 
@@ -1525,13 +1834,14 @@ def _bridge_gp_to_harvest_cids(
         if target in assay_tables:
             n_restored_onto_assay_cid += 1
 
-    if n_merged_a or n_renamed_b or n_restored:
+    if n_merged_a or n_renamed_b or n_restored or vetoed_targets:
         logger.info(
             "%s: bridge — %d GP+patent merged (Stage A), %d orphan GP renamed "
-            "(Stage B; %d Strategy-5 IK overwrites), %d molecules restored "
-            "(Stage C; %d onto a cid that has assay rows)",
+            "(Stage B; %d Strategy-5 IK overwrites, %d refused because the "
+            "target's own name backs the structure already there), %d "
+            "molecules restored (Stage C; %d onto a cid that has assay rows)",
             patent_id, n_merged_a, n_renamed_b, n_overwritten,
-            n_restored, n_restored_onto_assay_cid,
+            len(vetoed_targets), n_restored, n_restored_onto_assay_cid,
         )
     return example_index
 
@@ -1667,6 +1977,11 @@ def _collect_pre_extraction(
     # for patents GP doesn't carry.
     _merge_example_iupacs_from_gp_description(patent_id, pre_example_index)
     _merge_explicit_example_iupacs(patent_id, pre_example_index)
+    # LAST of the three name passes, and add-only: it reads the id printed
+    # AFTER the name, which is the weaker evidence of the three because a
+    # patent uses the same shape to cite a compound it is consuming. Anything
+    # a header already resolved keeps the header's structure.
+    _merge_trailing_id_example_iupacs(patent_id, pre_example_index)
     _merge_ms_stubs(patent_id, pre_example_index)
 
     logger.info(
@@ -2011,9 +2326,30 @@ def _targeted_fill_missing_cids(
     these compounds, so they're definitely IN the patent text; we just
     need the LLM to read the right window to recover their IUPACs.
 
+    A returned pair is only merged when its KEY is one of the cids we
+    asked about. The model answers with whatever label it read out of
+    the window, and on US11566007 17 of 19 pairs came back keyed on
+    prose it invented — `Step 1 product`, `Intermediate 1 Alt Step 2
+    product A`. Merged, each becomes an `example_index` record with a
+    name, a SMILES, an InChIKey and a source, indistinguishable
+    downstream from a compound the patent actually names; a missing
+    compound is recoverable and a fabricated one is not.
+
+    SHAPE cannot make that distinction — `normalize_cid_key` and
+    `canonical_cid` both accept `Intermediate 1`. Membership can: the
+    ids in `missing_cids` come from the patent's own assay tables, and
+    they are also the exact question this call asked. Anything else is
+    either invented or off-target, and neither is an answer.
+
+    The comparison goes through `compound_id.canonical_cid`, the
+    codebase's single dedup key, so `Compound 5a` still matches the
+    tables' `5A` instead of opening a second namespace — and the record
+    is stored under the TABLES' spelling, never the model's.
+
     Mutates example_index in place. Returns it.
     """
     from ..core.assay_fsm.harvest.iupac_orchestrator import iupac_burst_targeted
+    from ..core.compound_id import canonical_cid, normalize_cid_key
     from ..core.iupac_to_smiles import _try_opsin
     from ..core.smiles_utils import get_inchikey, validate_smiles
 
@@ -2034,17 +2370,38 @@ def _targeted_fill_missing_cids(
         cost_tracker=cost_tracker,
         window_chars=8000,
     )
+    # canonical id → the spelling the assay tables use. First writer wins, so
+    # a patent that spells one compound two ways keeps its first table key.
+    asked: dict[str, str] = {}
+    for cid in missing_cids:
+        key = canonical_cid(cid)
+        if key:
+            asked.setdefault(key, cid)
+
     import re as _re
-    n_added = 0
-    for cid, iupac in new_pairs.items():
+    n_added = n_not_an_id = n_off_target = 0
+    for raw_cid, iupac in new_pairs.items():
+        key = canonical_cid(raw_cid)
+        target = asked.get(key) if key else None
+        if target is None:
+            # Two different failures, counted apart because they mean
+            # different things: a key that is not id-SHAPED is the model
+            # inventing a label, while a well-shaped id we did not ask about
+            # is it answering about the wrong compound — usually one that
+            # already has a structure. Only the first is a fabrication.
+            if normalize_cid_key(raw_cid) is None:
+                n_not_an_id += 1
+            else:
+                n_off_target += 1
+            continue
         cleaned = _re.sub(
             r"^(?:racemic|rac\.?|meso)\s+", "", iupac, flags=_re.IGNORECASE,
         ).strip()
         smiles, _err = _try_opsin(cleaned)
         if not (smiles and validate_smiles(smiles)):
             continue
-        example_index[cid] = {
-            "compound_id": f"Cpd. No. {cid}",
+        example_index[target] = {
+            "compound_id": f"Cpd. No. {target}",
             "iupac_name": iupac,
             "canonical_smiles": smiles,
             "inchikey": get_inchikey(smiles) or "",
@@ -2053,8 +2410,9 @@ def _targeted_fill_missing_cids(
         }
         n_added += 1
     logger.info(
-        "%s: targeted fill produced %d pairs → %d successfully merged",
-        patent_id, len(new_pairs), n_added,
+        "%s: targeted fill produced %d pairs → %d merged, %d dropped as not a "
+        "compound id, %d dropped as a cid this call did not ask about",
+        patent_id, len(new_pairs), n_added, n_not_an_id, n_off_target,
     )
     return example_index
 
