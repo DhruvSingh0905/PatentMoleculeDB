@@ -29,7 +29,7 @@ from ..adaptive_extraction_cache import AdaptiveExtractionCache
 from ..models import AssayResult
 from .cross_validator import MergeResult, cross_validate
 from .llm_realigner import LLMResult, realign_region
-from .normalizer import normalize_page
+from .normalizer import normalize_page, repair_mojibake
 from .region_detector import Region, detect_regions
 from .row_aligner import align_rows, detect_n_columns
 from .tokenizer import tokenize
@@ -453,6 +453,21 @@ def _gather_full_text(patent_id: str, data_dir: Path) -> str:
     The MinerU markdown pages this used to concatenate FIRST are gone —
     the pipeline no longer generates or reads OCR. `data_dir` is kept in
     the signature because both call sites pass it positionally.
+
+    NOT the same text `extract_page` sees. That path runs Stage 0
+    (`normalize_page`, line 115); this one hands the GP cache field to
+    `prelib_tuples` and `harvest_burst` raw. While the cache held UTF-8
+    decoded as Latin-1 that asymmetry was the difference between a `—` and
+    an `â`, and it decided output: applying the library pattern
+    `f74170a7e3509c03` to this function's text yields 375 rows whose value
+    group is the bare lead byte, against 0 on the normalized text — and 375
+    is exactly what US10214537's shipped `assay_tables.json` carries, every
+    one of them `0.0` for a cell the patent prints as an em-dash.
+
+    Only the mojibake half of Stage 0 is applied here. The rest of it
+    (HTML unescape, NFKC, table flattening) rewrites the text the HARVEST
+    prompt cache is keyed on, and re-earning 8,226 cached responses is not
+    a side effect to take on the way past.
     """
     # Imported lazily: `core.patent_text` imports `assay_fsm.normalizer`,
     # so a module-level import here closes a cycle through this package's
@@ -473,7 +488,7 @@ def _gather_full_text(patent_id: str, data_dir: Path) -> str:
                 pieces.append(desc)
         except Exception:
             pass
-    return "\n".join(pieces)
+    return repair_mojibake("\n".join(pieces))
 
 
 # ── Helpers ──────────────────────────────────────────────────────

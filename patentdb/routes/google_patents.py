@@ -21,6 +21,7 @@ from pathlib import Path
 import requests
 
 from ..core import config
+from ..core.assay_fsm.normalizer import repair_mojibake
 from ..core.models import Compound, CompoundSource, IupacSource
 from ..core.iupac_to_smiles import (
     _try_opsin, _finalize, _convert_single, prefetch_cascade,
@@ -93,6 +94,10 @@ _GP_EMBED_COMPOUND_PAT = re.compile(
     re.DOTALL,
 )
 _GP_FIGURE_IMG_PAT = re.compile(r'<img[^>]+src="(https://patentimages\.[^"]+)"')
+
+# Does the response declare its own charset? If it does we believe it; if it
+# does not, `requests` would silently pick Latin-1. See `fetch_patent_text`.
+_CHARSET_RE = re.compile(r"charset\s*=", re.IGNORECASE)
 
 # Markush linguistic-signal phrases for audit_patent_format
 _MARKUSH_PHRASE_PATS = [
@@ -763,6 +768,13 @@ def fetch_patent_text(patent_id: str) -> dict | None:
                     entry["smiles"] = html.unescape(entry["smiles"])
                 if "&" in entry.get("inchi_key", ""):
                     entry["inchi_key"] = html.unescape(entry["inchi_key"])
+        # Same idiom, for the encoding: every cache file written before the
+        # `_CHARSET_RE` guard below holds UTF-8 decoded as Latin-1. Idempotent
+        # — `repair_mojibake` rewrites a lead+continuation run only when it
+        # decodes as valid UTF-8, so a correctly-decoded cache is untouched.
+        for field in ("description", "claims"):
+            if data.get(field):
+                data[field] = repair_mojibake(data[field])
         logger.info(f"Google Patents cache hit for {patent_id}")
         return data
 
@@ -772,6 +784,29 @@ def fetch_patent_text(patent_id: str) -> dict | None:
         if r.status_code != 200:
             logger.warning(f"Google Patents returned {r.status_code} for {patent_id}")
             return None
+        # THE line where bytes become characters, and where every mojibake
+        # artifact in this project was born.
+        #
+        # Google Patents answers `Content-Type: text/html` with NO charset
+        # parameter. `requests.utils.get_encoding_from_headers` then applies
+        # RFC-2616's default for `text/*` and sets `r.encoding = ISO-8859-1`,
+        # so `r.text` reads a UTF-8 page as Latin-1: `—` (e2 80 94) arrives as
+        # `â\x80\x94`. Measured live 2026-08-07 on US10214537 — see
+        # `tests/test_gp_text_encoding.py` for the transcript.
+        #
+        # Persisted by the `cache_file.write_text` below, it reached: 209 of
+        # 209 cache files (661,943 runs); `route_audit.json` snippets on 13 of
+        # 22 patents; 18 of 116 learned regexes in
+        # `assay_patterns.discoveries.json`, because the HARVEST model saw `â`
+        # followed by two invisible C1 bytes and transcribed the lead byte
+        # alone; and 375 shipped US10214537 rows reading `0.0` for cells whose
+        # CALS prints `—`.
+        #
+        # HTML5 makes UTF-8 the default for a document with no declared
+        # encoding, which is also what this server is actually sending. Trust
+        # a charset when one IS declared.
+        if not _CHARSET_RE.search(r.headers.get("content-type", "")):
+            r.encoding = "utf-8"
 
         desc_match = re.search(
             r'<section itemprop="description"[^>]*>(.*?)</section>',

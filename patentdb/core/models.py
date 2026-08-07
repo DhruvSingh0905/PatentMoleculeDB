@@ -131,6 +131,16 @@ class AssayResult(BaseModel):
     qualifier: str | None = None                # ">", "<", "~", "range"
     unit: str = ""
     n_runs: int | None = None                   # Number of experimental replicates
+    # Bounds when the patent published a BIN rather than a number, and the
+    # grade that names it. Same three fields `AssayRecord` (sources/
+    # uspto_assays.py:404-409) and `routes/letter_bin_assays.py` already
+    # ship — a compound known to be 1-1000 uM is a real record, and the
+    # point value this tier used to invent for it (0.0, on 2,931 shipped
+    # rows) is not. `value_numeric` is None on exactly those rows.
+    value_low: float | None = None
+    value_high: float | None = None
+    bin: str | None = None                      # "+", "++", "A" …
+    unit_source: str = ""                       # "bin_key" when the legend set it
     # Which tier produced this measurement, e.g. "pattern_library:{key}",
     # "harvest_llm", "uspto_xml_table". Without it the FSM tier cannot stamp
     # provenance at all: 27,868 of the 35,888 shipped rows carried `<none>`

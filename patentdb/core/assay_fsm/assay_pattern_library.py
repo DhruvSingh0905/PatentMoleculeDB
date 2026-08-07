@@ -1,21 +1,86 @@
 """Discovered assay-row regex patterns — extracted by HARVEST/LLM and
 applied deterministically across the rest of the patent text.
 
-Lifecycle:
-    pending  → freshly extracted from one chunk
-    auto_loaded → ≥3 distinct patent fingerprints have used it
-    promoted → curator approved (moves to canonical store)
-
-Storage: `data/assay_patterns.discoveries.json` — mirror of the
-`assay_vocabulary.discoveries.json` machinery so the same auto-promote
-and curator-review tooling works.
+Storage: `data/assay_patterns.discoveries.json`.
 
 Public API:
     add_pattern(regex, column_assays, example_match, patent_id)
         Append/update an entry. Returns True if newly added.
     apply_patterns_to_text(text, patent_id)
-        Iterate auto_loaded + freshly-added patterns, run each across
+        Run every stored pattern (plus any freshly-added ones) across
         `text`, return a flat list of ActivityTuple-shaped dicts.
+
+── There is no promotion lifecycle, and the docstring that promised one
+── was wrong for the whole life of the library ─────────────────────────
+
+This file used to open with
+
+    pending  → freshly extracted from one chunk
+    auto_loaded → ≥3 distinct patent fingerprints have used it
+    promoted → curator approved (moves to canonical store)
+
+`add_pattern` implemented the middle arrow. `_load_active_patterns` then
+admitted all three statuses **identically**, so the arrow never decided
+anything, and its own docstring deferred the decision to a caller ("caller
+decides per-patent whether to trust them") that does not exist. Measured
+2026-08-07 over the 116 stored entries and the shipped corpus artifacts:
+
+  * all 116 are `pending`, and **32,191** shipped assay rows come from them —
+    38.1% of the 84,517 records in `output_v2/text_extraction/*/`
+    `assay_tables.json`, by their `source` field. Every one would ship
+    identically at any status.
+  * `len(fingerprints_observed)` is exactly 1 for all 116. The ≥3 branch has
+    never been taken.
+
+It could not be. `_pattern_key` makes identity the SHA of the canonicalised
+regex, so a second observation corroborates only by producing a byte-identical
+regex — and the model does not emit one twice even for the same table.
+`first_seen` is written only in the new-entry branch below, and US9718790 has
+6 entries dated 2026-05-18 and 21 more dated 2026-05-19: one document's tables,
+27 distinct keys, from two runs days apart.
+
+Re-keying identity on a LAYOUT FINGERPRINT was measured before the lifecycle
+was removed, since that is what makes reuse work in `repair/`. Under that
+module's convention — column count, per-column value shape, normalised header
+words (`repair/gap.py:78`) — the 116 entries fall into 76 groups and **zero**
+reach even 2 patents, let alone 3. The header words ARE the assay target, and
+two patents rarely assay the same target with the same table shape.
+
+Dropping the header words is the only key that produces corroboration at all
+(6 groups over ≥3 patents, 66 entries) — and it puts `P2X3 IC50 (μM)`,
+`RORγ Binding IC50 μM`, `B-Raf IC50`, `Molecular Weight` and
+`LCMS (ESI) [M+H] Found` into ONE group. Promoting on that key asserts that a
+molecular weight corroborates a potency, which is exactly the fabricated-
+MEANING failure documented above `_FOREIGN_MIN_ANCHOR_TOKENS` and `_HEADER_WINDOW`
+and blocked there. A gate that can only fire by discarding the labels it is
+supposed to be vetting is not a gate, so both it and the `status` field are
+gone rather than re-keyed.
+
+── What actually decides whether a pattern fires ───────────────────────
+
+Nothing about the entry's history; three text-only tests, all in
+`apply_patterns_to_text`, all measured against the patent's own CALS tables:
+
+  1. HEADER ANCHOR — the ordered salient tokens of the pattern's header must
+     occur, in order and within `_HEADER_SPAN`, in THIS patent's text. No
+     occurrence, no firing.
+  2. FOREIGN-PATTERN GATE — an entry whose `first_seen_patent` is another
+     document must additionally carry an anchor of ≥2 salient tokens and match
+     only rows sitting under one of that anchor's occurrences. Blocks 593/593
+     of the US10273259 → US20240010684A1 leak at zero cost to US9745328's
+     3,048 legitimate inherited rows.
+  3. WRONG-TABLE GATE — a row whose nearest `TABLE <n>` header names a
+     different measurement (retention time, mass, method) is dropped, native
+     and foreign alike. 15,112 rows removed, of which 6,135 are contradicted
+     by the patent's own CALS; corpus accuracy over judgeable rows 74.6% →
+     85.7%.
+
+Those three are the library's contract. `status` never was.
+
+`fingerprints_observed` STAYS, and is not a lifecycle remnant: it is read by
+`harvest/orchestrator.py::_patent_has_own_patterns`, one half of the
+HARVEST_SKIP gate that short-circuits the paid HARVEST tier on 8 of the 22
+corpus patents. Deleting it would silently re-enable that spend.
 """
 from __future__ import annotations
 
@@ -55,12 +120,16 @@ def _canonicalize_regex(regex: str) -> str:
     patterns produced by the LLM collide on the same fingerprint.
 
     Without this, LLM variations like ``\\+{1,4}`` vs ``\\+{1,5}`` get
-    different SHA hashes, never accumulate 3 patent fingerprints, and
-    never auto-promote — the library stays in "pending" forever even
-    when every new patent re-discovers the same convention. With this,
-    `(?P<cid>\\d+)\\s+(?P<value0>\\+{1,4})` and
-    `(?P<cid>\\d{1,3})\\s+(?P<value0>\\+{1,5})` both reduce to the
-    same canonical form and auto-promote on the 3rd patent.
+    different SHA hashes and the library stores two entries for one table
+    format. With it, `(?P<cid>\\d+)\\s+(?P<value0>\\+{1,4})` and
+    `(?P<cid>\\d{1,3})\\s+(?P<value0>\\+{1,5})` reduce to the same form.
+
+    This collapses quantifier variants and anchors, and nothing else. It was
+    written to feed a ≥3-patent promotion gate and did not get close: over the
+    116 stored entries it merges 116 → 113 keys, and all 113 are still a single
+    patent. A different character class (`\\d+\\.\\d+` vs `[\\d.]+`) or a
+    different separator is a different key, and that is most of what varies
+    between two descriptions of one table. See the module docstring.
     """
     canon = regex
     # Collapse digit-quantifier variants to a single form: \d+, \d{1,4},
@@ -78,8 +147,16 @@ def _canonicalize_regex(regex: str) -> str:
 
 
 def _pattern_key(regex: str) -> str:
-    """Stable identity for dedup, computed from the canonicalized regex
-    so semantically-equivalent LLM variations collide."""
+    """Stable identity for DEDUP, computed from the canonicalized regex.
+
+    Dedup is all this can do. It answers "have I stored this exact regex
+    before", which keeps the file from growing a duplicate every time the same
+    chunk is re-read, and it is a fine answer to that question. It is not an
+    answer to "have two patents independently confirmed this table format" —
+    two patents produce byte-different regexes for the same table, so a
+    counter keyed here cannot reach 2. That is why the promotion gate that
+    used to sit on it is gone; see the module docstring.
+    """
     import hashlib
     canon = _canonicalize_regex(regex)
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
@@ -116,10 +193,11 @@ def add_pattern(
     # GUARD: a discovered pattern whose `column_assays` are LLM placeholders
     # (`Activity1`, `col_0`, `col1_IC50`, …) or non-assay column types
     # (`[M+H]`, `Method`, `Molecular Weight`, …) gets rejected at the source.
-    # Without this guard the pattern auto-promotes to `auto_loaded` after 3
-    # observations and starts injecting phantom assay rows into
-    # assay_tables.json on every future patent (US11292791's 704 rows of
-    # `Activity1 = 0.0` are exactly this leak).
+    # Without this guard the pattern enters the library and starts injecting
+    # phantom assay rows into assay_tables.json on every future patent whose
+    # text it matches (US11292791's 704 rows of `Activity1 = 0.0` are exactly
+    # this leak). This is the ONLY admission gate on the write side — there is
+    # no promotion step behind it that a bad entry still has to clear.
     if not column_assays or not any(is_valid_assay_name(n) for n in column_assays):
         logger.warning(
             "assay_pattern_library: rejected pattern from %s — no valid assay "
@@ -141,11 +219,13 @@ def add_pattern(
             "column_assays": list(column_assays),
             "header_text": (header_text or "")[:300],
             "example_match": example_match[:160],
-            "status": "pending",
+            # Read by `harvest/orchestrator.py::_patent_has_own_patterns`,
+            # half of the HARVEST_SKIP gate. Not a promotion counter.
             "fingerprints_observed": [patent_id],
+            # Read by `_is_foreign`, which decides whether this entry's labels
+            # have to clear the cross-patent gate on some other document.
             "first_seen_patent": patent_id,
             "first_seen": str(date.today()),
-            "n_observations": 1,
         })
         _write(data)
         logger.info(
@@ -153,39 +233,39 @@ def add_pattern(
             key, patent_id, regex[:_PATTERN_PREVIEW_CHARS],
         )
         return True
-    # Update
+    # Update. Recording that a second patent saw this exact regex changes
+    # nothing about whether it fires — that is decided at apply time, by the
+    # three text-only gates named in the module docstring. It is recorded
+    # because `_patent_has_own_patterns` reads it.
     if patent_id not in existing.get("fingerprints_observed", []):
         existing.setdefault("fingerprints_observed", []).append(patent_id)
-    existing["n_observations"] = existing.get("n_observations", 0) + 1
     # Backfill a header anchor if this observation supplied one and the
     # stored entry lacks it (older entries were discovered before headers
     # were captured).
     if header_text and not existing.get("header_text"):
         existing["header_text"] = header_text[:300]
-    if (
-        existing.get("status") == "pending"
-        and len(existing["fingerprints_observed"]) >= 3
-        and existing["n_observations"] >= 3
-    ):
-        existing["status"] = "auto_loaded"
-        logger.info(
-            "assay_pattern_library: pattern %s promoted to auto_loaded",
-            key,
-        )
     _write(data)
     return False
 
 
 def _load_active_patterns() -> list[dict[str, Any]]:
-    """All patterns with status in {pending, auto_loaded, promoted}.
-    Pending entries are still applied — caller decides per-patent
-    whether to trust them based on the fingerprints_observed list.
+    """Every stored pattern that carries a usable regex.
+
+    There is no status filter, because there was never a status that meant
+    anything: the three the filter used to name were admitted identically, all
+    116 stored entries hold the same one, and they account for 38.1% of the
+    corpus's shipped assay rows. Legacy entries still carry `status` on disk
+    and are loaded regardless of its value — dropping them would delete those
+    rows over a field that has never changed a decision.
+
+    Whether a loaded pattern actually fires is settled in
+    `apply_patterns_to_text` by the header anchor, the foreign-provenance gate
+    and the wrong-table gate, each a function of the target patent's own text.
     """
     data = _read()
     return [
         t for t in data.get("tokens", [])
-        if t.get("status") in ("pending", "auto_loaded", "promoted")
-        and t.get("regex")
+        if t.get("regex")
     ]
 
 
@@ -564,13 +644,70 @@ def _anchor_spans(
 # property the module's design comment asks for: output depends solely on the
 # text the pattern is run against.
 
-# A row belongs to the header it sits under. 2,000 chars is measured, not
-# chosen: of the 15,082 rows sitting within 2,000 chars of a non-assay header,
-# 3 are corroborated. Widening to 10,000 admits 737 more corroborated rows
-# against 963 contradicted, and beyond that the "nearest header" is 283,000
-# chars away and means nothing — that is US10273259's flattened region, where
-# the caption belongs to a table 39 captions earlier.
-_HEADER_SCAN = 2_000
+# HOW FAR A CAPTION REACHES. This was a fixed 2,000-char budget, on the
+# reasoning that of the 15,082 rows within 2,000 chars of a non-assay header
+# only 3 were corroborated, while widening to 10,000 admitted 737 more
+# corroborated rows against 963 contradicted, and past that the nearest header
+# could be 283,000 chars away and mean nothing.
+#
+# A budget was the wrong instrument for that, and it did nothing on the patent
+# the gate exists for. US10544143's `TABLE 1` — `Ex. No. | Structure | Mol. Wt.
+# | LCMS M+ | Ret Time (min) | HPLC Method` — runs 64,587 chars in the grant
+# XML and 61,289 more in the Google Patents rendering of the same document. Its
+# first row that survives the regex sits **2,007** chars below the caption,
+# seven past the budget, so the gate blocked 714 of 10,605 candidate rows and
+# passed the other 9,891 as `TLR7/TLR8/TLR9 IC50 (nM)`. The shipped artifact of
+# 2026-08-06 18:39 carries 1,770 rows that are literally one of those cells:
+# compound 79 ships `TLR7 = 405.51 nM` (a molecular weight), `TLR8 = 406.1 nM`
+# (an [M+H]+), `TLR9 = 0.65 nM` (a retention time in MINUTES), beside the CALS
+# reader's correct 373 / 355 / 9724.
+#
+# There is no ambiguity for a budget to hedge: a caption governs the text up to
+# the NEXT caption. What the 283,000-char observation was really about is a
+# different thing — a region where the `TABLE <n>` markup has been LOST, which
+# is what Google Patents' flat rendering does, so the nearest caption above is
+# genuinely not this table's caption. The direct test for that is whether the
+# pattern's OWN header text is printed in between; where it is, a new table of
+# this pattern's kind has started and the caption above no longer governs.
+#
+# Measured 2026-08-07 over the 22-patent corpus, replaying `apply_patterns_to_text`
+# with the gate disabled and grading every distinct (cid, assay, value) TRIPLE it
+# removes — triples, because dropping one of six duplicate matches of the same
+# reading costs nothing downstream. Judges: the patent's own CALS first
+# (`sources.uspto_assays.extract_from_patent`), BindingDB where CALS is silent.
+#
+#   caption reaches…                triples dropped   verified WRONG   RIGHT
+#   2,000 chars (before)                      9,048            5,186       6
+#   the next caption                         12,855            8,071      80
+#   the next caption OR its own header       11,974            8,071      19
+#
+# The third row is this rule. It drops 2,885 more verified-wrong triples than
+# the budget did, and it is strictly better than the plain next-caption rule —
+# same wrong triples, 61 fewer right ones, 820 fewer unjudgeable ones — because
+# the exemption is exactly what rescues US10273259, whose RORγ binding table
+# (its PRIMARY assay; the patent is titled "Tricyclic sulfones as RORγ
+# modulators") is printed with no caption of its own, 2,787 chars under
+# `TABLE 19 LCMS m/z HPLC HPLC Ex. # Structure observed t R (min) method`.
+#
+# VERIFIED REAL COLLATERAL: ZERO. All 19 triples it drops that score RIGHT were
+# read back out of the text:
+#   * 18 are US10214537 `CD69 IC50 (nM)` of 1–5 under `TABLE 40 Ex. No.
+#     Structure Name [M + 1]`, from matches like `529 425 1-(3-(4-amino-…` —
+#     529 is the PREVIOUS row's [M+1], 425 is the example number, and the "1"
+#     is the leading locant of the IUPAC name that follows. They score right
+#     only because this patent's CD69 readings are frequently single digits,
+#     and only against BindingDB folded to (patent, compound); its own CALS
+#     holds no CD69 value for any of the 18. Same fabrication CLAUDE.md already
+#     records for `4 21 2-(4-acetyl-…`, now 18 cases instead of 4.
+#   * 1 is US10544143 compound 37 `TLR8 = 446.1`, which is that example's
+#     LCMS M+ (445.57 / 446.1 / 0.72) landing within the 5% tolerance of the
+#     true 465 that the CALS reader ships correctly.
+#
+# How much of the corpus flows through here: 5 of 22 patents have any row under
+# a non-assay caption at all. US9694016 (20,343 rows) and US9745328 have none,
+# so the widening costs them nothing — the same result the budget's own note
+# claimed for them, now for a stated reason rather than a distance.
+#
 # How much of the caption counts as "the header" — enough for the column names
 # that follow `TABLE 141`, not enough to reach the first data row.
 _HEADER_WINDOW = 200
@@ -601,20 +738,30 @@ def _under_foreign_header(
     starts: list[int],
     heads: list[str],
     anchor: list[str],
+    anchor_starts: list[int],
     cache: dict[int, bool],
 ) -> bool:
     """True when the nearest header above `offset` names a DIFFERENT
-    measurement and does not also carry this pattern's own anchor.
+    measurement, does not also carry this pattern's own anchor, and its
+    authority has not already been ended by this pattern's own header.
 
     No `TABLE <n>` caption above the row means no evidence either way, and the
     answer is False — Google Patents renders some tables as flat prose with the
     caption gone (US10246453's 446 far rows, US10273259's 881 corroborated
     ones), and reading absent evidence as guilt deletes them.
+
+    `anchor_starts` is where this pattern's own header occurs, ascending, in
+    source-text coordinates. A caption governs down to the next caption, but
+    one of these printed in between means an un-captioned table of this
+    pattern's kind has started and the caption above no longer describes the
+    row. That is the same "absent evidence" case as an absent caption, read
+    from the text instead of from a distance — see the block above
+    `_HEADER_WINDOW` for the corpus measurement.
     """
     if not starts:
         return False
     i = bisect.bisect_right(starts, offset) - 1
-    if i < 0 or offset - starts[i] > _HEADER_SCAN:
+    if i < 0:
         return False
     hit = cache.get(i)
     if hit is None:
@@ -625,7 +772,10 @@ def _under_foreign_header(
         hit = (not all(tok in norm for tok in anchor)
                and bool(_NONASSAY_HEADER_RE.search(head)))
         cache[i] = hit
-    return hit
+    if not hit:
+        return False
+    k = bisect.bisect_right(anchor_starts, offset) - 1
+    return not (k >= 0 and anchor_starts[k] > starts[i])
 
 
 def _is_foreign(entry: dict[str, Any], patent_id: str) -> bool:
@@ -646,6 +796,62 @@ def _under_anchor(offset: int, spans: list[tuple[int, int]]) -> bool:
     )
 
 
+# ── column pairs: a row can name more than one compound ───────────
+#
+# `TABLE-US-00569` of US9718790 prints SIX columns — three (Compound No.,
+# P2X3 IC50) pairs side by side, sixty rows deep:
+#
+#     I-0020   0.384    I-0897   0.025    I-1555   0.016
+#
+# Five library entries capture that faithfully: they declare `cid`, `cid1`
+# AND `cid2`. The applier read `cid` alone and then walked `column_assays`
+# attaching value0/1/2 to it, so I-0020 shipped its own 0.384 plus its two
+# neighbours' readings, and I-0897 and I-1555 got no record at all. Graded
+# against this patent's own CALS (a row is correct when compound_id and value
+# are adjacent cells of one row) those five scored 34.5-34.6% — one in three,
+# which is what a three-pair table read as one pair scores by construction —
+# against 100.0% for the seven single-`cid` patterns on the same document.
+#
+# The rule below is positional: a `valueN` group belongs to the id group that
+# most recently PRECEDES it in the regex source. With one id group every value
+# follows it and the mapping is exactly what the applier already did, so the
+# 111 single-`cid` patterns are untouched by construction.
+#
+# NOT a count heuristic. "len(ids) == len(values)" says nothing about WHICH
+# id owns which value, and it would also fire on a pattern whose second id is
+# a batch or salt suffix rather than a second compound. The shape that is
+# unambiguous is the one the table itself encodes: ids and values strictly
+# ALTERNATING, id-value-id-value. Anything else keeps the old single-`cid`
+# behaviour, so a future pattern like `(?P<cid>…)(?P<cid1>…)(?P<value0>…)` —
+# example number, batch number, one reading — is not silently re-attributed.
+_GROUP_DECL_RE = re.compile(r"\(\?P<(\w+)>")
+_ID_GROUP_RE = re.compile(r"^cid\d*$")
+_VALUE_GROUP_RE = re.compile(r"^value\d+$")
+
+
+def _value_owners(regex: str) -> dict[str, str]:
+    """Map each `valueN` group to the id group that precedes it in `regex`.
+
+    Returns {} unless the pattern declares MORE THAN ONE id group and its id
+    and value groups strictly alternate id-value-id-value. Every other
+    pattern — all 111 single-`cid` entries in the library — takes the caller's
+    unchanged path, so this cannot move a row that was already attributed
+    correctly.
+    """
+    seq = [g for g in _GROUP_DECL_RE.findall(regex)
+           if _ID_GROUP_RE.match(g) or _VALUE_GROUP_RE.match(g)]
+    ids = [g for g in seq if _ID_GROUP_RE.match(g)]
+    if len(ids) < 2 or len(seq) != 2 * len(ids):
+        return {}
+    owners: dict[str, str] = {}
+    for i in range(0, len(seq), 2):
+        id_grp, val_grp = seq[i], seq[i + 1]
+        if not _ID_GROUP_RE.match(id_grp) or not _VALUE_GROUP_RE.match(val_grp):
+            return {}
+        owners[val_grp] = id_grp
+    return owners
+
+
 def apply_patterns_to_text(
     text: str,
     patent_id: str,
@@ -660,9 +866,10 @@ def apply_patterns_to_text(
         text: full patent text (any source).
         patent_id: for source_quote tagging in returned dicts.
         fresh_patterns: patterns just-discovered this run — included
-            alongside library patterns so this run benefits immediately
-            (auto_loaded promotion takes effect on the NEXT run, but
-            fresh patterns should still apply NOW for cost amortization).
+            alongside library patterns so the run that paid for them
+            benefits immediately, rather than only the next one. They are
+            stamped with `first_seen_patent = patent_id` below so
+            `_is_foreign` treats them as native, which they are.
     """
     if not text:
         return []
@@ -738,6 +945,13 @@ def apply_patterns_to_text(
             continue
         n_for_pattern = 0
         hdr_cache: dict[int, bool] = {}
+        # Where this pattern's own header occurs, ascending — the wrong-table
+        # gate bisects it to decide whether a caption still governs a row.
+        anchor_starts = [s for s, _e in spans]
+        # Which id group owns each value group. Computed once per pattern;
+        # empty for the 111 entries that declare a single `cid`, which is how
+        # those keep the old behaviour verbatim. See `_value_owners`.
+        owners = _value_owners(rx)
         for m in compiled.finditer(text):
             cid = (m.groupdict().get("cid") or "").strip()
             if not cid:
@@ -746,10 +960,11 @@ def apply_patterns_to_text(
             # header printed above this row names a different measurement.
             # `I-0687 1.86` under "Retention … (min) [M + H] Method" is a
             # retention time, not a micromolar potency. See the block above
-            # `_HEADER_SCAN` for the 62,566-row measurement and for why this
-            # is not a distance test.
+            # `_HEADER_WINDOW` for the 62,566-row measurement, for why this is
+            # not a distance test, and for how far a caption reaches.
             if _under_foreign_header(
-                m.start(), tbl_starts, tbl_heads, anchor, hdr_cache
+                m.start(), tbl_starts, tbl_heads, anchor, anchor_starts,
+                hdr_cache,
             ):
                 n_wrong_table += 1
                 continue
@@ -772,6 +987,19 @@ def apply_patterns_to_text(
                 raw_val = (m.groupdict().get(grp) or "").strip()
                 if not raw_val or raw_val.lower() in ("nt", "nd", "—", "-"):
                     continue
+                # COLUMN PAIRS: this value belongs to the compound its own
+                # column pair names, not to the first id on the line. `owners`
+                # is empty unless the pattern declares more than one id group.
+                row_cid = cid
+                owner = owners.get(grp)
+                if owner and owner != "cid":
+                    row_cid = (m.groupdict().get(owner) or "").strip()
+                    if not row_cid:
+                        # That column pair is absent from this row (a short
+                        # last row, an optional trailing group). Its value
+                        # cannot be attributed, and attributing it to `cid`
+                        # is the defect this block exists to stop.
+                        continue
                 if assay not in unit_cache:
                     unit_cache[assay] = _resolve_unit(assay, header_units)
                 unit = unit_cache[assay]
@@ -784,7 +1012,7 @@ def apply_patterns_to_text(
                 try:
                     v_num = float(raw_val)
                     out.append({
-                        "compound_id": cid,
+                        "compound_id": row_cid,
                         "assay_name": assay,
                         "value": v_num,
                         "unit": unit,
@@ -800,7 +1028,7 @@ def apply_patterns_to_text(
                     # Letter grade — keep as categorical (value=None;
                     # the workbook surfaces these distinctly).
                     out.append({
-                        "compound_id": cid,
+                        "compound_id": row_cid,
                         "assay_name": assay,
                         "value": None,
                         "value_categorical": raw_val,

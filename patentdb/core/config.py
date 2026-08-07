@@ -66,9 +66,43 @@ BDB_REFERENCE_TSV = Path(os.environ.get("BDB_REFERENCE_TSV", "")) if os.environ.
 # ── HARVEST burst tier (coverage safety net) ──────────────────────
 # When True, the pipeline runs the gap detector after the cheap tier
 # completes; on signal trip, fires the HARVEST 5-agent burst over the
-# full patent text. Default ON. Disable via `HARVEST_BURST=0` for
-# regression debugging or cost-controlled re-runs.
-HARVEST_BURST_ENABLED = os.environ.get("HARVEST_BURST", "1") == "1"
+# full patent text. DEFAULT OFF — it was the last paid tier still
+# defaulting on. `HARVEST_BURST=1` restores it.
+#
+# `9828990` lifted the free pattern-library pass (`prelib_tuples`) out of
+# `harvest_burst`, so what this flag now gates is only the PAID arm. Measured
+# at HEAD over the 22-patent corpus, zero paid calls (`anthropic.Anthropic`
+# replaced with a raiser; the cache read directly via `api_cache.get_cached`):
+#
+#   * `HARVEST_SKIP` already short-circuits the paid arm on 8 of 22 patents
+#     (`chunks = []` in `harvest_burst`). Those 8 hold 131,268 of the 133,926
+#     free pre-library rows, so the tier's own skip gate is where nearly all
+#     of the yield attributed to it comes from — and it costs nothing.
+#   * of the 14 patents where the paid arm would still run, 13 have a
+#     pre-library yield of 0, so nothing amortises against them either.
+#   * response-cache coverage of the prompts it would send is ZERO: 0/19
+#     chunks on US9718825 and 0/28 on US10919885, Agent 1 and Agent 2 alike.
+#     `call_claude_text_batch` does read and write that cache
+#     (`api_client.py:331` and `:461`), so a SECOND run of the same patent
+#     would hit — but none of these prompts has ever been paid for, so
+#     enabling the tier is a full-price first run on every patent it reaches.
+#   * the `harvest:` chunk cache is a separate store and the batched path
+#     touches neither end of it: `adaptive_extraction_rules.json` holds 755
+#     entries and 0 in that namespace, because `_persist` is only reached
+#     from the sequential loop.
+#   * that same batched path never reaches `cost_tracker.patent_lm_exceeded`,
+#     which sits inside the sequential for-loop it short-circuits. So
+#     `PER_PATENT_LM_CAP` ($0.20) does not bound the DEFAULT path — the
+#     measured $2.13 on US9718790 is what an unbounded one looks like.
+#   * its other stated job, discovering row patterns for the library, has
+#     produced nothing since 2026-05-31: every one of the 116 stored entries
+#     is dated on or before that day, over two months and many runs ago.
+#
+# The last corpus run recorded `cost.lm_usd = 0.0` on all 22 patents, which is
+# consistent with the paid arm not having fired; it is not proof that it never
+# helps. What is established is that it cannot fire cheaply and cannot be
+# bounded on the path it takes by default, so it is opt-in.
+HARVEST_BURST_ENABLED = os.environ.get("HARVEST_BURST", "0") == "1"
 
 # ── The assay realigner (`assay_fsm/llm_realigner.realign_region`) ─
 # Stage 5 of the assay FSM: one Sonnet call per chunk of every detected

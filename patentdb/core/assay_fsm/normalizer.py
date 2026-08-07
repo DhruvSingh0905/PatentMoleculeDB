@@ -10,9 +10,28 @@ matters:
 Steps 1 and 2 must run BEFORE step 3 because NFKC may alter byte
 sequences that the mojibake table is keyed on.
 
-`_MOJIBAKE_REPAIRS` is the canonical authority for the artifacts we've
-seen across patents. Adding entries here is a generic improvement
-that benefits ALL patents — never add a patent-specific repair.
+The repair is now GENERIC — `_MOJIBAKE_RUN_RE` finds every UTF-8
+lead+continuation run and inverts it — because enumerating the damage was
+losing to it. Two ways the hand-written table below was wrong:
+
+  * **19 of its 35 keys could never fire.** They are spelled in cp1252
+    (`â€™`, `â‰¤`, `â‚‚`, `Ï€` — where byte 0x80 renders as `€`), while the
+    corruption this codebase actually produces is Latin-1 (`â\\x80\\x99`,
+    byte 0x80 renders as the C1 control). `"â€™".encode("latin-1")` raises;
+    the key is unreachable by construction.
+  * **What it did cover was a sample, not a set.** `═` (`\\xe2\\x95\\x90`,
+    a drawn double bond), `≡`, `“”` and the em/en spaces are absent, and
+    reached `route_audit.json` snippets on 13 of the 22 corpus patents.
+
+The generic inverse costs one regex pass and needs no maintenance: a run is
+rewritten only when it decodes as valid UTF-8, so text that is already
+correct — the whole `uspto_xml` tier — is returned untouched.
+
+**Per-RUN, not per-string.** `patent_text.load_full_patent_text` concatenates
+the clean XML with the corrupt GP scrape and normalises the join. A whole-string
+`encode("latin-1")` raises on the XML's real `—` and a guarded whole-string
+repair therefore returns the concatenation unchanged, silently repairing
+nothing. Only the substring form survives mixed input.
 """
 from __future__ import annotations
 
@@ -21,9 +40,33 @@ import re
 import unicodedata
 
 
-# Common UTF-8 → Latin-1 → UTF-8 double-encoding artifacts. The repair
-# is order-independent because each key is unique. Originally extracted
-# from `routes/google_assays.py:_MOJIBAKE_REPAIRS` and extended.
+# A UTF-8 sequence read as Latin-1: a lead byte (0xC2-0xF4) followed by one or
+# more continuation bytes (0x80-0xBF), each decoded to the Latin-1 codepoint of
+# the same value. Below 0xC2 there is no valid two-byte UTF-8 lead, so the
+# range starts there and a stray `Á`/`À` in correct text is never touched.
+_MOJIBAKE_RUN_RE = re.compile("[\u00c2-\u00f4][\u0080-\u00bf]+")
+
+
+def _invert_latin1_run(m: re.Match[str]) -> str:
+    """Re-encode one run as Latin-1 and read it back as the UTF-8 it was.
+
+    Returns the run unchanged when it is not valid UTF-8 — which is what
+    happens where the scrape's own `re.sub(r"\\s+", " ")` ate a continuation
+    byte that decoded to U+0085 or U+00A0 (both `\\s` under Python's Unicode
+    `re`). That damage is not recoverable here; see the note in
+    `routes/google_patents.fetch_patent_text`.
+    """
+    run = m.group(0)
+    try:
+        return run.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return run
+
+
+# Residual single-character artifacts the run inverter cannot reach, plus the
+# historical table. Kept because a LEAD BYTE ON ITS OWN — `â` with its
+# continuation bytes lost, as when a model transcribes only the visible glyph —
+# is not a run and has no inverse. Never add a patent-specific repair here.
 _MOJIBAKE_REPAIRS: dict[str, str] = {
     # Greek letters used in unit symbols and chemistry
     "Î¼": "μ",   "Âµ": "µ",
@@ -52,11 +95,16 @@ _MOJIBAKE_REPAIRS: dict[str, str] = {
 
 
 def repair_mojibake(text: str) -> str:
-    """Apply known UTF-8 → Latin-1 → UTF-8 double-encoding reversals.
+    """Undo UTF-8 that was decoded as Latin-1.
 
-    Idempotent: running twice produces the same result. Free, O(n) per
-    pattern. Patent-agnostic.
+    Generic run inversion first, then the residual table for anything the
+    inverter cannot reach. Idempotent: a repaired string contains no
+    lead+continuation run, so the second pass is a no-op. Free, O(n).
+    Patent-agnostic.
     """
+    if not text:
+        return text
+    text = _MOJIBAKE_RUN_RE.sub(_invert_latin1_run, text)
     for bad, good in _MOJIBAKE_REPAIRS.items():
         if bad in text:
             text = text.replace(bad, good)

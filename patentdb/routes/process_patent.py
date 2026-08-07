@@ -2191,6 +2191,44 @@ def _collapse_cids_by_inchikey(
         )
 
 
+def _harvest_row_dict(a) -> dict:
+    """One `AssayResult` from the FSM/pattern-library tier → the shipped row.
+
+    `source` is which arm produced this row. `harvest/orchestrator.py` sets it
+    on the AssayResult and its comment says dropping it "is what left 27,868
+    shipped rows unattributed" — but the fix landed on the producer only, and
+    this dict rebuilt the row without it. Measured then: 27,708 of 38,000
+    shipped records (73%) carried no provenance, so "did the pattern library or
+    the burst produce this row" could only be answered by re-running a
+    simulation, never from the artifact.
+
+    The bin fields are written ONLY on rows that have them, so a plain numeric
+    row keeps the six-key shape 41,526 rows already ship and no consumer sees a
+    schema change it did not ask for. A row that has them had `value_numeric:
+    0.0` before — the fabricated point this tier used to invent for a letter
+    grade, dropping the range the patent's own legend states.
+    """
+    row = {
+        "assay_name": a.assay_name,
+        "value_numeric": a.value_numeric,
+        "unit": a.unit,
+        "qualifier": a.qualifier,
+        "n_runs": getattr(a, "n_runs", None),
+        "source": getattr(a, "source", "") or "",
+    }
+    lo, hi = getattr(a, "value_low", None), getattr(a, "value_high", None)
+    grade = getattr(a, "bin", None)
+    if lo is not None or hi is not None or grade:
+        row["value_low"] = lo
+        row["value_high"] = hi
+        row["value_raw"] = getattr(a, "value_raw", "") or ""
+        row["bin"] = grade
+        unit_source = getattr(a, "unit_source", "") or ""
+        if unit_source:
+            row["unit_source"] = unit_source
+    return row
+
+
 def _run_text_dominant(
     patent_id: str,
     text: str,
@@ -2213,25 +2251,7 @@ def _run_text_dominant(
     if isinstance(raw_assays, tuple):
         raw_assays = raw_assays[0]
     assay_tables = {
-        cid: [
-            {
-                "assay_name": a.assay_name,
-                "value_numeric": a.value_numeric,
-                "unit": a.unit,
-                "qualifier": a.qualifier,
-                "n_runs": getattr(a, "n_runs", None),
-                # Which arm produced this row. `harvest/orchestrator.py:68`
-                # sets it on the AssayResult and its comment says dropping it
-                # "is what left 27,868 shipped rows unattributed" — but the fix
-                # landed on the producer only, and this dict rebuilt the row
-                # without it. Measured today: 27,708 of 38,000 shipped records
-                # (73%) carry no provenance, so "did the pattern library or the
-                # burst produce this row" could only be answered by re-running
-                # a simulation, never from the artifact.
-                "source": getattr(a, "source", "") or "",
-            }
-            for a in arr
-        ]
+        cid: [_harvest_row_dict(a) for a in arr]
         for cid, arr in raw_assays.items()
     }
     # 1b. There is no output validator here any more.

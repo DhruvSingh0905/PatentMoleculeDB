@@ -49,19 +49,31 @@ class HarvestResult:
     def to_assay_results(self) -> dict[str, list[AssayResult]]:
         """Convert tuples to the standard `AssayResult` shape used by
         the rest of the pipeline. Sanitized compound IDs are used as
-        dict keys."""
+        dict keys.
+
+        A tuple carrying `range_fields` (set by `_prelib_row_to_tuple` for a
+        cell the patent published as a BIN rather than a number) ships that
+        encoding verbatim: `value_numeric=None` plus `value_low`/`value_high`
+        from the patent's own legend. `t.value` is not read for those — it
+        only ever held a placeholder to satisfy `ActivityTuple.value: float`.
+        """
         out: dict[str, list[AssayResult]] = {}
         for t in self.tuples:
             cid = sanitize_compound_id(t.compound_id)
             if not cid:
                 continue
+            rf = getattr(t, "range_fields", None) or {}
             out.setdefault(cid, []).append(AssayResult(
                 assay_name=t.assay_name or "unknown",
-                value_raw=str(t.value),
-                value_numeric=t.value,
-                qualifier=t.qualifier,
-                unit=t.unit or "",
-                n_runs=t.n_runs,
+                value_raw=rf.get("value_raw") or str(t.value),
+                value_numeric=rf["value_numeric"] if rf else t.value,
+                qualifier=rf.get("qualifier") if rf else t.qualifier,
+                unit=(rf.get("unit") if rf else t.unit) or "",
+                n_runs=rf.get("n_runs") if rf else t.n_runs,
+                value_low=rf.get("value_low"),
+                value_high=rf.get("value_high"),
+                bin=rf.get("bin"),
+                unit_source=rf.get("unit_source", ""),
                 # `validation_reason` is where this tier records which arm
                 # produced the tuple ("pattern_library:{key}", agent-5 verdicts).
                 # Dropping it is what left 27,868 shipped rows unattributed.
@@ -77,6 +89,143 @@ _AGENT_COST_USD = 0.025
 
 def _harvest_cache(cache: AdaptiveExtractionCache | None) -> AdaptiveExtractionCache:
     return cache if cache is not None else AdaptiveExtractionCache()
+
+
+# ── non-numeric cells: the range they are, never a fabricated point ─────────
+#
+# `assay_pattern_library` emits `value=None` + `value_categorical` for every
+# cell that will not `float()`. Four different things land in that bucket, and
+# for 2,931 shipped rows all four were flattened to the same `value_numeric:
+# 0.0`, with the literal surviving only inside the `source` string:
+#
+#   `+` / `++`        a potency BIN      -> the legend's range (US11292791)
+#   `>50000` `<0.004` a CENSORED number  -> the number and its qualifier
+#   `1.6 ± 0.1`       a mean ± SD        -> the mean
+#   `—` `NT` `No inhibition`             -> no measurement at all -> drop
+#
+# 0.0 μM reads as maximal potency, which is the exact inverse of what three of
+# those four mean. This is the defect `f692dc8` fixed one tier over, where 109
+# geometric-mean midpoints on US11292791 were reversed back to ranges because
+# a bin does not contain a point value.
+#
+# Nothing new is invented here. `sources.uspto_assays.parse_value` is the cell
+# parser behind the path that scores 99.9% exact against BindingDB, and
+# `sources.bin_legend.parse_bin_key` is the legend reader CLAUDE.md names for
+# `+`/`A-E` -> explicit numeric ranges. Both are imported lazily, like the
+# `assay_pattern_library` import below, so `core` keeps no import-time edge
+# to `sources`.
+
+
+def _prelib_bin_key(text: str) -> dict:
+    """`{symbol: BinRange}` from the patent's own legend; `{}` when absent.
+
+    `parse_bin_key` never guesses a default scale — two patents in this corpus
+    assign incompatible ranges to `++++`. A grade we cannot bind to a legend is
+    therefore dropped rather than given a borrowed one.
+    """
+    from ....sources.bin_legend import parse_bin_key
+    try:
+        return parse_bin_key(text or "")
+    except Exception as e:                                   # never break a run
+        logger.warning("prelib: bin-key parse failed: %r", e)
+        return {}
+
+
+def _encode_prelib_value(raw: str, unit: str, bin_key: dict) -> dict | None:
+    """One non-numeric cell literal -> the row fields it justifies, or None.
+
+    None means "the patent published no measurement in this cell" — the caller
+    drops the row. That is the `missing_fields` contract already in
+    `sources/uspto_assays.py:452`: a grade with no key and no bounds is not a
+    usable measurement.
+    """
+    import html
+
+    from ....sources.uspto_assays import parse_value
+
+    s = html.unescape(str(raw or "")).strip()
+    if not s:
+        return None
+    parsed = parse_value(s)
+    if parsed is None:
+        # Covers the null vocabulary (`NT`, `nd`, `—`) and anything with no
+        # number in it. US10214537's 375 `â` cells are `—` (U+2014) read as
+        # Latin-1, so the null-vocabulary guard at assay_pattern_library.py:772
+        # never saw them.
+        return None
+
+    grade = parsed.get("letter_grade")
+    if grade:
+        rng = bin_key.get(grade)
+        if rng is None or (rng.lo is None and rng.hi is None):
+            return None
+        # Field-for-field what the `uspto_xml_table` row for the same cell
+        # already ships (value_raw is the literal grade, qualifier stays null,
+        # the unit comes from the legend). One measurement, one spelling.
+        return {
+            "value_numeric": None,
+            "qualifier": None,
+            "unit": rng.unit or unit or "",
+            "unit_source": "bin_key",
+            "n_runs": None,
+            "value_raw": s,
+            "value_low": rng.lo,
+            "value_high": rng.hi,
+            "bin": grade,
+        }
+
+    num = parsed.get("value_numeric")
+    if num is None:
+        return None
+    return {
+        "value_numeric": num,
+        "qualifier": parsed.get("qualifier"),
+        # The cell's own unit wins when it has one; otherwise keep the unit the
+        # pattern library resolved from the column header.
+        "unit": parsed.get("unit") or unit or "",
+        "unit_source": "",
+        "n_runs": parsed.get("n_runs"),
+        "value_raw": s,
+        "value_low": None,
+        "value_high": None,
+        "bin": None,
+    }
+
+
+def _prelib_row_to_tuple(row: dict, bin_key: dict) -> "ActivityTuple | None":
+    """Pattern-library row -> ActivityTuple, with no fabricated value.
+
+    `ActivityTuple.value` is typed `float` and `from_dict` rejects None, which
+    is why this path used to pass `0.0`. The placeholder stays (the dataclass
+    demands a float and `agent5_validate._value_to_nM` would raise on None),
+    but it is now inert: `range_fields` carries the real encoding and
+    `to_assay_results` reads that instead, so the 0.0 never reaches an
+    artifact. Rows the encoder rejects are dropped here, not zeroed.
+    """
+    v = row.get("value")
+    if v is not None:
+        return ActivityTuple.from_dict(row)
+
+    cat = row.get("value_categorical")
+    if not cat:
+        return None
+    enc = _encode_prelib_value(cat, row.get("unit") or "", bin_key)
+    if enc is None:
+        return None
+    t = ActivityTuple.from_dict({
+        **row,
+        "value": enc["value_numeric"] if enc["value_numeric"] is not None else 0.0,
+    })
+    if t is None:
+        return None
+    t.range_fields = enc
+    t.unit = enc["unit"]
+    t.qualifier = enc["qualifier"]
+    t.n_runs = enc["n_runs"]
+    t.validation_reason = (
+        (t.validation_reason or "") + f" categorical={cat}"
+    ).strip()
+    return t
 
 
 def prelib_tuples(text: str, patent_id: str | None = None) -> list[ActivityTuple]:
@@ -101,17 +250,22 @@ def prelib_tuples(text: str, patent_id: str | None = None) -> list[ActivityTuple
     except Exception as e:
         logger.warning("prelib: pattern-library pass failed: %r", e)
         return []
+    bin_key = _prelib_bin_key(text)
     out: list[ActivityTuple] = []
+    n_dropped = 0
     for row in rows:
-        v = row.get("value")
-        t = ActivityTuple.from_dict({**row, "value": v if v is not None else 0.0})
+        t = _prelib_row_to_tuple(row, bin_key)
         if t is None:
+            n_dropped += 1 if row.get("value") is None else 0
             continue
-        if v is None and row.get("value_categorical"):
-            t.validation_reason = (
-                (t.validation_reason or "") + f" categorical={row['value_categorical']}"
-            ).strip()
         out.append(t)
+    if n_dropped:
+        logger.info(
+            "prelib: %s — dropped %d non-numeric cell(s) the patent published "
+            "no measurement in (em-dash / NT / 'No inhibition'); they used to "
+            "ship as value_numeric 0.0",
+            patent_id or "unknown", n_dropped,
+        )
     return out
 
 
@@ -395,6 +549,7 @@ def harvest_burst(
             for t in all_tuples
         }
         n_added_from_patterns = 0
+        bin_key = _prelib_bin_key(text)
         for row in new_rows:
             v = row.get("value")
             if v is None:
@@ -415,15 +570,12 @@ def harvest_burst(
             if key in seen:
                 continue
             seen.add(key)
-            t = ActivityTuple.from_dict({**row, "value": v if v is not None else 0.0})
+            # Same encoder as `prelib_tuples`: a bin becomes the legend's
+            # range, a censored cell keeps its number and qualifier, and a
+            # cell with no measurement in it is dropped rather than zeroed.
+            t = _prelib_row_to_tuple(row, bin_key)
             if t is None:
                 continue
-            # Carry categorical value through as the source_quote tail so
-            # the workbook can see what was actually in the patent.
-            if v is None and row.get("value_categorical"):
-                t.validation_reason = (
-                    t.validation_reason + f" categorical={row['value_categorical']}"
-                ).strip()
             all_tuples.append(t)
             n_added_from_patterns += 1
         if n_added_from_patterns:
