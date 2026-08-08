@@ -88,6 +88,27 @@ def test_blacklisted_word_before_colon_is_not_a_compound_id():
     assert r.candidates == ()
 
 
+@pytest.mark.parametrize("label", ["Method 1", "Step 2", "Table 3"])
+def test_blacklisted_words_before_colon_do_not_anchor(label):
+    """Independently exercises three DIFFERENT alternatives of `_NON_ID_WORD`
+    (`method|step|...|table|...`), not just the one the test above covers.
+
+    `test_blacklisted_word_before_colon_is_not_a_compound_id` only asserts on
+    "Method 1:" — proving the FIRST alternative of the blacklist regex works
+    says nothing about the others; a future edit could narrow the alternation
+    (e.g. drop `|step|` or `|table|`) and that single test would keep passing
+    while "Step 2:" or "Table 3:" silently started anchoring again. The task
+    brief names exactly these three labels for a reason: "Method 1:",
+    "Step 2:" and "Table 3:" are the three shapes distinguished by name in
+    this module's own docstring history, so each gets its own assertion here.
+    """
+    text = f"{label}: 4-methylpiperidin-1-yl acetic acid\n"
+    r = find_cid(text, "4-methylpiperidin-1-yl acetic acid")
+    assert r.cid is None
+    assert not r.clashed
+    assert r.candidates == ()
+
+
 def test_n2_sparged_no_longer_a_false_positive():
     """FIXED — this used to document a known, pre-existing limitation.
 

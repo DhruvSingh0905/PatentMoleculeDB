@@ -214,10 +214,16 @@ than repeated), found digit-only and the then-shipped rule scoring
 IDENTICALLY on 67 matched names: 100% precision (63/63), 94.0% recall
 (63/67). That comparison predates the fix above and used a narrower
 population (extraction-matched names only, not all anchored structures); see
-"THE FALSE ANCHORS" for the current, corpus-denominator numbers — 89 anchored
-of 238 structures, 89/89 correct against the CSV once its own typos are
-excluded, measured directly against `find_cid`'s live output, not a
-restricted match subset.
+"THE FALSE ANCHORS" for the corpus-denominator numbers — 89/89 correct
+against the CSV once its own typos are excluded, measured directly against
+`find_cid`'s live output rather than a restricted match subset.
+
+Those were 89 anchored of 238 structures when measured. Both figures have since
+moved and the RATIO is what carries over: `description_text` began including
+`<heading>`, so US8952177 now yields 308 structures with 165 anchored (53.6%).
+Anchors nearly doubled without new errors, because a heading pair is exactly
+the `<id>` `<name>` adjacency this module accepts and exactly what a prose
+cross-reference is not.
 
 WHAT IS STILL UNANCHORED, AND WHY THAT IS CORRECT
 ----------------------------------------------------
