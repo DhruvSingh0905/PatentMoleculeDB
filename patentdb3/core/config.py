@@ -161,24 +161,39 @@ COST_THRESHOLDS = [50, 100, 150, 200]
 # Compound names read out of the patent's OWN description and resolved by
 # OPSIN. Free and offline — OPSIN is a java subprocess, no API, no network.
 #
-# On by default because it is the only identity route that is ours: the name
-# sits in the patent's own prose, so it carries the patent's own compound
-# numbering and needs no bridge. The alternative — Google Patents' embedded
-# SMILES — supplied 97.2% of v2's 17,459 compounds, of which 27.6% were still
-# keyed by GP's positional id and could never be joined to an assay row.
-# DEFAULT OFF, and that is a deliberate staging decision rather than doubt
-# about the route. `verify --dump` DOES call `extract_names` and writes
-# `config.STRUCTURES` when this is on — the wiring exists and is tested. It is
-# off because the pieces underneath it are still being validated one at a time:
-# reagent filtering is unbuilt, so a 12-character floor still admits
-# `triethylamine`, and names are not yet anchored to the patent's compound ids,
-# so the structures artifact cannot join the assay rows.
+# ON by default. It is the only identity route that is ours: the name sits in
+# the patent's own prose, so it carries the patent's own compound numbering and
+# needs no bridge. The alternative — Google Patents' embedded SMILES — supplied
+# 97.2% of v2's 17,459 compounds, of which 27.6% were still keyed by GP's
+# positional id and could never be joined to an assay row.
 #
-# Shipping it on by default would put unfiltered, unanchored structures into an
-# artifact that looks finished. Turn it on to exercise the route:
+# THIS DEFAULTED TO OFF, and the comment here argued both sides at once — it
+# opened "On by default because..." and then said "DEFAULT OFF". The two
+# blockers it named as the reason are both now resolved, which is why the
+# default moved rather than the prose being tidied:
 #
-#     IUPAC_NAMES=1 python3 -m patentdb3.verify US8952177 --dump
-IUPAC_NAMES = os.environ.get("IUPAC_NAMES", "0") == "1"
+#   - "reagent filtering is unbuilt, so a 12-character floor still admits
+#     triethylamine" — `sources/reagents.py` exists and labels every structure
+#     `compound` / `reagent` / `trace_fragment`. It labels and never filters,
+#     deliberately, so a caller can decide; the floor is no longer the only
+#     signal available.
+#   - "names are not yet anchored to the patent's compound ids, so the
+#     structures artifact cannot join the assay rows" — `sources/anchor.py`
+#     anchors them. Measured on the current tree: US8952177 183 of 328
+#     structures carry a cid; the heading route contributes 1,176 corpus-wide
+#     of which 1,176 carry one.
+#
+# So the artifact is no longer "unfiltered, unanchored structures in something
+# that looks finished," which was the honest reason to keep it off. What is
+# still true, and is NOT a reason to leave the route dark: the two tracks are
+# not joined — `DUMP` holds assay rows and `STRUCTURES` holds compounds, and
+# nothing merges them. That is a missing consumer, not a defect in this route.
+#
+#     SELF_HEAL=0 IUPAC_NAMES=0 python3 -m patentdb3.verify US8952177 --dump
+#
+# is the $0, structure-free baseline any claim about this route must be stated
+# against.
+IUPAC_NAMES = os.environ.get("IUPAC_NAMES", "1") == "1"
 
 # Shortest span worth asking OPSIN about. Below this the parser accepts
 # fragments (`ethyl`, `2-chloro`) that are substituents, not compounds.
