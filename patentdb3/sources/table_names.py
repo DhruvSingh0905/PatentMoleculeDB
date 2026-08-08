@@ -151,6 +151,7 @@ import re
 from dataclasses import dataclass
 
 from ..core import config
+from .opsin import batch as _opsin_batch_shared
 from .reagents import classify as _classify_reagent
 from .uspto_assays import CID, UNKNOWN, build_columns, normalize_cid
 from .uspto_xml import Table, assemble_blocks, parse_tables
@@ -298,29 +299,18 @@ def dewrap_candidates(text: str) -> list[tuple[str, str]]:
 
 # ── OPSIN ───────────────────────────────────────────────────────────────
 
-def _opsin_batch(names: list[str], fmt: str) -> list[str]:
-    """Batch OPSIN, one subprocess for the whole list.
+def _opsin_batch(names: list[str], fmt: str, patent_id: str = "") -> list[str]:
+    """DELEGATES to `sources/opsin.batch` — see that module.
 
-    A self-contained copy of the same call `iupac_names._opsin` makes
-    (`py2opsin`, one subprocess, `tmp_fpath` pid-scoped so two processes
-    running concurrently cannot overwrite each other's input) rather than an
-    import of that private function — this module does not depend on
-    `iupac_names.py`'s internals, only on its documented existence as a
-    sibling route.
+    This was one of THREE independent copies of the same wrapper, all ending in
+    `list(out) + [""] * (len(names) - len(out))`, which returns an oversized
+    list unchanged when OPSIN gives back more results than it was sent. Every
+    caller pairs by position via `zip`, so a mid-list extra silently hands each
+    name the next name's structure. Kept as a name because the call sites read
+    better for it; it carries no logic of its own.
     """
-    if not names:
-        return []
-    from py2opsin import py2opsin
+    return _opsin_batch_shared(names, fmt, patent_id)
 
-    tmp = str(config.OUTPUT_DIR / f".opsin_table_in_{os.getpid()}.txt")
-    try:
-        out = py2opsin(names, output_format=fmt, tmp_fpath=tmp)
-    except Exception as e:                      # OPSIN is a java subprocess
-        logger.warning("table_names: OPSIN batch of %d failed: %r", len(names), e)
-        return [""] * len(names)
-    if isinstance(out, str):
-        out = [out]
-    return list(out) + [""] * (len(names) - len(out))
 
 
 # ── data model ────────────────────────────────────────────────────────────

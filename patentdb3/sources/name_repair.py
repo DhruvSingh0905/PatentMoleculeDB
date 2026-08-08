@@ -265,6 +265,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from ..core import config
+from .opsin import batch as _opsin_batch_shared
 
 logger = logging.getLogger(__name__)
 
@@ -538,20 +539,18 @@ def generate_candidates(name: str) -> list[RepairCandidate]:
 # pid-scoped temp file so two processes running concurrently cannot
 # overwrite each other's input.
 
-def _opsin_batch(names: list[str], fmt: str) -> list[str]:
-    if not names:
-        return []
-    from py2opsin import py2opsin
+def _opsin_batch(names: list[str], fmt: str, patent_id: str = "") -> list[str]:
+    """DELEGATES to `sources/opsin.batch` — see that module.
 
-    tmp = str(config.OUTPUT_DIR / f".name_repair_opsin_{os.getpid()}.txt")
-    try:
-        out = py2opsin(names, output_format=fmt, tmp_fpath=tmp)
-    except Exception as e:                        # OPSIN is a java subprocess
-        logger.warning("name_repair: opsin batch of %d failed: %r", len(names), e)
-        return [""] * len(names)
-    if isinstance(out, str):
-        out = [out]
-    return list(out) + [""] * (len(names) - len(out))
+    This was one of THREE independent copies of the same wrapper, all ending in
+    `list(out) + [""] * (len(names) - len(out))`, which returns an oversized
+    list unchanged when OPSIN gives back more results than it was sent. Every
+    caller pairs by position via `zip`, so a mid-list extra silently hands each
+    name the next name's structure. Kept as a name because the call sites read
+    better for it; it carries no logic of its own.
+    """
+    return _opsin_batch_shared(names, fmt, patent_id)
+
 
 
 # ---------------------------------------------------------------------------

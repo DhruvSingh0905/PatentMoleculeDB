@@ -119,6 +119,7 @@ import re
 from dataclasses import dataclass
 
 from ..core import config
+from .opsin import batch as _opsin_batch_shared
 from . import losses as _losses
 from .anchor import anchor_text as _anchor_text
 from .anchor import find_cid as _find_cid
@@ -346,51 +347,17 @@ class NamedCompound:
 
 
 def _opsin(names: list[str], fmt: str, patent_id: str = "") -> list[str]:
-    """Batch OPSIN. One subprocess for the whole list.
+    """DELEGATES to `sources/opsin.batch` — see that module.
 
-    `tmp_fpath` is pid-scoped: py2opsin writes its input to a shared temp file
-    whose default name is a constant, so two processes running concurrently
-    overwrite each other's input and silently get each other's answers.
-
-    THE LOSS POINT NAMED IN THE TASK BRIEF: the `except` branch below returns
-    `[""] * len(names)` — EVERY candidate in the batch silently reads as
-    "OPSIN rejected it," indistinguishable downstream from a batch that
-    really was all garbage. That return value is UNCHANGED (a caller must
-    keep working when OPSIN cannot run at all); what changes is that the
-    event is now recorded, not only printed through `logger.warning`.
-
-    A second, unnamed-in-the-brief failure mode lives here too: `py2opsin`
-    returns `False` (not a list, not a raised exception) when the OPSIN
-    subprocess exits non-zero, and the line below this docstring
-    (`list(out) + ...`) has always raised `TypeError` on that — `list(False)`
-    is not iterable. That crash is NOT suppressed here (fixing it would
-    change behaviour this task is not scoped to touch); the record below just
-    makes sure the crash's PRECONDITION is visible before it happens, instead
-    of a bare traceback with no indication how many names or which format.
+    This was one of THREE independent copies of the same wrapper, all ending in
+    `list(out) + [""] * (len(names) - len(out))`, which returns an oversized
+    list unchanged when OPSIN gives back more results than it was sent. Every
+    caller pairs by position via `zip`, so a mid-list extra silently hands each
+    name the next name's structure. Kept as a name because the call sites read
+    better for it; it carries no logic of its own.
     """
-    if not names:
-        return []
-    from py2opsin import py2opsin
+    return _opsin_batch_shared(names, fmt, patent_id)
 
-    tmp = str(config.OUTPUT_DIR / f".opsin_in_{os.getpid()}.txt")
-    try:
-        out = py2opsin(names, output_format=fmt, tmp_fpath=tmp)
-    except Exception as e:                       # OPSIN is a java subprocess
-        logger.warning("opsin: batch of %d failed: %r", len(names), e)
-        if _losses.ENABLED:
-            _losses.record("opsin_batch_exception", patent_id, fmt=fmt,
-                            batch_size=len(names), error=repr(e))
-        return [""] * len(names)
-    if isinstance(out, str):
-        out = [out]
-    if _losses.ENABLED:
-        if not isinstance(out, list):
-            _losses.record("opsin_batch_malformed_output", patent_id, fmt=fmt,
-                            batch_size=len(names), returned_type=type(out).__name__)
-        elif len(out) != len(names):
-            _losses.record("opsin_output_length_mismatch", patent_id, fmt=fmt,
-                            batch_size=len(names), returned=len(out))
-    return list(out) + [""] * (len(names) - len(out))
 
 
 def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
