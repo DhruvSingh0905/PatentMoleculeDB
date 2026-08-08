@@ -58,3 +58,7 @@ patentdb/data/ref_ik_cache.json
 !CLAUDE.md
 !README.md
 !ARCH.md
+
+# v3 produced artifacts — the dump, its manifest and the workbook
+/patentdb3/out/
+/output_v3/

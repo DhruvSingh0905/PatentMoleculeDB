@@ -1,0 +1,6676 @@
+{
+  "schema": 1,
+  "rules": [
+    {
+      "fingerprint": "f41da35c4daf3527",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "DNA-?PK.*enzymatic|DNA-",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 3,
+                "unit": "nM"
+              },
+              "B": {
+                "lo": 3,
+                "hi": 7,
+                "unit": "nM"
+              },
+              "C": {
+                "lo": 7,
+                "hi": 30,
+                "unit": "nM"
+              },
+              "D": {
+                "lo": 30,
+                "hi": null,
+                "unit": "nM"
+              }
+            }
+          },
+          {
+            "match": "pDNA-?PK.*cellular|pDNA-",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 0.5,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 5,
+                "hi": 10,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": 10,
+                "hi": 30,
+                "unit": "\u03bcM"
+              }
+            }
+          },
+          {
+            "match": "Kv11\\.1|hERG|Ki",
+            "bins": {
+              "A": {
+                "lo": 25,
+                "hi": null,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 15,
+                "hi": 25,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 10,
+                "hi": 15,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": null,
+                "hi": 10,
+                "unit": "\u03bcM"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T17:01:27",
+      "signature": "",
+      "epoch": "v15-payload-routing",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 163,
+      "rows_yielded": 19068
+    },
+    {
+      "fingerprint": "63530ece7d14bf09",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "DNA-PK|dna-?pk",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 3,
+                "unit": "nM"
+              },
+              "B": {
+                "lo": 3,
+                "hi": 7,
+                "unit": "nM"
+              },
+              "C": {
+                "lo": 7,
+                "hi": 30,
+                "unit": "nM"
+              },
+              "D": {
+                "lo": 30,
+                "hi": null,
+                "unit": "nM"
+              }
+            }
+          },
+          {
+            "match": "pDNA-PK|pdna-?pk",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 0.5,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 5,
+                "hi": 10,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": 10,
+                "hi": 30,
+                "unit": "\u03bcM"
+              }
+            }
+          },
+          {
+            "match": "Kv11|hERG|kv1\\.1",
+            "bins": {
+              "A": {
+                "lo": 25,
+                "hi": null,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 15,
+                "hi": 25,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 10,
+                "hi": 15,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": null,
+                "hi": 10,
+                "unit": "\u03bcM"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T17:01:31",
+      "signature": "",
+      "epoch": "v15-payload-routing",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 51,
+      "rows_yielded": 13872
+    },
+    {
+      "fingerprint": "635210c8d902a1c6",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "DNA-?PK.*enzymatic|IC50.*PK",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 3,
+                "unit": "nM"
+              },
+              "B": {
+                "lo": 3,
+                "hi": 7,
+                "unit": "nM"
+              },
+              "C": {
+                "lo": 7,
+                "hi": 30,
+                "unit": "nM"
+              },
+              "D": {
+                "lo": 30,
+                "hi": null,
+                "unit": "nM"
+              }
+            }
+          },
+          {
+            "match": "pDNA-?PK.*cellular",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 0.5,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 5,
+                "hi": 10,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": 10,
+                "hi": 30,
+                "unit": "\u03bcM"
+              }
+            }
+          },
+          {
+            "match": "Kv11\\.1|hERG|Ki",
+            "bins": {
+              "A": {
+                "lo": 25,
+                "hi": null,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 15,
+                "hi": 25,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 10,
+                "hi": 15,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": null,
+                "hi": 10,
+                "unit": "\u03bcM"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T17:01:34",
+      "signature": "",
+      "epoch": "v15-payload-routing",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 12,
+      "rows_yielded": 288
+    },
+    {
+      "fingerprint": "6ad21ba3ee95f230",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 10,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 10,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 100,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "D": {
+            "lo": 1000,
+            "hi": 10000,
+            "unit": "nM"
+          },
+          "E": {
+            "lo": 10000,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T16:51:05",
+      "signature": "",
+      "epoch": "",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 4,
+      "rows_yielded": 1416
+    },
+    {
+      "fingerprint": "468e75da25a418be",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 10,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 10,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 100,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "D": {
+            "lo": 1000,
+            "hi": 10000,
+            "unit": "nM"
+          },
+          "E": {
+            "lo": 10000,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T16:51:07",
+      "signature": "",
+      "epoch": "",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 63,
+      "rows_yielded": 62811
+    },
+    {
+      "fingerprint": "0c4dacb2fff7b6f6",
+      "kind": "escalate",
+      "payload": {
+        "capability": "rejected proposal",
+        "note": "rule fired on 336/687 held-out rows (49%); below the 50% floor \u2014 it describes the sample, not the layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T17:06:46",
+      "signature": "",
+      "epoch": "v15-payload-routing",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "c2a84e1265777708",
+      "kind": "escalate",
+      "payload": {
+        "capability": "rejected proposal",
+        "note": "rule yields 31 rows but the existing parser already gets 35 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T17:22:46",
+      "signature": "",
+      "epoch": "v16-grounded-names",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "ea3e003d940bf476",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 2,
+            "name": "ROCK2",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "ROCK1",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "PKA",
+            "unit": "nM"
+          },
+          {
+            "index": 5,
+            "name": "JAK1",
+            "unit": "nM"
+          },
+          {
+            "index": 6,
+            "name": "JAK2",
+            "unit": "nM"
+          },
+          {
+            "index": 7,
+            "name": "JAK3",
+            "unit": "nM"
+          },
+          {
+            "index": 8,
+            "name": "TYK2",
+            "unit": "nM"
+          },
+          {
+            "index": 9,
+            "name": "IKKb",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T16:51:18",
+      "signature": "",
+      "epoch": "",
+      "validated_on": {
+        "rows_total": 11,
+        "rows_matched": 10,
+        "coverage": 0.909,
+        "rejected_ids": 1,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 51,
+      "rows_yielded": 5610
+    },
+    {
+      "fingerprint": "86d4909b04abc570",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 3,
+            "name": "IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:51:56",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 10 rows but the existing parser already gets 14 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 4,
+      "rows_yielded": 56
+    },
+    {
+      "fingerprint": "9a3dfb7484f8d556",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "DNA-PK|dna-?pk",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 3,
+                "unit": "nM"
+              },
+              "B": {
+                "lo": 3,
+                "hi": 7,
+                "unit": "nM"
+              },
+              "C": {
+                "lo": 7,
+                "hi": 30,
+                "unit": "nM"
+              },
+              "D": {
+                "lo": 30,
+                "hi": null,
+                "unit": "nM"
+              }
+            }
+          },
+          {
+            "match": "pDNA-PK|pdna-?pk",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 0.5,
+                "unit": "uM"
+              },
+              "B": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "uM"
+              },
+              "C": {
+                "lo": 5,
+                "hi": 10,
+                "unit": "uM"
+              },
+              "D": {
+                "lo": 10,
+                "hi": 30,
+                "unit": "uM"
+              }
+            }
+          },
+          {
+            "match": "Kv11|hERG|Ki",
+            "bins": {
+              "A": {
+                "lo": 25,
+                "hi": null,
+                "unit": "uM"
+              },
+              "B": {
+                "lo": 15,
+                "hi": 25,
+                "unit": "uM"
+              },
+              "C": {
+                "lo": 10,
+                "hi": 15,
+                "unit": "uM"
+              },
+              "D": {
+                "lo": null,
+                "hi": 10,
+                "unit": "uM"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T17:05:26",
+      "signature": "",
+      "epoch": "v15-payload-routing",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 182,
+      "rows_yielded": 31701
+    },
+    {
+      "fingerprint": "amb-9776d5f294c147e6",
+      "kind": "escalate",
+      "payload": {
+        "capability": "rejected proposal",
+        "note": "no grade symbols found in this table to apply a key to"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T17:22:36",
+      "signature": "",
+      "epoch": "v16-grounded-names",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "amb-0c4dacb2fff7b6f6",
+      "kind": "escalate",
+      "payload": {
+        "capability": "rejected proposal",
+        "note": "rule fired on 336/687 held-out rows (49%); below the 50% floor \u2014 it describes the sample, not the layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T17:22:41",
+      "signature": "",
+      "epoch": "v16-grounded-names",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "amb-8950b78cf02bfd1b",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "A2B cAMP",
+            "unit": "nM"
+          },
+          {
+            "index": 2,
+            "name": "A2A cAMP",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "A2A/A2B ratio",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-27T17:22:17",
+      "signature": "",
+      "epoch": "v16-grounded-names",
+      "validated_on": {
+        "rows_total": 643,
+        "rows_matched": 638,
+        "coverage": 0.992,
+        "rejected_ids": 0,
+        "rejected_values": 5,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "6cb33479f2cc2f72",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 10,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 10,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 100,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "D": {
+            "lo": 1000,
+            "hi": 10000,
+            "unit": "nM"
+          },
+          "E": {
+            "lo": 10000,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T11:34:58",
+      "signature": "",
+      "epoch": "v16-grounded-names",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 60,
+      "rows_yielded": 21240
+    },
+    {
+      "fingerprint": "0b2da4d829510b29",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "pIC50",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:51:54",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 31 rows but the existing parser already gets 35 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 44,
+      "rows_yielded": 1540
+    },
+    {
+      "fingerprint": "amb-910289cba1228db9",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "FLAP Binding wild type HTRF Ki",
+            "unit": "\u03bcM"
+          },
+          {
+            "index": 3,
+            "name": "Human Whole Blood LTB4 IC50",
+            "unit": "\u03bcM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T11:35:04",
+      "signature": "",
+      "epoch": "v16-grounded-names",
+      "validated_on": {
+        "rows_total": 186,
+        "rows_matched": 186,
+        "coverage": 1.0,
+        "rejected_ids": 0,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "3a38ae68bdaac76f",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "Mu opioid receptor Ki",
+            "unit": "nM"
+          },
+          {
+            "index": 2,
+            "name": "Kappa opioid receptor Ki",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "Delta opioid receptor Ki",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:01:34",
+      "signature": "",
+      "epoch": "v17-name-identifiers",
+      "validated_on": {
+        "id_style": "name",
+        "rows_total": 25,
+        "rows_matched": 25,
+        "coverage": 1.0,
+        "rejected_ids": 0,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 51,
+      "rows_yielded": 2754
+    },
+    {
+      "fingerprint": "41ebfe39c41b3358",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "MU OPIOID RECEPTOR EC50",
+            "unit": "nM"
+          },
+          {
+            "index": 2,
+            "name": "KAPPA OPIOID RECEPTOR % max effect",
+            "unit": "%"
+          },
+          {
+            "index": 3,
+            "name": "DELTA EC50",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "DELTA % max effect",
+            "unit": "%"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:01:40",
+      "signature": "",
+      "epoch": "v17-name-identifiers",
+      "validated_on": {
+        "id_style": "name",
+        "rows_total": 23,
+        "rows_matched": 23,
+        "coverage": 1.0,
+        "rejected_ids": 0,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 3,
+      "rows_yielded": 237
+    },
+    {
+      "fingerprint": "e099e6000a7a096d",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "KAPPA Ki",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "MU Ki",
+            "unit": "nM"
+          },
+          {
+            "index": 5,
+            "name": "DELTA Ki",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:52",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "column 0 cannot identify rows \u2014 its values are not distinct non-measurement labels (e.g. '6-O-mPEG4-'). Name the column that holds the compound id, or escalate: this layout may identify compounds in a way we cannot key on"
+      },
+      "times_applied": 37,
+      "rows_yielded": 740
+    },
+    {
+      "fingerprint": "6a0d29d0bb283547",
+      "kind": "not_assay",
+      "payload": {
+        "because": "The table reports in vivo pharmacokinetic data: plasma concentrations (Cmax in ng/mL), half-life, area under curve, time to maximum concentration, mean residence time, and bioavailability (F%). These are drug disposition parameters, not assay measurements of compound potency or activity against a biological target."
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:54",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "ffd1407dc47fb2bf",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*\u00b1\\s*\\d+(?:\\.\\d+)?\\s*$",
+        "columns": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T11:59:22",
+      "signature": "",
+      "epoch": "v16-grounded-names",
+      "validated_on": {
+        "rescued": 63,
+        "agreed_with_parser": 0,
+        "regressions": 0,
+        "kind": "value_pattern"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "6527b42512389189",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 3,
+            "name": "% inhibition of IL6",
+            "unit": "%"
+          },
+          {
+            "index": 4,
+            "name": "% inhibition of IFN-alpha",
+            "unit": "%"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:52:44",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "column 1 cannot identify rows \u2014 its values are not distinct non-measurement labels (e.g. '4'). Name the column that holds the compound id, or escalate: this layout may identify compounds in a way we cannot key on"
+      },
+      "times_applied": 54,
+      "rows_yielded": 324
+    },
+    {
+      "fingerprint": "1fed7af816615b20",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "++++": {
+            "lo": 1,
+            "hi": 10,
+            "unit": "uM"
+          },
+          "+++": {
+            "lo": 0.1,
+            "hi": 1,
+            "unit": "uM"
+          },
+          "++": {
+            "lo": 0.01,
+            "hi": 0.1,
+            "unit": "uM"
+          },
+          "+": {
+            "lo": 0.001,
+            "hi": 0.01,
+            "unit": "uM"
+          },
+          "+++++": {
+            "lo": 10,
+            "hi": null,
+            "unit": "uM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:19:50",
+      "signature": "",
+      "epoch": "v17-name-identifiers",
+      "validated_on": {
+        "symbols_in_table": [
+          "+++",
+          "++++",
+          "+++++"
+        ],
+        "symbols_defined": [
+          "+",
+          "++",
+          "+++",
+          "++++",
+          "+++++"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "5e3b30e7da6cac1e",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "+": {
+            "lo": 0,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "++": {
+            "lo": 1000,
+            "hi": 10000,
+            "unit": "nM"
+          },
+          "+++": {
+            "lo": 10000,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:19:58",
+      "signature": "",
+      "epoch": "v17-name-identifiers",
+      "validated_on": {
+        "symbols_in_table": [
+          "++",
+          "+++",
+          "++++",
+          "+++++"
+        ],
+        "symbols_defined": [
+          "+",
+          "++",
+          "+++"
+        ],
+        "coverage": 0.5,
+        "kind": "bin_key"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "2c1078f462239873",
+      "kind": "not_assay",
+      "payload": {
+        "because": "The table is a compound registry with columns for compound number, chemical structure image, and chemical name. The cells flagged as unparseable (e.g., '3-(piperidin-4-yl)indolin-2-one') are chemical names, not assay measurements like IC50, EC50, Ki, or percent inhibition. This is characterisation/structural data, not bioassay data."
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:20:05",
+      "signature": "",
+      "epoch": "v17-name-identifiers",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "5f28c6f2dd4b852a",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "MV4-11 IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:20:07",
+      "signature": "",
+      "epoch": "v17-name-identifiers",
+      "validated_on": {
+        "id_style": "code",
+        "rows_total": 114,
+        "rows_matched": 84,
+        "coverage": 0.737,
+        "rejected_ids": 0,
+        "rejected_values": 30,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 60,
+      "rows_yielded": 6486
+    },
+    {
+      "fingerprint": "40f84c0e53377e11",
+      "kind": "escalate",
+      "payload": {
+        "capability": "contested not_assay",
+        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:35:42",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "502e870c00036b6a",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 2,
+            "name": "% inhibition of IL6",
+            "unit": "%"
+          },
+          {
+            "index": 3,
+            "name": "% inhibition of IFN-alpha",
+            "unit": "%"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:52:30",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule fired on 4/21 held-out rows (19%); below the 50% floor \u2014 it describes the sample, not the layout"
+      },
+      "times_applied": 126,
+      "rows_yielded": 1152
+    },
+    {
+      "fingerprint": "675b8984aa668d85",
+      "kind": "escalate",
+      "payload": {
+        "capability": "contested not_assay",
+        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:35:26",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "2cb4a9dc022f45e3",
+      "kind": "escalate",
+      "payload": {
+        "capability": "contested not_assay",
+        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:35:32",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "71727ca6ee032c98",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "Rat Magnus test IC20",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:52:49",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "id_style": "name",
+        "rows_total": 8,
+        "rows_matched": 8,
+        "coverage": 1.0,
+        "rejected_ids": 0,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 4
+      },
+      "times_applied": 49,
+      "rows_yielded": 588
+    },
+    {
+      "fingerprint": "839422810cc98935",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "hERG IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:52:53",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "id_style": "name",
+        "rows_total": 8,
+        "rows_matched": 8,
+        "coverage": 1.0,
+        "rejected_ids": 0,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 4
+      },
+      "times_applied": 49,
+      "rows_yielded": 588
+    },
+    {
+      "fingerprint": "bbd173992d4fbbd5",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "+++": {
+            "lo": 0,
+            "hi": 0.05,
+            "unit": "\u03bcM"
+          },
+          "++": {
+            "lo": 0.05,
+            "hi": 1,
+            "unit": "\u03bcM"
+          },
+          "+": {
+            "lo": 1,
+            "hi": null,
+            "unit": "\u03bcM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:02",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "symbols_in_table": [
+          "+",
+          "++",
+          "+++",
+          "++++"
+        ],
+        "symbols_defined": [
+          "+",
+          "++",
+          "+++"
+        ],
+        "coverage": 0.75,
+        "kind": "bin_key"
+      },
+      "times_applied": 45,
+      "rows_yielded": 55710
+    },
+    {
+      "fingerprint": "881ffe543e92ed5f",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": null,
+            "hi": 250,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 250,
+            "hi": 500,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 500,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:05",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 4,
+      "rows_yielded": 590
+    },
+    {
+      "fingerprint": "d7fbb215c77f7bbf",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 5,
+            "name": "2HG Mean % Inhibition",
+            "unit": "%"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:17",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "column 0 cannot identify rows \u2014 its values are not distinct non-measurement labels (e.g. 'TB08'). Name the column that holds the compound id, or escalate: this layout may identify compounds in a way we cannot key on"
+      },
+      "times_applied": 2,
+      "rows_yielded": 50
+    },
+    {
+      "fingerprint": "831e915dfab6cde3",
+      "kind": "not_assay",
+      "payload": {
+        "because": "The table lists chemical compound names (full IUPAC structures) and their corresponding MS m/z values. Mass spectrometry m/z and [M+H]+ are explicitly excluded from bioassay measurements per the instructions. This is a synthetic chemistry table showing compound preparation examples with their mass spec confirmation, not potency or activity data."
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:19",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "c4f9e6547ed5ab58",
+      "kind": "not_assay",
+      "payload": {
+        "because": "The table lists preparation numbers, full chemical names/structures of synthetic intermediates, and mass spectrometry m/z values ([M+H]+). These are synthetic chemistry characterization data, not potency or activity measurements. The \"assay\" column contains chemical structure names, which are compound identifiers, not measurement values. The m/z column contains mass spectrometry data, which is explicitly excluded from bioassay measurements."
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:22",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "63edccfd0249c749",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 100,
+            "hi": 1000,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:32",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C"
+        ],
+        "symbols_defined": [
+          "A",
+          "B"
+        ],
+        "coverage": 0.667,
+        "kind": "bin_key"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "46d7f64810b372be",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 1,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 1,
+            "hi": 10,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 10,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:34",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 2,
+      "rows_yielded": 34
+    },
+    {
+      "fingerprint": "0b4cd595456f97c5",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "HLM CLint",
+            "unit": "\u03bcl/min/mg"
+          },
+          {
+            "index": 2,
+            "name": "HH CLint",
+            "unit": "\u03bcl/min/1E6"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:36",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 51 rows but the existing parser already gets 90 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 110,
+      "rows_yielded": 14300
+    },
+    {
+      "fingerprint": "657c9430653dd0bd",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "A to B Papp",
+            "unit": "1E-6 cm/s"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:39",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 43 rows but the existing parser already gets 47 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 108,
+      "rows_yielded": 7128
+    },
+    {
+      "fingerprint": "50f89b51c50f7a83",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "P2Y12 IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:42",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 16 rows but the existing parser already gets 20 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 102,
+      "rows_yielded": 1785
+    },
+    {
+      "fingerprint": "907ba9733a6fa9b6",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "NAMPT IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-28T12:53:59",
+      "signature": "",
+      "epoch": "v18-gates-suspended",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule fired on 0/1557 held-out rows (0%); below the 50% floor \u2014 it describes the sample, not the layout"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "cc76ed84a27a34ae",
+      "kind": "escalate",
+      "payload": {
+        "capability": "contested not_assay",
+        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:36:23",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "4e3b320ac7d81475",
+      "kind": "escalate",
+      "payload": {
+        "capability": "contested not_assay",
+        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:35:35",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "61df1042293799e7",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual1>[<>~]?)?\\s*(?P<num1>\\d+(?:\\.\\d+)?)\\s*,\\s*(?P<qual2>[<>~]?)?\\s*(?P<num2>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          1,
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:35:38",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "value_pattern must capture a named group `num` (got groups=4, named=['qual1', 'num1', 'qual2', 'num2'])"
+      },
+      "times_applied": 31,
+      "rows_yielded": 248
+    },
+    {
+      "fingerprint": "826b47fdd8d1cd2d",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num1>\\d+(?:\\.\\d+)?)\\s*\\(\\s*(?P<species1>[^)]+)\\s*\\)(?:\\s+(?P<num2>\\d+(?:\\.\\d+)?)\\s*\\(\\s*(?P<species2>[^)]+)\\s*\\))?(?:\\s+(?P<num3>\\d+(?:\\.\\d+)?)\\s*\\(\\s*(?P<species3>[^)]+)\\s*\\))?(?:\\s+(?P<num4>\\d+(?:\\.\\d+)?)\\s*\\(\\s*(?P<species4>[^)]+)\\s*\\))?\\s*$",
+        "columns": [
+          8
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:35:46",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "value_pattern must capture a named group `num` (got groups=8, named=['num1', 'species1', 'num2', 'species2', 'num3', 'species3', 'num4', 'species4'])"
+      },
+      "times_applied": 37,
+      "rows_yielded": 3108
+    },
+    {
+      "fingerprint": "d6d491c67dfc7dc0",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "+": {
+            "lo": 10,
+            "hi": null,
+            "unit": "uM"
+          },
+          "++": {
+            "lo": 1,
+            "hi": 10,
+            "unit": "uM"
+          },
+          "+++": {
+            "lo": 0.1,
+            "hi": 1,
+            "unit": "uM"
+          },
+          "++++": {
+            "lo": null,
+            "hi": 100,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:35:50",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "+",
+          "++",
+          "+++",
+          "++++"
+        ],
+        "symbols_defined": [
+          "+",
+          "++",
+          "+++",
+          "++++"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 16,
+      "rows_yielded": 37152
+    },
+    {
+      "fingerprint": "25ba57b743ef7aff",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "+": {
+            "lo": null,
+            "hi": 0.01,
+            "unit": "uM"
+          },
+          "++": {
+            "lo": 0.01,
+            "hi": 0.1,
+            "unit": "uM"
+          },
+          "+++": {
+            "lo": 0.1,
+            "hi": 1,
+            "unit": "uM"
+          },
+          "++++": {
+            "lo": 1,
+            "hi": null,
+            "unit": "uM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:35:54",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "++",
+          "+++",
+          "++++"
+        ],
+        "symbols_defined": [
+          "+",
+          "++",
+          "+++",
+          "++++"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "61e61d24068adc2a",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 5,
+            "name": "2HG Mean % Inhibition",
+            "unit": "%"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:35:57",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule fired on 19/46 held-out rows (41%); below the 50% floor \u2014 it describes the sample, not the layout"
+      },
+      "times_applied": 44,
+      "rows_yielded": 1100
+    },
+    {
+      "fingerprint": "2a58d4c8b40ceecd",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 3,
+            "name": "TNF-alpha secretion IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:36:00",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "every proposed name introduces a word that appears nowhere in this table's header, caption or surrounding text (e.g. 'TNF-alpha secretion IC50' introduces 'alpha') \u2014 a repair may regroup the patent's own words, not supply new ones"
+      },
+      "times_applied": 22,
+      "rows_yielded": 308
+    },
+    {
+      "fingerprint": "818c12912c235dc1",
+      "kind": "escalate",
+      "payload": {
+        "capability": "contested not_assay",
+        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:36:10",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "8cfce5987d0c9322",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 80,
+            "hi": 100,
+            "unit": "%"
+          },
+          "B": {
+            "lo": 60,
+            "hi": 79,
+            "unit": "%"
+          },
+          "C": {
+            "lo": 40,
+            "hi": 59,
+            "unit": "%"
+          },
+          "D": {
+            "lo": 0,
+            "hi": 40,
+            "unit": "%"
+          },
+          "E": {
+            "lo": null,
+            "hi": null,
+            "unit": "%"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:36:13",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "bin 'E' has neither bound"
+      },
+      "times_applied": 75,
+      "rows_yielded": 15600
+    },
+    {
+      "fingerprint": "c603b86ce7ec06c7",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "MU OPIOID RECEPTOR EC50",
+            "unit": "nM"
+          },
+          {
+            "index": 2,
+            "name": "MU OPIOID RECEPTOR % max effect",
+            "unit": "%"
+          },
+          {
+            "index": 3,
+            "name": "KAPPA OPIOID RECEPTOR EC50",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "KAPPA OPIOID RECEPTOR % max effect",
+            "unit": "%"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:36:16",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "id_style": "name",
+        "rows_total": 23,
+        "rows_matched": 23,
+        "coverage": 1.0,
+        "rejected_ids": 0,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 16,
+      "rows_yielded": 1264
+    },
+    {
+      "fingerprint": "49d26069e4dfc185",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "+": {
+            "lo": 10,
+            "hi": null,
+            "unit": "uM"
+          },
+          "++": {
+            "lo": 1,
+            "hi": 10,
+            "unit": "uM"
+          },
+          "+++": {
+            "lo": 0.1,
+            "hi": 1,
+            "unit": "uM"
+          },
+          "++++": {
+            "lo": null,
+            "hi": 100,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:36:28",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "+",
+          "++",
+          "+++",
+          "++++"
+        ],
+        "symbols_defined": [
+          "+",
+          "++",
+          "+++",
+          "++++"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 36,
+      "rows_yielded": 55743
+    },
+    {
+      "fingerprint": "66046661c33e935e",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "+": {
+            "lo": 10,
+            "hi": null,
+            "unit": "uM"
+          },
+          "++": {
+            "lo": 1,
+            "hi": 10,
+            "unit": "uM"
+          },
+          "+++": {
+            "lo": 0.1,
+            "hi": 1,
+            "unit": "uM"
+          },
+          "++++": {
+            "lo": null,
+            "hi": 100,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:36:32",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "+",
+          "++",
+          "+++",
+          "++++"
+        ],
+        "symbols_defined": [
+          "+",
+          "++",
+          "+++",
+          "++++"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "1bc3beecf6037ee8",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>~]?)?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          2,
+          3,
+          4
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:36:35",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "1621ee1314f54b57",
+      "kind": "escalate",
+      "payload": {
+        "capability": "contested not_assay",
+        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:36:42",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "11204530f48be883",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "Candida albicans MIC",
+            "unit": "\u00b5g/mL"
+          },
+          {
+            "index": 2,
+            "name": "CYP2C9 IC50",
+            "unit": "\u00b5M"
+          },
+          {
+            "index": 3,
+            "name": "CYP2C19 IC50",
+            "unit": "\u00b5M"
+          },
+          {
+            "index": 4,
+            "name": "CYP3A4 IC50",
+            "unit": "\u00b5M"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T10:39:16",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 2 rows but the existing parser already gets 16 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 36,
+      "rows_yielded": 864
+    },
+    {
+      "fingerprint": "7a1e9f129b1ce87b",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^(?:(?P<num>\\d+(?:\\.\\d+)?)\\s*(?P<unit>nM|uM|mM|pM)?|Not\\s+determined|No\\s+determined|N\\.A\\.(?:\\s*\\((?P<inh_pct>\\d+)%\\s+inh\\.\\s+at\\s+(?P<inh_conc>\\d+(?:\\.\\d+)?)\\s*(?P<inh_unit>uM|nM)\\))?)$",
+        "columns": [
+          5
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T13:11:40",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "9a0f90ecaf927d90",
+      "kind": "escalate",
+      "payload": {
+        "capability": "contested not_assay",
+        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T13:11:43",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "4fc32ce9b29caa30",
+      "kind": "escalate",
+      "payload": {
+        "capability": "unexecutable proposal",
+        "note": "value_pattern captures no number: no group named `num`, no single unnamed group to promote, and nothing named `num*` (groups=0, named=[]). Such a rule cannot produce a value on any input."
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T14:05:17",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "7b26246a99ad7dab",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "ALK2 ADPGlo IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 2,
+            "name": "ALK3 ADPGlo IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T14:25:01",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 84 rows but the existing parser already gets 176 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 34,
+      "rows_yielded": 5984
+    },
+    {
+      "fingerprint": "1b8aa46fe1e6596f",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "ALK2 EPK IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 2,
+            "name": "ALK2 FOP EPK IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 3,
+            "name": "ALK1 EPK IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 4,
+            "name": "ALK5 EPK IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 5,
+            "name": "ALK6 EPK IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T14:25:07",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 84 rows but the existing parser already gets 440 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 34,
+      "rows_yielded": 14960
+    },
+    {
+      "fingerprint": "eaf4f70034eefaac",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "MSD BMP RGA IC50",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T14:25:09",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 84 rows but the existing parser already gets 88 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 33,
+      "rows_yielded": 2904
+    },
+    {
+      "fingerprint": "0cf6389239af0a71",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "+": {
+            "lo": null,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "++": {
+            "lo": 100,
+            "hi": 500,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T14:25:11",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "+",
+          "++"
+        ],
+        "symbols_defined": [
+          "+",
+          "++"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 32,
+      "rows_yielded": 22368
+    },
+    {
+      "fingerprint": "b4c419dccb4fcc77",
+      "kind": "escalate",
+      "payload": {
+        "capability": "unexecutable proposal",
+        "note": "value_pattern captures no number: no group named `num`, no single unnamed group to promote, and nothing named `num*` (groups=0, named=[]). Such a rule cannot produce a value on any input."
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T14:25:15",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "fbc8ba8b5d79f9c9",
+      "kind": "escalate",
+      "payload": {
+        "capability": "contested not_assay",
+        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T14:25:21",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "a1849ec91eec5167",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "DNA-PK enz pIC50",
+            "unit": null
+          },
+          {
+            "index": 2,
+            "name": "DNA-PK cell pIC50",
+            "unit": null
+          },
+          {
+            "index": 3,
+            "name": "TTK enz pIC50",
+            "unit": null
+          },
+          {
+            "index": 4,
+            "name": "JAK1 enz pIC50",
+            "unit": null
+          },
+          {
+            "index": 5,
+            "name": "JAK2 enz pIC50",
+            "unit": null
+          },
+          {
+            "index": 6,
+            "name": "JAK3 enz pIC50",
+            "unit": null
+          },
+          {
+            "index": 7,
+            "name": "AurA enz pIC50",
+            "unit": null
+          },
+          {
+            "index": 8,
+            "name": "AurB enz pIC50",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T14:25:24",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 48 rows but the existing parser already gets 416 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 10,
+      "rows_yielded": 4160
+    },
+    {
+      "fingerprint": "cce2ce826afe134b",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 2,
+            "name": "% A\u03b2 Reduction",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-07-30T14:25:31",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "id_style": "code",
+        "rows_total": 14,
+        "rows_matched": 14,
+        "coverage": 1.0,
+        "rejected_ids": 0,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 30,
+      "rows_yielded": 540
+    },
+    {
+      "fingerprint": "d8cb655924dc9dbe",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "MASP-2|mMASP-2|Thrombin",
+            "bins": {
+              "*": {
+                "lo": 10,
+                "hi": 25,
+                "unit": "uM"
+              },
+              "**": {
+                "lo": 2.5,
+                "hi": 10,
+                "unit": "uM"
+              },
+              "***": {
+                "lo": 0.5,
+                "hi": 2.5,
+                "unit": "uM"
+              },
+              "****": {
+                "lo": null,
+                "hi": 0.5,
+                "unit": "uM"
+              },
+              "\u2014": {
+                "lo": 25,
+                "hi": null,
+                "unit": "uM"
+              },
+              "ND": {
+                "lo": null,
+                "hi": null,
+                "unit": "uM"
+              }
+            }
+          },
+          {
+            "match": "Lectin",
+            "bins": {
+              "+": {
+                "lo": 5,
+                "hi": 50,
+                "unit": "uM"
+              },
+              "++": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "uM"
+              },
+              "+++": {
+                "lo": 0.05,
+                "hi": 0.5,
+                "unit": "uM"
+              },
+              "++++": {
+                "lo": null,
+                "hi": 0.05,
+                "unit": "uM"
+              },
+              "\u2014": {
+                "lo": 50,
+                "hi": null,
+                "unit": "uM"
+              },
+              "ND": {
+                "lo": null,
+                "hi": null,
+                "unit": "uM"
+              }
+            }
+          },
+          {
+            "match": "selectivity",
+            "bins": {
+              "\u2014": {
+                "lo": 0,
+                "hi": 1.0,
+                "unit": "fold"
+              },
+              "*": {
+                "lo": 1.0,
+                "hi": 5.0,
+                "unit": "fold"
+              },
+              "**": {
+                "lo": 5.0,
+                "hi": 25,
+                "unit": "fold"
+              },
+              "***": {
+                "lo": 25,
+                "hi": 100,
+                "unit": "fold"
+              },
+              "****": {
+                "lo": 100,
+                "hi": null,
+                "unit": "fold"
+              },
+              "ND": {
+                "lo": null,
+                "hi": null,
+                "unit": "fold"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T12:10:01",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "bin 'ND' has neither bound"
+      },
+      "times_applied": 31,
+      "rows_yielded": 12469
+    },
+    {
+      "fingerprint": "a0d2134ef94cf4bd",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "MASP-2|Thrombin|Ki",
+            "bins": {
+              "*": {
+                "lo": 0,
+                "hi": 25,
+                "unit": "\u03bcM"
+              },
+              "**": {
+                "lo": 0,
+                "hi": 10,
+                "unit": "\u03bcM"
+              },
+              "***": {
+                "lo": 0,
+                "hi": 2.5,
+                "unit": "\u03bcM"
+              },
+              "****": {
+                "lo": 0,
+                "hi": 0.5,
+                "unit": "\u03bcM"
+              },
+              "*****": {
+                "lo": 0,
+                "hi": 0.05,
+                "unit": "\u03bcM"
+              },
+              "\u2014": {
+                "lo": 25,
+                "hi": null,
+                "unit": "\u03bcM"
+              }
+            }
+          },
+          {
+            "match": "Lectin",
+            "bins": {
+              "\u2014": {
+                "lo": 50,
+                "hi": null,
+                "unit": "\u03bcM"
+              },
+              "+": {
+                "lo": 5,
+                "hi": 50,
+                "unit": "\u03bcM"
+              },
+              "ND": {
+                "lo": null,
+                "hi": null,
+                "unit": "\u03bcM"
+              }
+            }
+          },
+          {
+            "match": "selectivity",
+            "bins": {
+              "\u2014": {
+                "lo": null,
+                "hi": 1.0,
+                "unit": "fold"
+              },
+              "+": {
+                "lo": 1.0,
+                "hi": 5.0,
+                "unit": "fold"
+              },
+              "++": {
+                "lo": 5.0,
+                "hi": 25,
+                "unit": "fold"
+              },
+              "+++": {
+                "lo": 25,
+                "hi": 100,
+                "unit": "fold"
+              },
+              "++++": {
+                "lo": 100,
+                "hi": null,
+                "unit": "fold"
+              },
+              ">+": {
+                "lo": 1.0,
+                "hi": null,
+                "unit": "fold"
+              },
+              ">++": {
+                "lo": 5.0,
+                "hi": null,
+                "unit": "fold"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T12:10:06",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "bin 'ND' has neither bound"
+      },
+      "times_applied": 14,
+      "rows_yielded": 38
+    },
+    {
+      "fingerprint": "aa3a0c09e75da5df",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "cathepsin S IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T12:10:09",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "id_style": "code",
+        "rows_total": 119,
+        "rows_matched": 119,
+        "coverage": 1.0,
+        "rejected_ids": 0,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 60,
+      "rows_yielded": 4770
+    },
+    {
+      "fingerprint": "218c2843386f4ff3",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "RGFA8 IC50",
+            "unit": "\u00b5M"
+          },
+          {
+            "index": 3,
+            "name": "TSA IC50",
+            "unit": "\u00b5M"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T12:10:11",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "id_style": "name",
+        "rows_total": 3,
+        "rows_matched": 3,
+        "coverage": 1.0,
+        "rejected_ids": 0,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 28,
+      "rows_yielded": 392
+    },
+    {
+      "fingerprint": "b3f193f31cfec4b4",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^(?P<qual>[\u2265<~])?(?P<num>\\d+(?:\\.\\d+)?)[eE](?P<sign>[\u2212\\-])(?P<exp>\\d+)\\s*$|^not\\s+tested$|^under\\s+evaluation$",
+        "columns": [
+          2,
+          3
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T12:10:16",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern changes 377 cells the parser already reads correctly (e.g. '6.7e\u2212009': 6.7e-09 -> 6.7) \u2014 a value rule must be a strict superset, never a reinterpretation"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "47693bfafc7eb363",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "IC50",
+            "bins": {
+              "***": {
+                "lo": 0,
+                "hi": 100,
+                "unit": "nM"
+              },
+              "**": {
+                "lo": 100,
+                "hi": 1000,
+                "unit": "nM"
+              },
+              "*": {
+                "lo": 1000,
+                "hi": null,
+                "unit": "nM"
+              }
+            }
+          },
+          {
+            "match": "% Inh",
+            "bins": {
+              "###": {
+                "lo": 75,
+                "hi": null,
+                "unit": "%"
+              },
+              "##": {
+                "lo": 25,
+                "hi": 75,
+                "unit": "%"
+              },
+              "#": {
+                "lo": null,
+                "hi": 25,
+                "unit": "%"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T12:10:19",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "no grade symbols found in this table to apply a key to"
+      },
+      "times_applied": 60,
+      "rows_yielded": 88080
+    },
+    {
+      "fingerprint": "f6aef9484fa04529",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 50,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 50,
+            "hi": 250,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 250,
+            "hi": 500,
+            "unit": "nM"
+          },
+          "D": {
+            "lo": 500,
+            "hi": 1500,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T12:10:21",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 30,
+      "rows_yielded": 5730
+    },
+    {
+      "fingerprint": "0b4603974de8dfbf",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "+": {
+            "lo": 100,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "++": {
+            "lo": 10,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "+++": {
+            "lo": 1,
+            "hi": 10,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T13:06:48",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "+",
+          "++",
+          "+++"
+        ],
+        "symbols_defined": [
+          "+",
+          "++",
+          "+++"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "4cb44b2fa9f6cb0a",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "+": {
+            "lo": null,
+            "hi": 10,
+            "unit": "uM"
+          },
+          "\u2212": {
+            "lo": 10,
+            "hi": null,
+            "unit": "uM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T13:09:49",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "+"
+        ],
+        "symbols_defined": [
+          "+",
+          "\u2212"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 27,
+      "rows_yielded": 1080
+    },
+    {
+      "fingerprint": "b1dfedc6b9f2e5bd",
+      "kind": "escalate",
+      "payload": {
+        "capability": "contested not_assay",
+        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T13:09:55",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "d7e253210593db29",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "\u2020\u2020\u2020": {
+            "lo": 500,
+            "hi": 10000,
+            "unit": "nM"
+          },
+          "\u2020\u2020": {
+            "lo": 100,
+            "hi": 500,
+            "unit": "nM"
+          },
+          "\u2020": {
+            "lo": null,
+            "hi": 100,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T13:09:57",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "no grade symbols found in this table to apply a key to"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "b0cc1dfb20489104",
+      "kind": "not_assay",
+      "payload": {
+        "because": "The table lists Example numbers, chemical structures (B), and substituents (R8, R9, G8) alongside molecular weight (MW) and mass spectrometry ionization data ([M+H]+, [M+Na]+). These are structural characterization and analytical chemistry values, not bioassay measurements like IC50, EC50, Ki, Kd, or percent inhibition."
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T13:10:00",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "4c383b576873f989",
+      "kind": "not_assay",
+      "payload": {
+        "because": "The table shows Example No (compound identifier), chemical structure, Free Base MW (molecular weight), and [M+H]+ (mass spectrometry ionization peak). These are synthetic chemistry characterisation values, not potency or activity measurements such as IC50, EC50, Ki, Kd, or percent inhibition."
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T13:10:03",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "1e1f5fd364387dec",
+      "kind": "not_assay",
+      "payload": {
+        "because": "The table shows Example No. (compound ID), chemical structure (column 1), R-group substitutions (R7, R5, W, Z, Y in columns 2\u20136), molecular weight (MW, column 7), and mass spectrometry [M+H]+ or [M+Na]+ adducts (column 8). These are synthetic chemistry characterization data: molecular weight and MS m/z values are explicitly excluded from bioassay measurements per the instructions. The R-group columns (W, Z, Y) contain single atoms or chemical symbols (C, N, H, CF3), not potency or activity values."
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-02T13:10:06",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "0895445414e6dcf1",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "DNA-PK|pDNA-PK",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 3,
+                "unit": "nM"
+              },
+              "B": {
+                "lo": 3,
+                "hi": 7,
+                "unit": "nM"
+              },
+              "C": {
+                "lo": 7,
+                "hi": 30,
+                "unit": "nM"
+              },
+              "D": {
+                "lo": 30,
+                "hi": null,
+                "unit": "nM"
+              }
+            }
+          },
+          {
+            "match": "pDNA-PK",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 0.5,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 5,
+                "hi": 10,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": 10,
+                "hi": 30,
+                "unit": "\u03bcM"
+              }
+            }
+          },
+          {
+            "match": "hERG|Kv11",
+            "bins": {
+              "A": {
+                "lo": 25,
+                "hi": null,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 15,
+                "hi": 25,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 10,
+                "hi": 15,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": null,
+                "hi": 10,
+                "unit": "\u03bcM"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T16:47:38",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 41,
+      "rows_yielded": 9850
+    },
+    {
+      "fingerprint": "effa94974785f871",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "DNA-?PK|dna-?pk",
+            "bins": {
+              "A": {
+                "lo": null,
+                "hi": 3,
+                "unit": "nM"
+              },
+              "B": {
+                "lo": 3,
+                "hi": 7,
+                "unit": "nM"
+              },
+              "C": {
+                "lo": 7,
+                "hi": 30,
+                "unit": "nM"
+              },
+              "D": {
+                "lo": 30,
+                "hi": null,
+                "unit": "nM"
+              }
+            }
+          },
+          {
+            "match": "pDNA-?PK|pdna-?pk",
+            "bins": {
+              "A": {
+                "lo": null,
+                "hi": 0.5,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 5,
+                "hi": 10,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": 10,
+                "hi": 30,
+                "unit": "\u03bcM"
+              }
+            }
+          },
+          {
+            "match": "hERG|Kv11|kv1\\.1",
+            "bins": {
+              "A": {
+                "lo": 25,
+                "hi": null,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 15,
+                "hi": 25,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 10,
+                "hi": 15,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": null,
+                "hi": 10,
+                "unit": "\u03bcM"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T16:47:43",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 21,
+      "rows_yielded": 861
+    },
+    {
+      "fingerprint": "bbb8a94aa48da0a4",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "DNA-PK|dna-?pk",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 3,
+                "unit": "nM"
+              },
+              "B": {
+                "lo": 3,
+                "hi": 7,
+                "unit": "nM"
+              },
+              "C": {
+                "lo": 7,
+                "hi": 30,
+                "unit": "nM"
+              },
+              "D": {
+                "lo": 30,
+                "hi": null,
+                "unit": "nM"
+              }
+            }
+          },
+          {
+            "match": "pDNA-PK|pdna-?pk",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 0.5,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 5,
+                "hi": 10,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": 10,
+                "hi": 30,
+                "unit": "\u03bcM"
+              }
+            }
+          },
+          {
+            "match": "hERG|kv11|kv1\\.1",
+            "bins": {
+              "A": {
+                "lo": 25,
+                "hi": null,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 15,
+                "hi": 25,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 10,
+                "hi": 15,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": null,
+                "hi": 10,
+                "unit": "\u03bcM"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T16:47:48",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 21,
+      "rows_yielded": 5712
+    },
+    {
+      "fingerprint": "79b4eca21d8e07fd",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "DNA-?PK.*enzymatic",
+            "bins": {
+              "A": {
+                "lo": null,
+                "hi": 3,
+                "unit": "nM"
+              },
+              "B": {
+                "lo": 3,
+                "hi": 7,
+                "unit": "nM"
+              },
+              "C": {
+                "lo": 7,
+                "hi": 30,
+                "unit": "nM"
+              },
+              "D": {
+                "lo": 30,
+                "hi": null,
+                "unit": "nM"
+              }
+            }
+          },
+          {
+            "match": "pDNA-?PK.*cellular",
+            "bins": {
+              "A": {
+                "lo": null,
+                "hi": 0.5,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 5,
+                "hi": 10,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": 10,
+                "hi": 30,
+                "unit": "\u03bcM"
+              }
+            }
+          },
+          {
+            "match": "Kv11|hERG",
+            "bins": {
+              "A": {
+                "lo": 25,
+                "hi": null,
+                "unit": "\u03bcM"
+              },
+              "B": {
+                "lo": 15,
+                "hi": 25,
+                "unit": "\u03bcM"
+              },
+              "C": {
+                "lo": 10,
+                "hi": 15,
+                "unit": "\u03bcM"
+              },
+              "D": {
+                "lo": null,
+                "hi": 10,
+                "unit": "\u03bcM"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T16:47:52",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "ee60a20d3871d8a8",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "DNA-?PK",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 3,
+                "unit": "nM"
+              },
+              "B": {
+                "lo": 3,
+                "hi": 7,
+                "unit": "nM"
+              },
+              "C": {
+                "lo": 7,
+                "hi": 30,
+                "unit": "nM"
+              },
+              "D": {
+                "lo": 30,
+                "hi": null,
+                "unit": "nM"
+              }
+            }
+          },
+          {
+            "match": "pDNA-?PK",
+            "bins": {
+              "A": {
+                "lo": 0,
+                "hi": 0.5,
+                "unit": "uM"
+              },
+              "B": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "uM"
+              },
+              "C": {
+                "lo": 5,
+                "hi": 10,
+                "unit": "uM"
+              },
+              "D": {
+                "lo": 10,
+                "hi": 30,
+                "unit": "uM"
+              }
+            }
+          },
+          {
+            "match": "hERG|Kv11",
+            "bins": {
+              "A": {
+                "lo": 25,
+                "hi": null,
+                "unit": "uM"
+              },
+              "B": {
+                "lo": 15,
+                "hi": 25,
+                "unit": "uM"
+              },
+              "C": {
+                "lo": 10,
+                "hi": 15,
+                "unit": "uM"
+              },
+              "D": {
+                "lo": null,
+                "hi": 10,
+                "unit": "uM"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T16:48:12",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 40,
+      "rows_yielded": 960
+    },
+    {
+      "fingerprint": "c47cadba3f074697",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "+": {
+            "lo": 10,
+            "hi": null,
+            "unit": "uM"
+          },
+          "++": {
+            "lo": null,
+            "hi": 10,
+            "unit": "uM"
+          },
+          "+++": {
+            "lo": null,
+            "hi": 1,
+            "unit": "uM"
+          },
+          "++++": {
+            "lo": null,
+            "hi": 100,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T16:48:16",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "+",
+          "++",
+          "+++",
+          "++++",
+          "C",
+          "\u0391",
+          "\u0392",
+          "\u0393",
+          "\u0394"
+        ],
+        "symbols_defined": [
+          "+",
+          "++",
+          "+++",
+          "++++"
+        ],
+        "coverage": 0.444,
+        "kind": "bin_key"
+      },
+      "times_applied": 20,
+      "rows_yielded": 46440
+    },
+    {
+      "fingerprint": "7ca1a587c79b1e5f",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 5,
+            "name": "2HG Mean % Inhibition",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T17:52:22",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule fired on 19/46 held-out rows (41%); below the 50% floor \u2014 it describes the sample, not the layout"
+      },
+      "times_applied": 28,
+      "rows_yielded": 700
+    },
+    {
+      "fingerprint": "e51b78a804655a6b",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 2,
+            "name": "ROCK2 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "ROCK1 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "PKA IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 5,
+            "name": "JAK1 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 6,
+            "name": "JAK2 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 7,
+            "name": "JAK3 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 8,
+            "name": "TYK2 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 9,
+            "name": "IKKb IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T17:52:25",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "id_style": "code",
+        "rows_total": 11,
+        "rows_matched": 10,
+        "coverage": 0.909,
+        "rejected_ids": 0,
+        "rejected_values": 1,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 14,
+      "rows_yielded": 1540
+    },
+    {
+      "fingerprint": "af0f479785306274",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 3,
+            "name": "TNF-alpha secretion IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T17:52:28",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "every proposed name introduces a word that appears nowhere in this table's header, caption or surrounding text (e.g. 'TNF-alpha secretion IC50' introduces 'alpha') \u2014 a repair may regroup the patent's own words, not supply new ones"
+      },
+      "times_applied": 14,
+      "rows_yielded": 196
+    },
+    {
+      "fingerprint": "cfd99af9ae950f83",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "MASP-2|mMASP-2|Thrombin",
+            "bins": {
+              "*": {
+                "lo": 10,
+                "hi": 25,
+                "unit": "uM"
+              },
+              "**": {
+                "lo": 2.5,
+                "hi": 10,
+                "unit": "uM"
+              },
+              "***": {
+                "lo": 0.5,
+                "hi": 2.5,
+                "unit": "uM"
+              },
+              "****": {
+                "lo": null,
+                "hi": 0.5,
+                "unit": "uM"
+              },
+              "\u2014": {
+                "lo": 25,
+                "hi": null,
+                "unit": "uM"
+              }
+            }
+          },
+          {
+            "match": "Lectin",
+            "bins": {
+              "+": {
+                "lo": 5,
+                "hi": 50,
+                "unit": "uM"
+              },
+              "++": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "uM"
+              },
+              "+++": {
+                "lo": 0.05,
+                "hi": 0.5,
+                "unit": "uM"
+              },
+              "++++": {
+                "lo": null,
+                "hi": 0.05,
+                "unit": "uM"
+              },
+              "\u2014": {
+                "lo": 50,
+                "hi": null,
+                "unit": "uM"
+              }
+            }
+          },
+          {
+            "match": "",
+            "bins": {
+              "\u2014": {
+                "lo": 0,
+                "hi": 1.0,
+                "unit": "fold"
+              },
+              "*": {
+                "lo": 1.0,
+                "hi": 5.0,
+                "unit": "fold"
+              },
+              "**": {
+                "lo": 5.0,
+                "hi": 25,
+                "unit": "fold"
+              },
+              "***": {
+                "lo": 25,
+                "hi": 100,
+                "unit": "fold"
+              },
+              "****": {
+                "lo": 100,
+                "hi": null,
+                "unit": "fold"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T17:52:33",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "+",
+          "++",
+          "+++",
+          "++++"
+        ],
+        "symbols_defined": [
+          "*",
+          "**",
+          "***",
+          "****",
+          "+",
+          "++",
+          "+++",
+          "++++",
+          "\u2014"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 14,
+      "rows_yielded": 9450
+    },
+    {
+      "fingerprint": "1b484f14b144d559",
+      "kind": "bin_key",
+      "payload": {
+        "scales": [
+          {
+            "match": "Ki|MASP-2|mMASP-2|Thrombin",
+            "bins": {
+              "*": {
+                "lo": 0,
+                "hi": 25,
+                "unit": "uM"
+              },
+              "**": {
+                "lo": 0,
+                "hi": 10,
+                "unit": "uM"
+              },
+              "***": {
+                "lo": 0,
+                "hi": 2.5,
+                "unit": "uM"
+              },
+              "****": {
+                "lo": 0,
+                "hi": 0.5,
+                "unit": "uM"
+              },
+              "\u2014": {
+                "lo": 25,
+                "hi": null,
+                "unit": "uM"
+              }
+            }
+          },
+          {
+            "match": "Lectin|Pathway",
+            "bins": {
+              "\u2014": {
+                "lo": 50,
+                "hi": null,
+                "unit": "uM"
+              },
+              "+": {
+                "lo": 5,
+                "hi": 50,
+                "unit": "uM"
+              },
+              "++": {
+                "lo": 0.5,
+                "hi": 5,
+                "unit": "uM"
+              },
+              "+++": {
+                "lo": 0.05,
+                "hi": 0.5,
+                "unit": "uM"
+              },
+              "++++": {
+                "lo": 0,
+                "hi": 0.05,
+                "unit": "uM"
+              }
+            }
+          },
+          {
+            "match": "selectivity",
+            "bins": {
+              "\u2014": {
+                "lo": 0,
+                "hi": 1.0,
+                "unit": "uM"
+              },
+              "*": {
+                "lo": 1.0,
+                "hi": 5.0,
+                "unit": "uM"
+              },
+              "**": {
+                "lo": 5.0,
+                "hi": 25,
+                "unit": "uM"
+              },
+              "***": {
+                "lo": 25,
+                "hi": 100,
+                "unit": "uM"
+              },
+              "****": {
+                "lo": 100,
+                "hi": null,
+                "unit": "uM"
+              }
+            }
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T17:52:39",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "+",
+          "++",
+          "+++",
+          "++++"
+        ],
+        "symbols_defined": [
+          "*",
+          "**",
+          "***",
+          "****",
+          "+",
+          "++",
+          "+++",
+          "++++",
+          "\u2014"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 14,
+      "rows_yielded": 4914
+    },
+    {
+      "fingerprint": "0f61baf5930970ef",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "*": {
+            "lo": 0,
+            "hi": 25,
+            "unit": "\u03bcM"
+          },
+          "**": {
+            "lo": 0,
+            "hi": 10,
+            "unit": "\u03bcM"
+          },
+          "***": {
+            "lo": 0,
+            "hi": 2.5,
+            "unit": "\u03bcM"
+          },
+          "****": {
+            "lo": 0,
+            "hi": 0.5,
+            "unit": "\u03bcM"
+          },
+          "*****": {
+            "lo": 0,
+            "hi": 0.05,
+            "unit": "\u03bcM"
+          },
+          "\u2014": {
+            "lo": 25,
+            "hi": null,
+            "unit": "\u03bcM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T17:52:42",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "key defines ['*', '**', '***', '****', '*****', '\u2014'] but the table uses ['+'] \u2014 it belongs to a different table"
+      },
+      "times_applied": 14,
+      "rows_yielded": 28
+    },
+    {
+      "fingerprint": "dd515abc439dd198",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "AUC (0-inf)",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:01:34",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 13 rows but the existing parser already gets 16 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 11,
+      "rows_yielded": 176
+    },
+    {
+      "fingerprint": "b6f0a1dc2ff20c35",
+      "kind": "escalate",
+      "payload": {
+        "capability": "contested not_assay",
+        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:01:37",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "b0ba95f86f3cf8df",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "+": {
+            "lo": 0,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "++": {
+            "lo": 100,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "+++": {
+            "lo": 1000,
+            "hi": 10000,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:01:41",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "+",
+          "++"
+        ],
+        "symbols_defined": [
+          "+",
+          "++",
+          "+++"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 10,
+      "rows_yielded": 3080
+    },
+    {
+      "fingerprint": "4bdfd617719db737",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "t1/2",
+            "unit": null
+          },
+          {
+            "index": 2,
+            "name": "CLint",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:01:43",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "column 0 cannot identify rows \u2014 its values are not distinct non-measurement labels (e.g. 'hydroxy-2-methyl-3-(4-(trifluoromethyl)-1H-'). Name the column that holds the compound id, or escalate: this layout may identify compounds in a way we cannot key on"
+      },
+      "times_applied": 11,
+      "rows_yielded": 187
+    },
+    {
+      "fingerprint": "437a51b0eb0cbb15",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 2,
+            "name": "MLM T1/2",
+            "unit": null
+          },
+          {
+            "index": 3,
+            "name": "MLM CLInt",
+            "unit": null
+          },
+          {
+            "index": 4,
+            "name": "HLM T1/2",
+            "unit": null
+          },
+          {
+            "index": 5,
+            "name": "HLM CLInt",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:01:46",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "column 0 cannot identify rows \u2014 its values are not distinct non-measurement labels (e.g. '1012'). Name the column that holds the compound id, or escalate: this layout may identify compounds in a way we cannot key on"
+      },
+      "times_applied": 12,
+      "rows_yielded": 192
+    },
+    {
+      "fingerprint": "a308235c5f64aa5c",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          ">9": {
+            "lo": 9,
+            "hi": null,
+            "unit": "pIC50"
+          },
+          "8-9": {
+            "lo": 8,
+            "hi": 9,
+            "unit": "pIC50"
+          },
+          "7-8": {
+            "lo": 7,
+            "hi": 8,
+            "unit": "pIC50"
+          },
+          "6-7": {
+            "lo": 6,
+            "hi": 7,
+            "unit": "pIC50"
+          },
+          "<6": {
+            "lo": null,
+            "hi": 6,
+            "unit": "pIC50"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:01:49",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "no grade symbols found in this table to apply a key to"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "a31f40923b468d1e",
+      "kind": "not_assay",
+      "payload": {
+        "because": "The table contains in vivo PK data: plasma concentrations (ng/mL) and brain concentrations (ng/G) measured at specific timepoints (0.15, 0.5, 1 h) after IV dosing, along with derived metrics like Brain/Plasma ratio. These are pharmacokinetic measurements (exposure, distribution), not bioassay measurements (IC50, EC50, Ki, Kd, percent inhibition, clearance rate constants). The individual animal measurements (A#1\u2013A#5, Mice #6\u2013#10) are replicates within a single PK study, not different compounds or assay conditions."
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:01:54",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "caa7dd5374f85448",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "Human microsomes T1/2",
+            "unit": null
+          },
+          {
+            "index": 2,
+            "name": "Human Clearance CL int",
+            "unit": null
+          },
+          {
+            "index": 3,
+            "name": "Rat microsomes T1/2",
+            "unit": null
+          },
+          {
+            "index": 4,
+            "name": "Rat Clearance CL int",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:01:56",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule fired on 0/3 held-out rows (0%); below the 50% floor \u2014 it describes the sample, not the layout"
+      },
+      "times_applied": 11,
+      "rows_yielded": 132
+    },
+    {
+      "fingerprint": "20c47c232e735f5b",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 2,
+            "name": "FKBP12 Ki",
+            "unit": "\u00b5M"
+          },
+          {
+            "index": 3,
+            "name": "FKBP52 Ki",
+            "unit": "\u00b5M"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:02:00",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 17 rows but the existing parser already gets 40 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 11,
+      "rows_yielded": 440
+    },
+    {
+      "fingerprint": "668ff3ad7f22d592",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 2,
+            "name": "ORL-1 Ki",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "Mu Ki",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "Kappa Ki",
+            "unit": "nM"
+          },
+          {
+            "index": 5,
+            "name": "Delta Ki",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:02:03",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "id_style": "code",
+        "rows_total": 249,
+        "rows_matched": 155,
+        "coverage": 0.622,
+        "rejected_ids": 0,
+        "rejected_values": 94,
+        "held_out_excluded": 4,
+        "baseline_rows": 0
+      },
+      "times_applied": 11,
+      "rows_yielded": 9053
+    },
+    {
+      "fingerprint": "de268b107d516646",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "*": {
+            "lo": 0,
+            "hi": 25,
+            "unit": "%"
+          },
+          "**": {
+            "lo": 25,
+            "hi": 75,
+            "unit": "%"
+          },
+          "***": {
+            "lo": 75,
+            "hi": null,
+            "unit": "%"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:02:05",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "no grade symbols found in this table to apply a key to"
+      },
+      "times_applied": 11,
+      "rows_yielded": 231
+    },
+    {
+      "fingerprint": "191775a8be759c8e",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 10,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 10,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 100,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "D": {
+            "lo": 1000,
+            "hi": 10000,
+            "unit": "nM"
+          },
+          "E": {
+            "lo": 10000,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:02:08",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 22,
+      "rows_yielded": 3916
+    },
+    {
+      "fingerprint": "23ff3bca77181466",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 10,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 10,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 100,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "D": {
+            "lo": 1000,
+            "hi": 10000,
+            "unit": "nM"
+          },
+          "E": {
+            "lo": 10000,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:02:11",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 11,
+      "rows_yielded": 2706
+    },
+    {
+      "fingerprint": "efe91aa24cd4107d",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 10,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 10,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 100,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "D": {
+            "lo": 1000,
+            "hi": 10000,
+            "unit": "nM"
+          },
+          "E": {
+            "lo": 10000,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:02:14",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 11,
+      "rows_yielded": 1573
+    },
+    {
+      "fingerprint": "9c39a42c6e284184",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 0.1,
+            "unit": "\u00b5M"
+          },
+          "B": {
+            "lo": 0.1,
+            "hi": 1,
+            "unit": "\u00b5M"
+          },
+          "C": {
+            "lo": 1,
+            "hi": 10,
+            "unit": "\u00b5M"
+          },
+          "D": {
+            "lo": 10,
+            "hi": null,
+            "unit": "\u00b5M"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:02:16",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 11,
+      "rows_yielded": 990
+    },
+    {
+      "fingerprint": "b338bc767db00ad7",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 10,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 10,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 100,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "D": {
+            "lo": 1000,
+            "hi": 10000,
+            "unit": "nM"
+          },
+          "E": {
+            "lo": 10000,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:02:36",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 10,
+      "rows_yielded": 350
+    },
+    {
+      "fingerprint": "6becd76d92017e85",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 10,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 10,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 100,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "D": {
+            "lo": 1000,
+            "hi": 10000,
+            "unit": "nM"
+          },
+          "E": {
+            "lo": 10000,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:02:39",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 10,
+      "rows_yielded": 210
+    },
+    {
+      "fingerprint": "65aea6e39d9460c4",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 100,
+            "unit": "nM"
+          },
+          "B": {
+            "lo": 100,
+            "hi": 500,
+            "unit": "nM"
+          },
+          "C": {
+            "lo": 500,
+            "hi": 1000,
+            "unit": "nM"
+          },
+          "D": {
+            "lo": 1000,
+            "hi": 5000,
+            "unit": "nM"
+          },
+          "E": {
+            "lo": 5000,
+            "hi": null,
+            "unit": "nM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:02:44",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 10,
+      "rows_yielded": 170
+    },
+    {
+      "fingerprint": "20d4428d919eef62",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "\u03b15\u03b21 SPRA IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 2,
+            "name": "\u03b18\u03b21 SPRA IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "\u03b1v\u03b21 SPRA IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "\u03b1v\u03b23 SPRA IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 5,
+            "name": "\u03b1v\u03b25 SPRA IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 6,
+            "name": "\u03b1v\u03b26 SPRA IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 7,
+            "name": "\u03b1v\u03b28 SPRA IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:48:23",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 13 rows but the existing parser already gets 16 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 238
+    },
+    {
+      "fingerprint": "e0328b409ff15c6e",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "TLR7 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "TLR8 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "TLR9 IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:48:26",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 978 rows but the existing parser already gets 982 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 11,
+      "rows_yielded": 33490
+    },
+    {
+      "fingerprint": "0a7118b97c8effa0",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          3
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:48:29",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "6dba8b7d959f9130",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "EC50",
+            "unit": "nM"
+          },
+          {
+            "index": 2,
+            "name": "Example ID",
+            "unit": null
+          },
+          {
+            "index": 3,
+            "name": "EC50",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "Example ID",
+            "unit": null
+          },
+          {
+            "index": 5,
+            "name": "EC50",
+            "unit": "nM"
+          },
+          {
+            "index": 6,
+            "name": "Example ID",
+            "unit": null
+          },
+          {
+            "index": 7,
+            "name": "EC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:48:31",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 6 rows but the existing parser already gets 10 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 1,
+      "rows_yielded": 68
+    },
+    {
+      "fingerprint": "904d6bb2f8c454bb",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "EZH2 IC50 peptide v2",
+            "unit": "uM"
+          },
+          {
+            "index": 2,
+            "name": "Y641F IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 3,
+            "name": "WSU prolif IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 4,
+            "name": "WSU ELISA IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:48:36",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 182 rows but the existing parser already gets 186 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 918
+    },
+    {
+      "fingerprint": "11c172579571889e",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:48:39",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "be4248980938976e",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:48:44",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "f18fae0fc1aa6e76",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:48:47",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "f22451ac1b5057d1",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "Flux NaV1.6 IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 2,
+            "name": "Flux NaV1.5 IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 3,
+            "name": "Flux NaV1.1 IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 4,
+            "name": "EP NaV1.6 IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 5,
+            "name": "EP NaV1.5 IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 6,
+            "name": "EP NaV1.1 IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:48:50",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "id_style": "code",
+        "rows_total": 328,
+        "rows_matched": 328,
+        "coverage": 1.0,
+        "rejected_ids": 0,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 324
+      },
+      "times_applied": 2,
+      "rows_yielded": 2292
+    },
+    {
+      "fingerprint": "07a67994dfe332bd",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "TLR7 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "TLR8 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "TLR9 IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:48:58",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 856 rows but the existing parser already gets 859 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 1,
+      "rows_yielded": 2542
+    },
+    {
+      "fingerprint": "859ba860346c7ed1",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>~]?)?\\s*(?P<num>\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?)\\s*(?P<unit>nM|uM|mM|pM)?\\s*$",
+        "columns": [
+          1,
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:00",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern changes 18 cells the parser already reads correctly (e.g. '6105': 6105.0 -> None) \u2014 a value rule must be a strict superset, never a reinterpretation"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "f9ef39d42481c44a",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>~]?)?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          1,
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:04",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "a70690539b96c5b0",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "PI3K\u03b4 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 2,
+            "name": "PI3K\u03b3 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "PI3K\u03b1 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "PI3K\u03b2 IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:07",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 59 rows but the existing parser already gets 63 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 498
+    },
+    {
+      "fingerprint": "ededa41fa5735aa5",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d{1,2}(?:,\\d{3})*)\\s*$",
+        "columns": [
+          3,
+          4,
+          5
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:11",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern changes 8 cells the parser already reads correctly (e.g. '854': 854.0 -> None) \u2014 a value rule must be a strict superset, never a reinterpretation"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "d0d5f4a6dae3aaf5",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>]?)?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*(?:\u00d7|x)\\s*10\\^(?P<exp>\\d+)\\s*$",
+        "columns": [
+          4,
+          5
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:15",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern changes 20 cells the parser already reads correctly (e.g. '>104': 104.0 -> None) \u2014 a value rule must be a strict superset, never a reinterpretation"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "331c599f3cfa8e4e",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "IC50 (A2aR)",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "IC50 (A2bR)",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "IC50 ratio (A2bR/A2aR)",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:18",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 14 rows but the existing parser already gets 18 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 108
+    },
+    {
+      "fingerprint": "4b86c6b8879eb677",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          3
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:21",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "80e16356d942504b",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 2,
+            "name": "% amount of pSer376-SLP-76 @ 20 \u03bcM",
+            "unit": null
+          },
+          {
+            "index": 3,
+            "name": "% amount of pSer376-SLP-76 @ 10 \u03bcM",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:24",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 38 rows but the existing parser already gets 41 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 166
+    },
+    {
+      "fingerprint": "99f5e49e21c74482",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "PA FP IC50",
+            "unit": "\u00b5M"
+          },
+          {
+            "index": 2,
+            "name": "RNP_Alaska EC50",
+            "unit": "\u00b5M"
+          },
+          {
+            "index": 3,
+            "name": "RNP_CAL EC50",
+            "unit": "\u00b5M"
+          },
+          {
+            "index": 4,
+            "name": "RNP_Hubei EC50",
+            "unit": "\u00b5M"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:28",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 66 rows but the existing parser already gets 70 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 470
+    },
+    {
+      "fingerprint": "7fb024319331f649",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "PA FP IC50",
+            "unit": "\u03bcM"
+          },
+          {
+            "index": 2,
+            "name": "NA_VIR_H1N1 EC50",
+            "unit": "\u03bcM"
+          },
+          {
+            "index": 3,
+            "name": "NA_VIR_H3N2 EC50",
+            "unit": "\u03bcM"
+          },
+          {
+            "index": 4,
+            "name": "NA_Hubei EC50",
+            "unit": "\u03bcM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:31",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 10 rows but the existing parser already gets 14 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 88
+    },
+    {
+      "fingerprint": "1a1529649d6604e0",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>Not\\s+binding)?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$|^\\s*(?P<text>Not\\s+binding)\\s*$",
+        "columns": [
+          4
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:34",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "d62c0c51b8063443",
+      "kind": "row_regex",
+      "payload": {
+        "pattern": "^\\s*(?P<cid>\\d+)\\s*\\|\\s*(?P<rock2_inh>[\\d.]*)\\s*\\|\\s*(?P<rock2_ic50>(?:[>\u2265]?\\s*\\d+(?:\\.\\d+)?)?)\\s*\\|\\s*(?P<rock1_inh>[\\d.]*)\\s*\\|\\s*(?P<rock1_ic50>(?:[>\u2265]?\\s*\\d+(?:\\.\\d+)?)?)\\s*\\|\\s*(?P<pmlc_inh>[\\d.]+)\\s*\\|\\s*(?P<pmlc_ic50>(?:[>\u2265]?\\s*\\d+(?:\\.\\d+)?)?)\\s*\\|\\s*(?P<nih3t3>(?:[>\u2265]?\\s*\\d+(?:\\.\\d+)?)?)\\s*$"
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:42",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "row_regex must capture at least one `value\u2026` group"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "8cc183135ab4cbd7",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "IDH1/R132H IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 2,
+            "name": "IDH1/R132C IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 3,
+            "name": "IDH2/R140Q IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 4,
+            "name": "IDH2/R172K IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:45",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule fired on 10/21 held-out rows (48%); below the 50% floor \u2014 it describes the sample, not the layout"
+      },
+      "times_applied": 2,
+      "rows_yielded": 94
+    },
+    {
+      "fingerprint": "30a44939e71bc37e",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*(?:\u00b1.*)?$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:47",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "910bc1269cd6cb11",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "EP2 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 2,
+            "name": "EP4 IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:50",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 1072 rows but the existing parser already gets 1076 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 1,
+      "rows_yielded": 2152
+    },
+    {
+      "fingerprint": "18471b31dbdc7e79",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "C3 Convertase IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 2,
+            "name": "Kd",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "C4 Cleavage IC50",
+            "unit": "nM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:54",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 13 rows but the existing parser already gets 17 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 1,
+      "rows_yielded": 40
+    },
+    {
+      "fingerprint": "c877fa245fc841c9",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>~]?)?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*(?P<unit>nM|uM|mM|pM)?\\s*$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:49:57",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "0b051e3850952a76",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "MOLM-13 IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 2,
+            "name": "MV-4-11 IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 3,
+            "name": "OCI-AML3 IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 4,
+            "name": "HEL IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:00",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "id_style": "code",
+        "rows_total": 76,
+        "rows_matched": 75,
+        "coverage": 0.987,
+        "rejected_ids": 1,
+        "rejected_values": 0,
+        "held_out_excluded": 4,
+        "baseline_rows": 55
+      },
+      "times_applied": 4,
+      "rows_yielded": 1036
+    },
+    {
+      "fingerprint": "951079f5efd8c249",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>]?)?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          3
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:03",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "5cbcd5f1482282e7",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>~]?)?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:05",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "02f0ea710101831a",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "TNF\u03b1 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 2,
+            "name": "TNF\u03b1 REC50",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "IL-8 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 4,
+            "name": "ICAM1 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 5,
+            "name": "Relative anti-viral activity",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:11",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 33 rows but the existing parser already gets 33 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 302
+    },
+    {
+      "fingerprint": "46e1c6ef1cfdba45",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>~])?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          3
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:13",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "8eba2e82db5eb3a7",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:16",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern changes 2 cells the parser already reads correctly (e.g. '<1': 1.0 -> None) \u2014 a value rule must be a strict superset, never a reinterpretation"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "af2eff29fc3e206c",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^(?:NT|NA)?\\s*(?:;\\s*)?(?P<num>\\d+)(?:\\s*\\(.*\\))?$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:19",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 1 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "046dc75e25c5da8c",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          1,
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:21",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "62576eb455c6ccec",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>~]?)?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*(?P<unit>nM|uM|\u03bcM)?\\s*$",
+        "columns": [
+          3
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:27",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "e2730b5e647135d8",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>0\\.\\d+)\\s*$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:30",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "4a59a80e267626fa",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>0\\.\\d+)\\s*$",
+        "columns": [
+          1,
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:32",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern changes 20 cells the parser already reads correctly (e.g. '1.15388': 1.15388 -> None) \u2014 a value rule must be a strict superset, never a reinterpretation"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "b0670d8cb65d0a12",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:35",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "9a58663dd40fda08",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "Inhibition of MPO IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 2,
+            "name": "Inhibition of TPO IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 3,
+            "name": "IC50 (TPO)/IC50 (MPO)",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:37",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 11 rows but the existing parser already gets 14 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 90
+    },
+    {
+      "fingerprint": "c4dfa57fc0c6df86",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>])?(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          4
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:42",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "2e6648f5cae0470b",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>])?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          3
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:48",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "548b7e30f30ae6e4",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>]?)?\\s*(?P<num>\\d+)\\s*$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:51",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "5d0e28bdc0b9da50",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>~]?)?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          2
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:54",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "1ea3e4c9398dde4c",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "CBP HTRF IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 3,
+            "name": "BRD4 HTRF IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 4,
+            "name": "Myc IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:57",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 382 rows but the existing parser already gets 386 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 2154
+    },
+    {
+      "fingerprint": "d213162118125c05",
+      "kind": "column_map",
+      "payload": {
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "CBP HTRF IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 3,
+            "name": "BRD4 Alpha IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 4,
+            "name": "Myc IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:50:59",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 306 rows but the existing parser already gets 310 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 1598
+    },
+    {
+      "fingerprint": "de74dab1d9a4663f",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          3
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:51:02",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "d5be91a786ef1922",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<qual>[<>~]?)?\\s*(?P<num>\\d+(?:\\.\\d+)?)\\s*$",
+        "columns": [
+          4
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:51:04",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern rescues only 0 unparsed cells; it is not repairing anything the current parser cannot already do"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "422e3c32315230cf",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 2,
+            "name": "SYK Inhibition IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 3,
+            "name": "AURB Inhibition IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 4,
+            "name": "FLT3 Inhibition IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 5,
+            "name": "GSK3beta Inhibition IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 6,
+            "name": "microsomal stability Cl",
+            "unit": null
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:51:11",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 2 rows but the existing parser already gets 5 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 6,
+      "rows_yielded": 185
+    },
+    {
+      "fingerprint": "fd762f42283a4c17",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 2,
+            "name": "SYK Inhibition IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 3,
+            "name": "AURB Inhibition IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 4,
+            "name": "FLT3 Inhibition IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 5,
+            "name": "GSK3beta Inhibition IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:51:13",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 2 rows but the existing parser already gets 5 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 4,
+      "rows_yielded": 67
+    },
+    {
+      "fingerprint": "bcdb560e0d9338dc",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 2,
+            "name": "SYK-inhibition IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 3,
+            "name": "AURB-inhibition IC50",
+            "unit": "uM"
+          },
+          {
+            "index": 4,
+            "name": "FLT3-inhibition IC50",
+            "unit": "uM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:51:17",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 64 rows but the existing parser already gets 84 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 402
+    },
+    {
+      "fingerprint": "6fcbeb1e9e521dfc",
+      "kind": "column_map",
+      "payload": {
+        "cid": 0,
+        "assays": [
+          {
+            "index": 1,
+            "name": "BACE1 IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 2,
+            "name": "H4-APPwt cell IC50",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "hERG % inhibition @ 10 \u03bcM",
+            "unit": null
+          },
+          {
+            "index": 4,
+            "name": "Phospholipidosis FEC IC50",
+            "unit": "\u03bcM"
+          }
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-03T19:51:20",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "rule yields 25 rows but the existing parser already gets 29 \u2014 a repair must increase coverage, not reduce it"
+      },
+      "times_applied": 2,
+      "rows_yielded": 224
+    },
+    {
+      "fingerprint": "ad441ccaf89a81da",
+      "kind": "not_assay",
+      "payload": {
+        "because": "This is a characterisation table of peptide compounds. Column 1 is the example number (compound ID), column 2 is the peptide sequence (chemical structure), and column 3 is the method of preparation (a categorical label, not an assay result). The footnote confirms \"MoP = Method of Preparation\". There are no IC50, EC50, Ki, Kd, percent inhibition, or clearance measurements present."
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-05T14:03:58",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {},
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "fe2b26d6d5b92ec7",
+      "kind": "value_pattern",
+      "payload": {
+        "pattern": "^\\s*(?P<num>\\d+(?:\\.\\d+)?E[\u2212\\-]\\d+)\\s*$",
+        "columns": [
+          1,
+          2,
+          3
+        ]
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-05T14:04:02",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "gate": "suspended",
+        "objection": "pattern changes 16 cells the parser already reads correctly (e.g. '1.60E\u221208': 1.6e-08 -> None) \u2014 a value rule must be a strict superset, never a reinterpretation"
+      },
+      "times_applied": 0,
+      "rows_yielded": 0
+    },
+    {
+      "fingerprint": "fa533384c027540e",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 0.075,
+            "unit": "uM"
+          },
+          "B": {
+            "lo": 0.075,
+            "hi": 0.5,
+            "unit": "uM"
+          },
+          "C": {
+            "lo": 0.5,
+            "hi": 1,
+            "unit": "uM"
+          },
+          "D": {
+            "lo": 1,
+            "hi": 5,
+            "unit": "uM"
+          },
+          "E": {
+            "lo": 5,
+            "hi": null,
+            "unit": "uM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-05T14:21:59",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 4,
+      "rows_yielded": 308
+    },
+    {
+      "fingerprint": "81621471921039c5",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 0.1,
+            "unit": "uM"
+          },
+          "B": {
+            "lo": 0.1,
+            "hi": 0.5,
+            "unit": "uM"
+          },
+          "C": {
+            "lo": 0.5,
+            "hi": 1,
+            "unit": "uM"
+          },
+          "D": {
+            "lo": 1,
+            "hi": 5,
+            "unit": "uM"
+          },
+          "E": {
+            "lo": 5,
+            "hi": null,
+            "unit": "uM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-05T14:22:02",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 4,
+      "rows_yielded": 232
+    },
+    {
+      "fingerprint": "a400ae6817dac843",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 0.1,
+            "unit": "\u03bcM"
+          },
+          "B": {
+            "lo": 0.1,
+            "hi": 0.5,
+            "unit": "\u03bcM"
+          },
+          "C": {
+            "lo": 0.5,
+            "hi": 1,
+            "unit": "\u03bcM"
+          },
+          "D": {
+            "lo": 1,
+            "hi": 5,
+            "unit": "\u03bcM"
+          },
+          "E": {
+            "lo": 5,
+            "hi": null,
+            "unit": "\u03bcM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-05T14:22:04",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 4,
+      "rows_yielded": 232
+    },
+    {
+      "fingerprint": "87ee0d696fe0e52b",
+      "kind": "bin_key",
+      "payload": {
+        "bins": {
+          "A": {
+            "lo": 0,
+            "hi": 2,
+            "unit": "\u03bcM"
+          },
+          "B": {
+            "lo": 2,
+            "hi": 5,
+            "unit": "\u03bcM"
+          },
+          "C": {
+            "lo": 5,
+            "hi": 10,
+            "unit": "\u03bcM"
+          },
+          "D": {
+            "lo": 10,
+            "hi": 20,
+            "unit": "\u03bcM"
+          },
+          "E": {
+            "lo": 20,
+            "hi": null,
+            "unit": "\u03bcM"
+          }
+        }
+      },
+      "source": "llm",
+      "model": "claude-haiku-4-5-20251001",
+      "created": "2026-08-05T14:22:06",
+      "signature": "",
+      "epoch": "v19-source-first",
+      "validated_on": {
+        "symbols_in_table": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "symbols_defined": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "coverage": 1.0,
+        "kind": "bin_key"
+      },
+      "times_applied": 4,
+      "rows_yielded": 232
+    }
+  ]
+}
