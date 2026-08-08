@@ -75,6 +75,15 @@ DUMP = PACKAGE_ROOT / "out" / "reader_dump.tsv"
 MANIFEST = PACKAGE_ROOT / "out" / "latest.json"
 XLSX = PACKAGE_ROOT / "out" / "reader_dump.xlsx"
 
+# STRUCTURES is the second, and last, artifact `verify --dump` writes — the
+# names/structures `sources/iupac_names.py::extract_names` resolves, separate
+# from DUMP's assay records because the two are stated at different grains:
+# once per compound here, once per (compound, assay) there. Same rule as DUMP
+# applies: ONE canonical location, overwritten every run, named in MANIFEST so
+# a consumer never has to guess which file a number came from. Do not add a
+# second structures file beside this one for the same reason DUMP stays one.
+STRUCTURES = PACKAGE_ROOT / "out" / "structures.tsv"
+
 
 # ── Credentials ──────────────────────────────────────────────────────────
 # env first, then patentdb3/.env, then the repo-root .env — the same order v2
@@ -157,7 +166,19 @@ COST_THRESHOLDS = [50, 100, 150, 200]
 # numbering and needs no bridge. The alternative — Google Patents' embedded
 # SMILES — supplied 97.2% of v2's 17,459 compounds, of which 27.6% were still
 # keyed by GP's positional id and could never be joined to an assay row.
-IUPAC_NAMES = os.environ.get("IUPAC_NAMES", "1") == "1"
+# DEFAULT OFF, and that is a deliberate staging decision rather than doubt
+# about the route. `verify --dump` DOES call `extract_names` and writes
+# `config.STRUCTURES` when this is on — the wiring exists and is tested. It is
+# off because the pieces underneath it are still being validated one at a time:
+# reagent filtering is unbuilt, so a 12-character floor still admits
+# `triethylamine`, and names are not yet anchored to the patent's compound ids,
+# so the structures artifact cannot join the assay rows.
+#
+# Shipping it on by default would put unfiltered, unanchored structures into an
+# artifact that looks finished. Turn it on to exercise the route:
+#
+#     IUPAC_NAMES=1 python3 -m patentdb3.verify US8952177 --dump
+IUPAC_NAMES = os.environ.get("IUPAC_NAMES", "0") == "1"
 
 # Shortest span worth asking OPSIN about. Below this the parser accepts
 # fragments (`ethyl`, `2-chloro`) that are substituents, not compounds.

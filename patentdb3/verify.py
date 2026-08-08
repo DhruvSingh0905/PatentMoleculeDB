@@ -1,9 +1,11 @@
 """Minimal functional check for v3 — is the reader alive and what does it emit?
 
-Deliberately NOT an output pipeline. It merges nothing and resolves no names.
-Its jobs are to prove the move works end to end and to show the reader's RAW
-shape, because the assembly is going to be designed around what this dumps
-rather than around what anyone assumes it produces.
+Deliberately NOT an output pipeline. It merges nothing itself. Any name
+resolution is `sources/iupac_names.py::extract_names`'s own OPSIN pass,
+dumped as-is — this script does not parse a name or join a structure to an
+assay row. Its jobs are to prove the move works end to end and to show the
+reader's RAW shape, because the assembly is going to be designed around what
+this dumps rather than around what anyone assumes it produces.
 
     python3 -m patentdb3.verify                 # summary over a default sample
     python3 -m patentdb3.verify US8952177       # one patent, with rows
@@ -17,24 +19,37 @@ reader alone, which is the baseline any claim about what the loop recovers has
 to be stated against. The manifest records which mode ran, so the two dumps are
 never mistaken for each other.
 
-THE DUMP GOES TO ONE PLACE, AND THIS IS IT:
+`--dump` WRITES TWO ARTIFACTS, EACH TO EXACTLY ONE PLACE:
 
-    patentdb3/out/reader_dump.tsv        (DUMP_PATH, below)
+    patentdb3/out/reader_dump.tsv    assay records     (DUMP_PATH, below)
+    patentdb3/out/structures.tsv     names/structures  (STRUCT_PATH, below)
 
-**Overwrite that file. Do not add a second one.** Every later stage — the pivot
-to Jie's wide sheet, any scoring, any hand-check — reads DUMP_PATH. The failure
-this rule exists to prevent is the one that shaped v2: a new output file gets
-added beside the old one, both are half-maintained, and the variables pointing
-at them drift until nobody can say which artifact a number came from. If this
-script needs to emit something different, change what it writes here rather
-than writing somewhere else.
+**Overwrite those files. Do not add a third artifact, and do not add a second
+one beside either.** Every later stage — the pivot to Jie's wide sheet, any
+scoring, any hand-check — reads DUMP_PATH and STRUCT_PATH from the manifest.
+The failure this rule exists to prevent is the one that shaped v2: a new
+output file gets added beside the old one, both are half-maintained, and the
+variables pointing at them drift until nobody can say which artifact a number
+came from. If this script needs to emit something different, change what it
+writes here rather than writing somewhere else.
 
-The dump is the reader's records as-is — one row per (compound, assay)
+The assay dump is the reader's records as-is — one row per (compound, assay)
 measurement, every field the reader carries, nothing derived. It is long
 format; Jie's sheet is wide, and that pivot is a later step that reads this.
+
+The structures dump is `extract_names`'s output as-is — one row per distinct
+structure OPSIN resolved out of the patent's own prose. Gated on the existing
+`config.IUPAC_NAMES` flag (default OFF; no second switch — the gate lives
+here and NOT inside `extract_names`, so that function stays directly callable
+for testing). The file is
+written even when the route finds nothing, so an empty structures dump still
+means "the route ran and found zero," never "the route did not run" — the
+manifest's `iupac_names`/`structures_rows`/`structures_sources` fields are
+what actually distinguish "disabled" from "ran, found none." See `dump()`.
 """
 from __future__ import annotations
 
+import dataclasses
 import glob
 import json
 import sys
@@ -45,19 +60,28 @@ from .core import config
 from .core.cost_tracker import cost_tracker
 from .repair.loop import repair_patent
 from .repair.rules import RuleLibrary
+from .sources.iupac_names import NamedCompound, extract_names
 from .sources.uspto_assays import extract_from_patent
 from .sources.uspto_xml import UsptoUnavailable, fetch_grant_xml, parse_fidelity, parse_tables
 
 # v2's cached grant XML — an INPUT. v3 writes nothing here; see config.
 XML_DIR = config.XML_INPUT_DIR
 
-# The one canonical dump location. See the module docstring before changing it.
-# Both defined in core.config — the single place every path lives, so a new
-# consumer imports from there rather than from this script.
+# The one canonical dump location for each artifact. See the module docstring
+# before changing either. Both defined in core.config — the single place
+# every path lives, so a new consumer imports from there rather than from
+# this script.
 DUMP_PATH = config.DUMP
+STRUCT_PATH = config.STRUCTURES
 MANIFEST_PATH = config.MANIFEST
 FIELDS = ("cid", "assay_name", "value_numeric", "qualifier", "unit", "n_runs",
           "letter_grade", "range_lo", "range_hi", "table_id", "column_header")
+
+# Read off the dataclass itself rather than hardcoded, so an attribute added
+# to `NamedCompound` later (compound-id anchoring is in flight elsewhere)
+# shows up in the dump on its own — this script must not depend on a field
+# that does not exist yet, and must not need editing when one is added.
+STRUCT_FIELDS = tuple(f.name for f in dataclasses.fields(NamedCompound))
 
 
 def _xml(pid: str) -> str:
@@ -114,12 +138,16 @@ def one(pid: str, *, show: int = 12) -> tuple[int, int]:
 
 
 def dump(pids: list[str], *, heal: bool | None = None) -> int:
-    """Write every record produced for `pids` to DUMP_PATH, as TSV.
+    """Write every record produced for `pids` to DUMP_PATH, plus every
+    structure `extract_names` resolves to STRUCT_PATH, both as TSV.
 
-    Overwrites. One row per measurement, every field the reader carries and
-    nothing derived — no unit conversion, no pivot, no name resolution. What a
-    later stage needs that is not here is a signal the READER should carry it,
-    not that this script should compute it.
+    Overwrites both. DUMP_PATH is one row per measurement, every field the
+    reader carries and nothing derived — no unit conversion, no pivot, no name
+    resolution. STRUCT_PATH is one row per distinct structure OPSIN resolved
+    from the patent's own prose, gated on `config.IUPAC_NAMES` and otherwise
+    untouched — no merge with DUMP_PATH, no cid join. What a later stage needs
+    that is not here is a signal the READER (or `extract_names`) should carry
+    it, not that this script should compute it.
 
     HEALING RUNS PER PATENT, not as a batch afterwards. `repair_patent` takes
     one document, finds ITS gaps against ITS own baseline, and returns
@@ -129,22 +157,30 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
     This function previously called `extract_from_patent` directly and so
     exercised none of the repair tier. A dump produced that way is a reader
     measurement, and reading it as a pipeline measurement is the exact mistake
-    this project keeps paying for — which is why the manifest now records the
-    mode.
+    this project keeps paying for — which is why the manifest records the
+    mode, and now which OTHER routes ran at all.
     """
     heal = config.SELF_HEAL if heal is None else heal
     DUMP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STRUCT_PATH.parent.mkdir(parents=True, exist_ok=True)
     lib = RuleLibrary() if heal else None
-    n = 0
+    n = n_struct = 0
     done: list[str] = []
     recovered_total = adopted_total = gaps_total = 0
+    struct_sources: Counter = Counter()
     spend_before = cost_tracker.total_cost
-    with DUMP_PATH.open("w") as fh:
+    with DUMP_PATH.open("w") as fh, STRUCT_PATH.open("w") as sfh:
         fh.write("patent_id\t" + "\t".join(FIELDS) + "\n")
+        sfh.write("\t".join(STRUCT_FIELDS) + "\n")
         for pid in pids:
             try:
+                xml = _xml(pid)
+            except (FileNotFoundError, UsptoUnavailable) as e:
+                print(f"  {pid}: no XML ({e})")
+                continue
+            try:
                 if heal:
-                    recs, rep = repair_patent(pid, _xml(pid), library=lib)
+                    recs, rep = repair_patent(pid, xml, library=lib)
                     gaps_total += rep.gaps_found
                     adopted_total += rep.adopted
                     recovered_total += rep.rows_recovered
@@ -154,7 +190,7 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                               f"+{rep.rows_recovered:,} rows, "
                               f"{rep.escalated} escalated")
                 else:
-                    recs = extract_from_patent(_xml(pid))
+                    recs = extract_from_patent(xml)
             except (FileNotFoundError, UsptoUnavailable) as e:
                 print(f"  {pid}: no XML ({e})")
                 continue
@@ -163,13 +199,31 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                         .replace("\t", " ").replace("\n", " ") for f in FIELDS]
                 fh.write(pid + "\t" + "\t".join(vals) + "\n")
                 n += 1
+
+            # STRUCTURES — a second, independent route over the same XML, run
+            # per patent right here rather than as a separate pass. Its own
+            # try/except so a resolution failure costs nothing already written
+            # above: the assay dump must not be able to fail because of it.
+            if config.IUPAC_NAMES:
+                try:
+                    names = extract_names(xml, pid)
+                except Exception as e:
+                    print(f"  {pid}: iupac_names failed ({e})")
+                    names = []
+                for nc in names:
+                    vals = [str(getattr(nc, f, "") if getattr(nc, f, None) is not None else "")
+                            .replace("\t", " ").replace("\n", " ") for f in STRUCT_FIELDS]
+                    sfh.write("\t".join(vals) + "\n")
+                    n_struct += 1
+                    struct_sources[getattr(nc, "source", None) or "unknown"] += 1
+
             done.append(pid)
 
     # The manifest. Written EVERY run, overwritten in place, so it always names
-    # the current dump. Anything downstream reads the path from here rather than
-    # hardcoding one — that is what stops a consumer quietly reading a stale file
-    # after the dump moves or is regenerated, which is exactly how v2 ended up
-    # with numbers nobody could attribute to a run.
+    # the current dumps. Anything downstream reads the paths from here rather
+    # than hardcoding one — that is what stops a consumer quietly reading a
+    # stale file after a dump moves or is regenerated, which is exactly how
+    # v2 ended up with numbers nobody could attribute to a run.
     spent = cost_tracker.total_cost - spend_before
     MANIFEST_PATH.write_text(json.dumps({
         "dump": str(DUMP_PATH),
@@ -178,14 +232,27 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
         "rows": n,
         "fields": ["patent_id", *FIELDS],
         "source_xml_dir": str(XML_DIR),
-        # WHICH PIPELINE PRODUCED THIS. Without it, a reader-only dump and a
-        # healed dump are indistinguishable files, and every comparison between
-        # them silently crosses a code boundary.
+        # WHICH ROUTES RAN. Without this, a reader-only dump and a healed one
+        # — or a dump with structures and one without — are indistinguishable
+        # files, and every comparison between them silently crosses a code
+        # boundary.
         "self_heal": heal,
         "gaps_found": gaps_total if heal else None,
         "rules_adopted": adopted_total if heal else None,
         "rows_recovered": recovered_total if heal else None,
         "usd_spent": round(spent, 4) if heal else 0.0,
+        # STRUCTURES — the second artifact. `iupac_names` says whether the
+        # route was even ENABLED this run; `structures_rows` says how many it
+        # found (an enabled route finding zero and a disabled route both read
+        # 0 here — `iupac_names` is the only field that tells them apart);
+        # `structures_sources` says FROM WHAT each row came
+        # (`NamedCompound.source`, tallied), so a consumer can see what backs
+        # the count without opening the file.
+        "structures": str(STRUCT_PATH),
+        "iupac_names": config.IUPAC_NAMES,
+        "structures_rows": n_struct,
+        "structures_fields": list(STRUCT_FIELDS),
+        "structures_sources": dict(struct_sources),
     }, indent=2) + "\n")
 
     print(f"\nwrote {n:,} rows for {len(done)} patent(s) -> {DUMP_PATH}")
@@ -194,6 +261,10 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
               f"+{recovered_total:,} rows recovered, ${spent:.4f} spent")
     else:
         print("self-heal OFF (SELF_HEAL=0) — reader only, $0")
+    if config.IUPAC_NAMES:
+        print(f"wrote {n_struct:,} structures for {len(done)} patent(s) -> {STRUCT_PATH}")
+    else:
+        print("iupac_names OFF (IUPAC_NAMES=0) — no structures dump")
     print(f"manifest -> {MANIFEST_PATH}")
     return n
 

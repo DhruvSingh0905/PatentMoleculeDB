@@ -17,10 +17,23 @@ joined to the patent's own. Depending on it means depending on a third party's
 OCR of an image we also have, and getting back a compound id that does not
 match our assay rows.
 
-The patent names its compounds in text. US8952177's description yields 150
-OPSIN-parseable names at >=45 characters; US10214537 yields 850, US10376513
-328. Those names carry the patent's own numbering by construction, because they
-sit in the patent's own prose — so nothing has to be bridged afterwards.
+The patent names its compounds in text, and those names carry the patent's own
+numbering by construction — they sit in the patent's own prose, so nothing has
+to be bridged afterwards. Measured by running THIS module, not by a probe:
+
+    patent        distinct structures    names >=45 chars
+    US8952177             238                  180
+    US10214537          1,018                  887
+    US10544143            222                  165
+
+For scale: US10544143's Google Patents path produced 237 compounds. Reading the
+patent's own text produces 222 of them, offline and at $0.
+
+(An earlier version of this paragraph said "150 / 850 / 328". Those were counts
+from a crude throwaway regex used to test whether names were present AT ALL,
+written before this module existed, and they undercounted it. A docs pass
+caught the contradiction by re-running the code rather than trusting the
+comment — which is the only reason it was found.)
 
 THE HARD PART IS NOT NOMENCLATURE, IT IS BOUNDARIES
 ---------------------------------------------------
@@ -42,6 +55,13 @@ parser is the detector, and nothing here needs to be clever about chemistry.
 That is cheap because OPSIN batches: one subprocess call resolves thousands of
 candidates at once.
 
+Naming compounds is only half the join, though: `extract_names` used to return
+`.start`, a description-text offset, and nothing else — no link to the assay
+rows, which are keyed `(patent_id, cid)` in the patent's OWN numbering ("1",
+"43", "I-0020"). `NamedCompound.cid` closes that: see the block comment above
+`_ANCHOR_BOUND` for the measurement (heading structure, not prose distance)
+that made it possible, and wiki page 29 for the full writeup.
+
 WHAT THIS IS NOT
 ----------------
 It does not enumerate Markush series. Where a patent gives a drawn scaffold and
@@ -58,6 +78,8 @@ import re
 from dataclasses import dataclass
 
 from ..core import config
+from .anchor import anchor_text as _anchor_text
+from .anchor import find_cid as _find_cid
 from .uspto_xml import description_text
 
 logger = logging.getLogger(__name__)
@@ -174,10 +196,26 @@ class NamedCompound:
     inchikey: str
     start: int                  # offset into the description
     source: str = "description"
+    cid: str | None = None      # the patent's OWN compound number, if anchored
+    # Set only when `cid` is None because anchoring found a CLASH — occurrences
+    # disagreeing about the id — rather than finding nothing. `"402|402B"`,
+    # closest-evidence first; see `anchor.AnchorResult` for the full detail
+    # this is flattened from. Never a guess: a human or a later pass reads it.
+    cid_clash: str | None = None
 
     @property
     def key(self) -> str:
         return self.inchikey or self.smiles
+
+
+# ---------------------------------------------------------------------------
+# Compound-id anchoring — the logic itself now lives in `sources/anchor.py`,
+# a pure module (two strings in, an `AnchorResult` out) kept separate so it
+# is unit-testable without running OPSIN or this file's candidate generation
+# at all. `_anchor_text` / `_find_cid` below are just the names this module
+# calls them by; see `anchor.py`'s docstring for what was measured — the
+# proximity rule, the alphanumeric-id extension and its ablation, and why a
+# clash surfaces instead of silently refusing to anchor.
 
 
 def _opsin(names: list[str], fmt: str) -> list[str]:
@@ -208,10 +246,18 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
     Returns one entry per DISTINCT structure (deduped on InChIKey), carrying
     the longest name that produced it. Overlapping spans are resolved
     longest-first, so `…cyclohexanecarboxylic acid` wins over the
-    `…cyclohexanecarboxylic` prefix that also parses.
+    `…cyclohexanecarboxylic` prefix that also parses. Each entry also carries
+    `.cid`, the patent's own compound number, when one was found close enough
+    to trust — `None` otherwise (never a guess).
     """
-    if not config.IUPAC_NAMES:
-        return []
+    # NO FEATURE FLAG HERE, DELIBERATELY. This function used to open with
+    # `if not config.IUPAC_NAMES: return []`, duplicating the gate that already
+    # sits at the only call site (`verify.dump`). Two gates for one switch is
+    # not merely redundant — it made the function untestable in isolation:
+    # calling it directly to check its output returned an empty list and looked
+    # like a broken extractor rather than a disabled route. A pure function
+    # should not consult a global, and whether to RUN this route is the
+    # caller's decision, not this module's.
     text = description_text(xml)
     if not text:
         return []
@@ -257,6 +303,19 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
         seen.add(k)
         out.append(NamedCompound(patent_id=patent_id, name=name, smiles=smi,
                                  inchikey=ik, start=pos))
-    logger.info("iupac: %s — %d candidates parsed, %d distinct structures",
-                patent_id, len(kept), len(out))
+
+    # 5. anchor each structure to the patent's OWN compound number — see
+    #    `anchor.py`'s module docstring for what was measured and why.
+    anchor_src = _anchor_text(xml)
+    if anchor_src:
+        for nc in out:
+            result = _find_cid(anchor_src, nc.name)
+            nc.cid = result.cid
+            if result.clashed:
+                nc.cid_clash = "|".join(c.cid for c in result.candidates)
+    anchored = sum(1 for nc in out if nc.cid)
+    clashed = sum(1 for nc in out if nc.cid_clash)
+    logger.info("iupac: %s — %d candidates parsed, %d distinct structures, "
+                "%d anchored to a compound id, %d clashed",
+                patent_id, len(kept), len(out), anchored, clashed)
     return out

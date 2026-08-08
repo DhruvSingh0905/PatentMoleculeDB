@@ -1,10 +1,71 @@
-rdkit-pypi
-anthropic>=0.40.0
-pymupdf>=1.24.0
-pandas>=2.2.0
-pydantic>=2.5.0
-pillow>=10.0.0
-tqdm>=4.66.0
-tenacity>=8.2.0
-beautifulsoup4>=4.12.0
-pytest>=8.0.0
+# v3 (`patentdb3/`) runtime dependencies — derived from the import graph, then
+# VERIFIED by exercise (2026-08-08): every entry below was actually imported
+# and run, not just found by AST walk. All six are genuinely needed; nothing
+# else patentdb3 imports is a non-stdlib package. Clone-simulated against a
+# git-tracked-only checkout (see CLAUDE.md "Keeping the tracked set honest") —
+# `patentdb3` imports clean and `verify.py` / `to_excel.py` both reach their
+# intended exit paths with only these installed.
+#
+# Floors below are UNVERIFIED beyond "the installed version works and the
+# suite passes" — no PyPI changelog was checked (no network in this pass) to
+# find the true minimum. None of the six calls an API recent enough to worry
+# about (rdkit's `MolFromSmiles`/`GetNumHeavyAtoms`, openpyxl's `freeze_panes`,
+# pytest's fixtures/parametrize/monkeypatch are all long-stable), so treat
+# every floor as "known to work at this version," not "verified minimum."
+#
+# This file previously described v2 and listed pymupdf, pandas, pillow, tqdm,
+# beautifulsoup4 and tenacity — the OCR, image and scraping tiers. v3 has none
+# of those; `patentdb_v2/` still needs them, but it is retired and does not run.
+
+anthropic>=0.40.0     # core/api_client.py (module-level), repair/synthesize.py
+                      #   (function-local, unguarded) — rule synthesis. Installed
+                      #   0.93.0; uses Anthropic(max_retries=, timeout=) and
+                      #   messages.create(tool_choice={"type": "any"}).
+regex>=2023.0.0       # repair/rules.py — imported inside try/except ImportError
+                      #   with a fallback to stdlib `re` (`_re_engine = re`), so
+                      #   it is importable-optional in the sense CLAUDE.md means —
+                      #   but load-bearing for a documented reason: it is the ONLY
+                      #   engine with a per-match timeout (`pat.search(timeout=)`),
+                      #   the backstop against a synthesized pattern that
+                      #   backtracks catastrophically. `re` cannot do this; without
+                      #   `regex` installed the code still runs, silently minus
+                      #   that safety net (`_HAS_TIMEOUT=False`). Keep it real.
+py2opsin>=1.2.0       # sources/iupac_names.py — IUPAC name -> SMILES/InChIKey.
+                      #   Hard import (no try/except around `from py2opsin import
+                      #   py2opsin` itself — only the call is caught). Shells out
+                      #   to a bundled OPSIN jar, so JAVA IS REQUIRED on PATH;
+                      #   confirmed present and working on this host (Temurin 25).
+                      #   Gated behind `config.IUPAC_NAMES` (default OFF), so the
+                      #   import is exercised only when that flag is set, but it
+                      #   is a real, tested path (`verify.py --dump`).
+openpyxl>=3.1.0       # to_excel.py:93 — function-local, no fallback, sole
+                      #   consumer. Only exercised by the `to_excel` entry point.
+
+# rdkit, NOT rdkit-pypi. `rdkit-pypi` is the old unofficial wheel and stopped at
+# 2022.9.5; `rdkit` is the maintained one (2026.3.1 here). Both are installed in
+# this venv and BOTH claim the same files under site-packages/rdkit/ — there is
+# only one physical copy on disk (currently the `rdkit` 2026.3.1 build; `import
+# rdkit` resolves to it because it was installed/upgraded last, not because of
+# any path-order or intent). pip does not see this as a conflict since the two
+# are unrelated package names to it, so a future `pip install`/upgrade touching
+# `rdkit-pypi` would silently overwrite the files back to 2022.9.5 with no
+# warning. Recommendation: uninstall `rdkit-pypi` to remove the collision — not
+# done here, this venv is the user's working environment and other code in it
+# may still reference the old package.
+#
+# CONTINGENT: as of this check, `sources/reagents.py` (which imports rdkit) is
+# UNTRACKED — not yet committed, being written by a concurrent agent — and has
+# zero callers anywhere else in patentdb3 (its own docstring: "Not wired into
+# iupac_names.py — that module is owned elsewhere"). So today rdkit is not
+# reachable from any v3 entry point (verify.py, to_excel.py, inspect.py). Even
+# once wired in, the import itself is soft: `from rdkit import Chem` sits in a
+# try/except ImportError there, with a documented safe fallback ("RDKit not
+# available — structural tier is skipped"; classify() still returns a correct,
+# safe default via the lexicon tier alone). Kept in this file because the file
+# is clearly headed into the tree and the dependency is real when it lands —
+# but re-check this entry once reagents.py is committed and has a caller.
+rdkit>=2023.9.1       # sources/reagents.py (optional-with-fallback; see above)
+
+pytest>=8.0.0         # dev only — patentdb3/tests/ (33 tests, all pass). Uses
+                      #   fixtures, parametrize, monkeypatch, raises, skip — all
+                      #   long-stable APIs; nothing found that needs >=8 specifically.

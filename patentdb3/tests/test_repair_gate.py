@@ -428,6 +428,21 @@ def test_self_heal_flag_selects_the_pipeline(monkeypatch, tmp_path):
     assert man["usd_spent"] == 0.0, "no gaps means no paid call"
 
 
-def test_config_default_is_heal_on():
-    """A self-heal that must be remembered is one that does not run."""
-    assert config.SELF_HEAL is True
+def test_config_default_is_heal_on(monkeypatch):
+    """A self-heal that must be remembered is one that does not run.
+
+    Reads the DEFAULT, not the ambient value. The first version asserted
+    `config.SELF_HEAL is True` directly and so failed for anyone who had
+    exported `SELF_HEAL=0` — which is exactly what an agent was told to do
+    while working on the identity route, and it then reported a green suite as
+    "1 pre-existing failure". A test that asserts a config default has to
+    control the environment it reads, or it is asserting the shell.
+    """
+    import importlib
+
+    monkeypatch.delenv("SELF_HEAL", raising=False)
+    fresh = importlib.reload(config)
+    try:
+        assert fresh.SELF_HEAL is True
+    finally:
+        importlib.reload(config)      # restore whatever the caller's env says
