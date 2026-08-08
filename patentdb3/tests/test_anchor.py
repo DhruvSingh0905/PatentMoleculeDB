@@ -109,6 +109,61 @@ def test_blacklisted_words_before_colon_do_not_anchor(label):
     assert r.candidates == ()
 
 
+@pytest.mark.parametrize("label", ["Method", "Step", "Table", "Scheme"])
+@pytest.mark.parametrize("sep", [" : ", " ; ", "  "])
+def test_left_colon_blacklist_does_not_reach_the_plain_digit_rule(label, sep):
+    """`_NON_ID_WORD` guards ONE of the two left rules. The other must refuse
+    the same number independently — or the blacklist is decorative.
+
+    `find_cid` runs `_CID_LEFT_PLAIN` and `_CID_LEFT_SEP` as two separate
+    `finditer` passes over the SAME window, and the blacklist check lives
+    inside the `_CID_LEFT_SEP` loop only (`continue`). So when the colon rule
+    refuses "Method 1:" as a compound id, nothing in that code path stops the
+    plain-digit rule from matching the very same "1" and anchoring to it.
+
+    The tests above cannot see this: they all spell the label "Method 1:",
+    digit immediately followed by a colon, and `_CID_LEFT_PLAIN` requires
+    `(\\d+)\\s` — a digit run followed by WHITESPACE — so it never matches that
+    spelling and the plain rule is never actually exercised. The spellings
+    here are the ones where it IS: "Method 1 : X" and "Step 2 ; X" (space
+    before the separator) both make `_CID_LEFT_PLAIN` match "1 "/"2 ", and
+    "Method 1  X" has no separator at all, so `_CID_LEFT_SEP` — and with it
+    the blacklist — never even applies. Verified directly against the shipped
+    regexes before this test was written: in all three spellings
+    `_CID_LEFT_PLAIN.finditer(window)` yields the number.
+
+    What refuses it is `_LEFT_GAP_OK`: the gap left between the id and the
+    name (": ", "; ", " ") is not the bare whitespace/stereo-prefix gap a real
+    heading leaves. That coupling is the thing under test — widening
+    `_LEFT_GAP_OK` to tolerate a stray separator would silently turn every
+    "Step 2 : <name>" in the corpus into an anchor on id "2".
+
+    Named for the citation in `test_iupac_reagent_markush.py`'s docstring,
+    which referred to this test before it existed.
+    """
+    name = "4-methylpiperidin-1-yl acetic acid"
+    r = find_cid(f"{label} 1{sep}{name}\n", name)
+    assert r.cid is None, f"{label!r} + {sep!r} leaked through to the plain-digit rule"
+    assert not r.clashed
+    assert r.candidates == ()
+
+
+@pytest.mark.parametrize("sep", [" : ", " ; "])
+def test_a_non_blacklisted_label_still_anchors_in_the_same_spelling(sep):
+    """The positive control for the test above — without it, that test would
+    still pass if `find_cid` simply stopped anchoring anything with a space
+    before the separator.
+
+    "Example 5 : X" is the identical punctuation shape with a label that is
+    NOT in `_NON_ID_WORD`, and it must still resolve to 5 via
+    `_CID_LEFT_SEP` (which allows `\\s*[:;]\\s+` around the separator).
+    """
+    name = "4-methylpiperidin-1-yl acetic acid"
+    r = find_cid(f"Example 5{sep}{name}\n", name)
+    assert r.cid == "5"
+    assert not r.clashed
+
+
 def test_n2_sparged_no_longer_a_false_positive():
     """FIXED — this used to document a known, pre-existing limitation.
 
@@ -326,6 +381,72 @@ def test_repair_does_not_touch_the_other_unconfirmed_corruptions():
     assert "[2-fluoro-4-trifluoromethoxy)benzyl]" in text2   # left untouched
 
 
+# ── the occurrence cap: truncated evidence must not become confidence ─────
+# `_MAX_OCCURRENCES` used to be 200 with a comment saying it had never been
+# observed to bind. Measured over all 137 cached XMLs it bound on 55 names in
+# 30 patents, and on US9394297 it turned a 31-way clash into a confident
+# `cid="7"`. See that constant's comment in `anchor.py` for the full
+# measurement; these lock the behaviour it now guarantees.
+
+
+def test_truncated_scan_never_returns_a_confident_cid(monkeypatch):
+    """The invariant, in isolation: a single agreeing id found under a
+    truncated scan is NOT an anchor.
+
+    The text below has three "Example 1\\nfoo-acid" pairs and then, past the
+    cap, an "Example 2\\nfoo-acid" that disagrees. With the cap in force the
+    scan never reaches the disagreement, so every occurrence it DID read
+    agreed on "1" — which is exactly the reasoning that produced the wrong
+    `cid="7"` on US9394297. The result must withhold the cid rather than
+    report agreement it could not have checked.
+    """
+    monkeypatch.setattr("patentdb3.sources.anchor._MAX_OCCURRENCES", 3)
+    text = ("Example 1\nfoo-acid x\n" * 3) + "Example 2\nfoo-acid y\n"
+    r = find_cid(text, "foo-acid")
+    assert r.truncated is True
+    assert r.cid is None, "a truncated scan reported a confident id"
+    # the evidence it did gather is still surfaced — degraded, never silent
+    assert r.candidates and r.candidates[0].cid == "1"
+
+
+def test_truncation_is_reported_even_when_nothing_was_found(monkeypatch):
+    """`truncated` is orthogonal to the three result states, so the
+    "nothing found" answer carries it too. US9656988's
+    "pyrazine-2-carboxamide" is why this matters: at the old cap it returned
+    `cid=None, clashed=False, candidates=()` — indistinguishable from a name
+    with no id anywhere — while the complete scan finds a 222-way clash.
+    """
+    monkeypatch.setattr("patentdb3.sources.anchor._MAX_OCCURRENCES", 2)
+    r = find_cid("qq nothing qq nothing qq nothing qq", "qq")
+    assert r.truncated is True
+    assert r.cid is None and not r.clashed and r.candidates == ()
+
+
+def test_exactly_the_cap_is_not_truncation(monkeypatch):
+    """Off-by-one guard. The previous implementation used a `while/else` whose
+    `else` fired whenever `seen` reached the cap — including when the name
+    occurred EXACTLY `_MAX_OCCURRENCES` times and nothing had been missed. It
+    reported truncation, and (after this change would have) withheld a
+    perfectly good cid, for a whole class of name that was fully scanned.
+    """
+    monkeypatch.setattr("patentdb3.sources.anchor._MAX_OCCURRENCES", 3)
+    exactly = "Example 9\nzz qq zz qq zz"          # "zz" three times
+    r = find_cid(exactly, "zz")
+    assert r.truncated is False
+    assert r.cid == "9", "a fully-scanned name lost its anchor to a false truncation"
+
+    one_more = exactly + " qq zz"                   # "zz" four times
+    assert find_cid(one_more, "zz").truncated is True
+
+
+def test_untruncated_results_do_not_claim_truncation():
+    """The default must stay False on the ordinary path — otherwise every
+    caller sees a degraded result and the flag means nothing."""
+    r = find_cid("Example 1\nracemic foo-acid\n", "foo-acid")
+    assert r.cid == "1" and r.truncated is False
+    assert find_cid("no ids at all here", "quinazoline").truncated is False
+
+
 # ── real XML: the required non-synthetic case ─────────────────────────────
 
 def test_real_xml_anchor_text_has_example_headings():
@@ -378,6 +499,100 @@ def test_real_xml_generic_fragment_clashes_rather_than_guesses():
     assert ids == {"10", "11", "12", "13"}
 
 
+def test_real_xml_cap_clears_the_corpus_maximum():
+    """The most-repeated OPSIN-resolved name in the whole 137-patent corpus.
+
+    "1,3-dihydro-2H-isoindole-2-carboxamide" occurs 4,597 times in US9302989
+    (counted the way `find_cid` steps: `text.find` with `start = pos + 1`,
+    i.e. overlapping). `_MAX_OCCURRENCES` is set above it deliberately — this
+    is the measurement that chose the value, so it is asserted rather than
+    left in a comment to rot the way the previous one did.
+    """
+    from patentdb3.sources.anchor import _MAX_OCCURRENCES
+
+    text = anchor_text(_xml("US9302989"))
+    name = "1,3-dihydro-2H-isoindole-2-carboxamide"
+    n, start = 0, 0
+    while True:
+        pos = text.find(name, start)
+        if pos < 0:
+            break
+        n += 1
+        start = pos + 1
+    assert n == 4597, f"occurrence count drifted ({n}, was 4597) — re-measure the cap"
+    assert _MAX_OCCURRENCES > n, "the cap now binds on the corpus maximum"
+    assert find_cid(text, name).truncated is False
+
+
+def test_real_xml_752_occurrence_fragment_clashes_rather_than_guessing():
+    """THE defect the cap caused, on the real document that produced it.
+
+    US9394297's "6,7-dihydro-1H-pyrrolo[3,2-c]pyridin-4(5H)-one" is a generic
+    ring fragment occurring 752 times. At `_MAX_OCCURRENCES = 200` `find_cid`
+    returned `cid="7"`, `clashed=False`, ONE candidate — a confident anchor on
+    a fragment that 31 different compound ids compete for. The scan simply
+    stopped before reaching the occurrences that disagreed.
+
+    This is the module's founding rule ("CLASHES SURFACE, THEY DO NOT VANISH")
+    being broken by a performance guard, and it is precisely the failure that
+    ships a wrong structure under a real compound number.
+    """
+    text = anchor_text(_xml("US9394297"))
+    r = find_cid(text, "6,7-dihydro-1H-pyrrolo[3,2-c]pyridin-4(5H)-one")
+    assert r.truncated is False
+    assert r.cid is None, "the 200-cap's fabricated confident anchor is back"
+    assert r.clashed is True
+    assert len(r.candidates) == 31, f"candidate count changed: {len(r.candidates)} (was 31)"
+
+
+def test_real_xml_many_occurrence_fragment_reports_a_clash_not_nothing_found():
+    """The other direction of the same defect, also on its own real document.
+
+    US9656988's "pyrazine-2-carboxamide" occurs 729 times. At the 200 cap it
+    returned `cid=None, clashed=False, candidates=()` — the "no occurrence of
+    this name had any id within reach" state, which `AnchorResult`'s docstring
+    defines as a DIFFERENT answer from a clash. The complete scan finds 222
+    competing ids. A caller asking "should I expect this to ever resolve" was
+    being given the wrong answer.
+    """
+    text = anchor_text(_xml("US9656988"))
+    r = find_cid(text, "pyrazine-2-carboxamide")
+    assert r.truncated is False
+    assert r.cid is None
+    assert r.clashed is True, "a 222-way clash is still being reported as 'nothing found'"
+    assert len(r.candidates) == 222, f"candidate count changed: {len(r.candidates)} (was 222)"
+
+
+def test_real_xml_conjunction_heading_with_parenthesised_ids_is_already_solved():
+    """The conjunction shape the module docstring lists as unsolved — on the
+    patent it cites as a real instance — is in fact already handled.
+
+    US10214537's heading reads "Intermediates Q36-A and Q37-A:
+    2,6-Dicyclopropylpiperazine (Q36-A) and 2-Cyclopropyl-6-isopropylpiperazine
+    (Q37-A)". Each name carries its own id in TRAILING PARENS, which is
+    `_CID_RIGHT`'s shape, so the second name reaches its id by the ordinary
+    right-hand rule and needs no sibling context at all.
+
+    The first name genuinely clashes — "2,6-Dicyclopropylpiperazine" has
+    Q36-A adjacent on the right and Q37-A inside the heading prefix on the
+    left — and that clash is the correct answer, not a miss. Asserted here so
+    the docstring's corrected prevalence claim (see "WHAT IS STILL
+    UNANCHORED") stays checked rather than quoted.
+    """
+    text = anchor_text(_xml("US10214537"))
+
+    assert find_cid(text, "2-Cyclopropyl-6-isopropylpiperazine").cid == "Q37-A"
+    assert find_cid(
+        text, "1-(4-(3-Bromophenyl)-2,6-dicyclopropylpiperazin-1-yl)ethanone").cid == "Q36"
+    assert find_cid(
+        text,
+        "1-(4-(3-Bromophenyl)-2-cyclopropyl-6-isopropylpiperazin-1-yl)ethanone").cid == "Q37"
+
+    first = find_cid(text, "2,6-Dicyclopropylpiperazine")
+    assert first.cid is None and first.clashed
+    assert {c.cid for c in first.candidates} == {"Q36-A", "Q37-A"}
+
+
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_extract_names_reproduces_measured_anchor_rate():
     """Locks in the headline number from this task's report: with the false-
@@ -412,8 +627,14 @@ def test_extract_names_reproduces_measured_anchor_rate():
         pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
     anchored = sum(1 for nc in out if nc.cid)
     clashed = sum(1 for nc in out if nc.cid_clash)
-    assert len(out) == 324, (
-        f"candidate generation drifted ({len(out)} distinct structures, was 324) — "
+    # 328, not 324, since the heading route landed: `extract_names` now also
+    # takes the whole post-id text of a compound-asserting heading as one
+    # candidate (a heading declares its own name boundaries, so it needs no
+    # seeding — see wiki 41 §4). Purely ADDITIVE on this patent: 0 structures
+    # lost, and `anchored`/`clashed` below are unchanged at 183/1, which is
+    # what makes this a re-measured number rather than a loosened assertion.
+    assert len(out) == 328, (
+        f"candidate generation drifted ({len(out)} distinct structures, was 328) — "
         f"re-measure before touching this assertion")
     # 170/309 = 55.0%. Was 165/308 (53.6%) before the dropped-open-paren
     # repair. +5, not +7: of the 7 repaired headings, 5 (Examples 25, 162,
@@ -433,7 +654,7 @@ def test_extract_names_reproduces_measured_anchor_rate():
     # `extract_names` should treat a "cis"/"trans"-only name that OPSIN
     # happens to resolve to one specific relative-stereo SMILES), out of this
     # task's scope of the dropped-paren defect.
-    assert anchored == 183, f"anchor rate changed: {anchored}/324 (was 183/324, see anchor.py docstring)"
+    assert anchored == 183, f"anchor rate changed: {anchored}/328 (was 183/328, see anchor.py docstring)"
     # Still ONE clash — the dropped-paren repair does not touch it. The name
     # is the stereo-UNDEFINED parent — `2-{1-(4-Bromobenzyl)-...}cyclohexane-
     # carboxylic acid`, no descriptor — while Examples 1, 3, 5, 6 and 7 are its

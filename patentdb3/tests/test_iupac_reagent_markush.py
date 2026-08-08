@@ -225,3 +225,125 @@ def test_markush_does_not_deduplicate_against_a_concrete_structure():
         assert len({n.key for n in group}) == len(group), (
             f"namespacing failed: {len(group)} structures share SMILES {smi[:40]} "
             f"and collapse to {len({n.key for n in group})} key(s)")
+
+
+# ── the heading route ────────────────────────────────────────────────────
+#
+# `extract_names` reads `<heading>` elements a second time, WHOLE, because a
+# heading has no boundary problem: the patent already said where the name
+# starts (after `Example 43:`) and where it stops (the end of the element).
+# The prose machinery's seeds actively hurt there — `_SEED`'s character class
+# has no space, so `tert-butyl 4-(...)carboxylate` breaks in two.
+#
+# Everything below is about the two properties that make that safe: the route
+# may only ADD, and OPSIN is not allowed to be the only gate.
+
+from patentdb3.sources.iupac_names import (          # noqa: E402
+    _COVERAGE_MIN, _coverage, _heading_texts,
+)
+
+
+def test_heading_framing_is_stripped_to_the_name_the_patent_stated():
+    """Each clause here was observed on a real heading in the cached corpus.
+    Leaving any of it on the front is not a neutral error: OPSIN would then be
+    judging a string this code broke, and whatever recovered it would get
+    credit for undoing our own damage."""
+    xml = "".join(f"<heading>{h}</heading>" for h in [
+        "Example 43: 4-(hydroxymethyl)-3-(2-morpholinopyridin-4-yl)benzamide",
+        "Intermediate 991F: tert-butyl 4-(4-fluoro-1H-indol-5-yl)carboxylate",
+        "Example 44: Synthesis of N-((4,6-dimethyl-2-oxopyridin-3-yl)methyl)amine",
+        "Example 5. Preparation of 2-amino-4-chloro-N-phenylbenzamide (Compound 2)",
+        "Compound I-20 — 5-bromo-3-isopropyl-1H-pyrrolo[3,2-b]pyridine",
+        "Examples",                                   # a section title, not a compound
+        "Example 7: Assay",                           # residual too short
+    ])
+    got = dict(_heading_texts(xml))
+    assert got["43"] == "4-(hydroxymethyl)-3-(2-morpholinopyridin-4-yl)benzamide"
+    assert got["991F"] == "tert-butyl 4-(4-fluoro-1H-indol-5-yl)carboxylate"
+    assert got["44"] == "N-((4,6-dimethyl-2-oxopyridin-3-yl)methyl)amine"
+    assert got["5"] == "2-amino-4-chloro-N-phenylbenzamide"
+    assert got["I-20"] == "5-bromo-3-isopropyl-1H-pyrrolo[3,2-b]pyridine"
+    assert len(got) == 5, sorted(got)
+
+
+def test_coverage_rejects_the_comma_split_amputation():
+    """THE COUNTER-EXAMPLE, kept verbatim.
+
+    Splitting an IUPAC name on its commas and keeping the last fragment
+    produces a real, well-formed molecule that OPSIN accepts without
+    complaint — `nicotinamide`, out of a 100-character name. Corpus-wide that
+    "recovers" ~106 headings at a median coverage of 0.14. A comma in an IUPAC
+    name is a locant separator, and the fragment after one is a different
+    compound. This is why coverage is a gate and OPSIN alone is not.
+    """
+    full = ("5-(4-((1R,5S)-3-azabicyclo[3.1.0]hexan-1-yl)phenyl)-2-amino-"
+            "N-((1r,4R)-4-hydroxycyclohexyl)nicotinamide")
+    assert _coverage("nicotinamide", full) < 0.2
+    assert _coverage("nicotinamide", full) < _COVERAGE_MIN
+    # the whole name, and the same name with wrap spaces removed, both pass —
+    # coverage ignores non-alphanumerics precisely so a dewrap is not
+    # penalised for deleting the spaces it exists to delete
+    assert _coverage(full, full) == 1.0
+    spaced = full.replace(")-2-", ")- 2-")
+    assert _coverage(full, spaced) == 1.0
+
+
+def test_coverage_is_zero_on_an_empty_denominator():
+    assert _coverage("benzene", "") == 0.0
+    assert _coverage("", "benzene") == 0.0
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_heading_route_only_adds_never_replaces():
+    """The route is handed `extract_names`'s own dedup set and runs last, so
+    it CANNOT cost the prose route a structure. Asserted on real XML rather
+    than argued from the code, because "additive by construction" is exactly
+    the kind of claim that survives a refactor in the comment and not in the
+    behaviour."""
+    from patentdb3.sources import iupac_names as mod
+    pid = "US10544143"
+    xml = _xml(pid)
+    pytest.importorskip("py2opsin")
+    logging.disable(logging.CRITICAL)
+    real = mod._heading_structures
+    try:
+        mod._heading_structures = lambda x, p, s: []
+        off = extract_names(xml, pid)
+        mod._heading_structures = real
+        on = extract_names(xml, pid)
+    except Exception as e:
+        pytest.skip(f"OPSIN unavailable in this environment: {e!r}")
+    finally:
+        mod._heading_structures = real
+        logging.disable(logging.NOTSET)
+    if not off:
+        pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
+    assert {n.key for n in off} <= {n.key for n in on}, "the heading route dropped a structure"
+    assert len(on) > len(off), "the heading route found nothing on a patent it should"
+    added = [n for n in on if n.source == "heading"]
+    assert len(on) == len(off) + len(added)
+    # every added row is a heading row, carries the heading's OWN id, and is
+    # never a duplicate structure of something the prose route already had
+    assert all(n.cid for n in added), [n.name for n in added if not n.cid]
+    assert all(n.start == -1 for n in added)
+    assert len({n.key for n in added}) == len(added)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_heading_route_keeps_the_markush_contract():
+    """Same rule as the prose route, enforced on the second producer too: a
+    relative-stereo name gets no InChIKey and a namespaced key. This is the
+    invariant whose violation silently deleted US8952177's Examples 163 and
+    166 — a second code path that resolves names is a second place to break
+    it."""
+    out = _extract("US10214537")
+    from patentdb3.sources.reagents import LABELS
+    heads = [n for n in out if n.source == "heading"]
+    if not heads:
+        pytest.skip("no heading-sourced structures — fixture drifted")
+    for n in heads:
+        assert n.heading_transform in {"as_is_whole", "dewrap_whole", "dewrap_seeded"}
+        if n.markush:
+            assert n.inchikey == ""
+            assert n.key.startswith("markush::")
+        assert n.label in LABELS

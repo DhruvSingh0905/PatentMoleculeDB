@@ -28,8 +28,21 @@ Five concerns, in this order:
    proven stable across two fresh subprocess interpreters on a small
    battery, skipped where OPSIN cannot run.
 
-Nothing here wires `name_repair` into `iupac_names.py`, `anchor.py`, or
-`table_names.py` — this module is tested, and used, standalone.
+5. **The batched form** — `repair_names`, added when the module was wired
+   into `table_names.py` and `iupac_names.py`, must be exactly `repair_name`
+   over a list: same gates, same registry order, same first-confirmed-wins,
+   one entry per input. `repair_name` is now literally
+   `repair_names([name], document_text)[0]`, so §§1-4 above already exercise
+   the batched path; §5 pins the list-shape contract the two callers depend
+   on (positional pairing, `None` for a name that confirms nothing) and
+   proves batching does not change a verdict.
+
+`name_repair` is called by `table_names.extract_table_names` (on every
+name-column cell no dewrap variant resolves) and by
+`iupac_names.extract_names` (on every description seed no variant resolves).
+Neither caller is tested here — this file tests the module standalone; the
+wiring's own regression cases live in `test_table_names.py` and
+`test_structures_wiring.py`.
 """
 from __future__ import annotations
 
@@ -49,6 +62,7 @@ from patentdb3.sources.name_repair import (
     RepairResult,
     generate_candidates,
     repair_name,
+    repair_names,
 )
 
 PID = "US8952177"
@@ -554,3 +568,82 @@ def test_repair_name_is_deterministic_across_fresh_interpreters():
     assert results[0] == results[1]
     assert results[0] is not None
     assert results[0][3] == "digit_for_paren"
+
+
+# ── 5. the batched form ──────────────────────────────────────────────────
+#
+# `repair_names` exists because both wired callers hand this module thousands
+# of names per patent and OPSIN is a java subprocess: `repair_name` pays one
+# process launch per name (two, on a win). It must be the same function over
+# a list — nothing about the gates, their order, or their verdicts may change
+# just because a name arrived with company.
+
+def test_repair_names_returns_one_entry_per_input_in_order():
+    """Positional pairing is the whole contract the callers rely on — the
+    same contract `sources/opsin.batch` refuses a batch rather than break.
+    Pure: none of these three names generates a candidate that could reach
+    OPSIN with an empty document, so the list shape is provable without it."""
+    out = repair_names(["", "not a name at all", "benzene"])
+    assert len(out) == 3
+    assert all(r is None for r in out)
+
+
+def test_repair_names_empty_list_is_empty_not_an_error():
+    assert repair_names([]) == []
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_repair_names_agrees_with_repair_name_one_by_one():
+    """The equivalence the docstring claims, checked rather than asserted:
+    a battery mixing a confirmed repair, an already-valid name (which must
+    short-circuit to `None`), and a name nothing fires on, run BOTH ways.
+
+    Batching changes which OPSIN process sees which string. If any gate ever
+    read state across a batch — a shared `seen` set, a document normalised
+    per call, an index reused — this is the test that would catch it.
+    """
+    pytest.importorskip("py2opsin")
+    document = ("Example 105\n2-Ethyl-2-({6-[(5-methylpyridin-2-yl)methoxy]"
+                "-1-[2-methyl-4-(trifluoromethoxy)benzyl]-1H-benzimidazol-2-"
+                "yl}methyl)butanoic acid was prepared as described.")
+    battery = [
+        CORRUPTED_92,                       # confirmed `digit_for_paren`
+        "benzene",                          # already valid -> None
+        "4-(4-chlorophenyl)-1-methylpiperidine",   # already valid -> None
+        "wholly unparseable text",          # no site fires -> None
+        CORRUPTED_92,                       # the same name twice, same verdict
+    ]
+    try:
+        one_by_one = [repair_name(n, document) for n in battery]
+        batched = repair_names(battery, document)
+    except Exception as e:                            # java missing, etc.
+        pytest.skip(f"OPSIN unavailable in this environment: {e!r}")
+    if all(r is None for r in one_by_one):
+        pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
+    assert batched == one_by_one
+    assert batched[0] is not None and batched[0].pattern_id == "digit_for_paren"
+    assert batched[0] == batched[4]
+    assert batched[1] is batched[2] is batched[3] is None
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_batching_does_not_leak_one_names_corroboration_into_another():
+    """`document_text` is normalised ONCE for the whole batch. That is a real
+    behaviour change from per-name normalisation and it must not widen what
+    corroborates: a name whose probe appears nowhere in the document must
+    still fail the gate when it travels in a batch beside one whose probe
+    does.
+    """
+    pytest.importorskip("py2opsin")
+    document = ("Example 105\n2-Ethyl-2-({6-[(5-methylpyridin-2-yl)methoxy]"
+                "-1-[2-methyl-4-(trifluoromethoxy)benzyl]-1H-benzimidazol-2-"
+                "yl}methyl)butanoic acid was prepared as described.")
+    # A bracket-imbalanced name whose corrected form is NOT in `document`.
+    stranger = "[4-(4-chlorophenyl)-1-methylpiperidine"
+    try:
+        alone = repair_name(stranger, document)
+        together = repair_names([CORRUPTED_92, stranger], document)
+    except Exception as e:
+        pytest.skip(f"OPSIN unavailable in this environment: {e!r}")
+    assert alone is None, alone
+    assert together[1] is None, together[1]

@@ -255,25 +255,66 @@ X and Y" heading. The second name's nearest text is "... and ", not the id,
 which sits 80+ characters back, outside any bound this module tested without
 flooding other patents with false proximity matches (widening the bound was
 tried and rejected — see "THE RULE" above for the mechanism of that failure).
-Re-examined rather than re-assumed: this shape is NOT rare. A heading-level
-scan for "<label> <id>[:.]? ... and ... " across all 137 cached XMLs (a
-looser, over-inclusive proxy — it flags 760 candidate headings in 70/137
-patents; hand-inspection of a sample shows real instances of this exact
-shape, e.g. US10214537's "Intermediate D: ... and Intermediate E: ..." and
-US10087188's paired stereoisomer headings). No fix was implemented here: the
-only mechanism that could work — name B inherits the id of name A because
-text immediately before B is "... and " and text immediately before THAT is
-where A's own (already-resolved) span ends — needs BOTH names' identities at
-once. `find_cid` is deliberately a pure function of one name and one text
-(see "WHY A SEPARATE MODULE" above); giving it that would mean either (a)
-passing sibling-candidate context into every call, changing the module's
-contract from "one name in, one answer out" to a batch operation, or (b)
-resolving it entirely at the `extract_names` call site in `iupac_names.py`,
-which owns the set of names and could match "id ... and " immediately before
-one candidate against the END of another candidate's own span. Both are real
-options; neither belongs inside a module whose entire value is being testable
-without OPSIN or a second name in scope. Left open, with the mechanism named
-and the prevalence measured, not assumed.
+
+AN EARLIER VERSION OF THIS PARAGRAPH CALLED THE SHAPE "NOT rare" ON THE
+STRENGTH OF A PROXY COUNT — "760 candidate headings in 70/137 patents" — and
+cited US10214537 and US10087188 as real instances. Re-measured properly, both
+the number and both citations turn out not to support the claim.
+
+The proxy counted headings that merely CONTAIN " and ". Adjudicating each one
+with OPSIN instead (all 137 cached XMLs, 50,909 headings; split at the last
+" and ", strip any leading label+id off the left side BEFORE parsing — the
+step the original proxy skipped, which is why it could not tell a two-compound
+heading from a sentence):
+
+  955 headings in 90 patents match the "contains ' and ', two long sides"
+      proxy at all;
+  176 in 18 patents genuinely name two compounds (both sides resolve to
+      non-empty, DIFFERENT StdInChIKeys);
+  and of those 176, bucketed by whether an id is even present:
+      120 in 10 patents carry NO id anywhere in the heading — there is
+          nothing to inherit and `find_cid` returning None is already right;
+       44 in 10 patents carry a BLACKLISTED word's number ("Step 3: X and Y")
+          — a synthesis step, not a compound id. `_NON_ID_WORD` refuses these
+          today and must keep refusing them; inheriting there would be a false
+          anchor, not a recovered one;
+       12 in ONE patent (US10870641) carry a real compound id. That is the
+          entire fixable population.
+
+Of those 12, 11 have their second structure already extracted by
+`extract_names` and currently unanchored. So the whole corpus-wide payoff of
+the mechanism described below is +11 anchors on 1 of 137 patents.
+
+The two cited instances were checked directly and neither is this shape:
+
+  - US10214537's headings read "Intermediates Q36-A and Q37-A:
+    2,6-Dicyclopropylpiperazine (Q36-A) and 2-Cyclopropyl-6-isopropylpiperazine
+    (Q37-A)". Each name carries its OWN id in trailing parens, which is
+    `_CID_RIGHT`'s shape — so this is already solved. Verified through the real
+    `find_cid` on the real XML: "2-Cyclopropyl-6-isopropylpiperazine" -> Q37-A,
+    the two ethanones -> Q36 / Q37, and "2,6-Dicyclopropylpiperazine" correctly
+    CLASHES (Q36-A right at distance 2, Q37-A left at 7) rather than guessing.
+  - US10087188's paired stereoisomer headings carry either no id at all or a
+    "Step N:" number, so they land in the two buckets above, not this one.
+
+The mechanism that could work is unchanged — name B inherits the id of name A
+because the text immediately before B is "... and " and immediately before THAT
+is where A's own span ends — and so is the reason it is not built here: it
+needs BOTH names' identities at once. `find_cid` is deliberately a pure
+function of one name and one text (see "WHY A SEPARATE MODULE" above); giving
+it that would mean either (a) passing sibling-candidate context into every
+call, changing the module's contract from "one name in, one answer out" to a
+batch operation, or (b) resolving it at the `extract_names` call site in
+`iupac_names.py`, which owns the set of names.
+
+What HAS changed is that the trade is now measured rather than assumed, and it
+does not favour building it: 11 anchors on one patent, against a rule that
+would have to correctly refuse the 164 headings (44 "Step N:" + 120 id-less)
+in 19 patents where the identical textual shape means something else, using a
+left window 4-7x wider than `_ANCHOR_BOUND` — the same widening "THE RULE"
+above measured as paying off in CLASHES, not anchors. Precision is worth more
+than coverage here: an unanchored name is visible and recoverable, a name
+anchored to the wrong compound number is not. Left unbuilt deliberately.
 
 CONFIGURATION
 --------------
@@ -307,9 +348,51 @@ _ANCHOR_BOUND = 25
 # "()" + up to 3 leading spaces = 14 in the worst case admitted by
 # `_ID_TOKEN`; 12 is what every real corpus example measured needed).
 _RIGHT_LOOKAHEAD = 12
-# Safety valve on repeated occurrences of one name in a huge patent. Never
-# observed to bind in this corpus.
-_MAX_OCCURRENCES = 200
+# Safety valve on repeated occurrences of one name in a huge patent.
+#
+# ITS OWN COMMENT USED TO SAY "Never observed to bind in this corpus." That was
+# false, and the value it justified (200) was low enough to change answers.
+# Measured directly — `extract_names` over all 137 cached XMLs in
+# `output_v3/uspto_xml/`, every distinct OPSIN-resolved name (54,206 of them),
+# each run through `find_cid` twice, once at 200 and once with the cap out of
+# reach, the two `AnchorResult`s compared field by field:
+#
+#   55 names in 30 of 137 patents have MORE than 200 occurrences.
+#   41 of the 55 get the identical answer either way.
+#   14 do not, and one of those is a correctness defect, not a coverage one:
+#
+#     US9394297, "6,7-dihydro-1H-pyrrolo[3,2-c]pyridin-4(5H)-one", 752
+#     occurrences. At the 200 cap: cid="7", clashed=False, ONE candidate — a
+#     confident anchor. Complete scan: cid=None, clashed=True, THIRTY-ONE
+#     candidates. The cap stopped the scan before it reached the occurrences
+#     that disagreed, so the function asserted "every occurrence agreed" about
+#     evidence it had never looked at. That is the one thing this module
+#     promises never to do (see "CLASHES SURFACE" above), and a name anchored
+#     to a wrong compound number is invisible downstream.
+#
+#     US9656988, "pyrazine-2-carboxamide", 729 occurrences: at the cap,
+#     cid=None with ZERO candidates — the "nothing found" state, which
+#     `AnchorResult`'s docstring defines as distinct from a clash. Complete
+#     scan: a 222-way clash. The caller was told the name has no id anywhere
+#     when in truth 222 ids compete for it.
+#
+#     Two more are plain recall losses (US10544120, US10870641: the cap hid
+#     the only evidence, cid=None where the complete scan resolves one id) and
+#     ten are clash->clash, where only the candidate LIST was truncated and
+#     the decision was identical.
+#
+# What the cap bought, measured the same way: `find_cid` over the 24,923 names
+# of those 30 patents takes 3.61 s at cap=200 and 4.33 s uncapped — 0.72 s
+# total, over 21,879 extra occurrences, i.e. ~33 us per extra occurrence
+# scanned, against a run whose wall-clock is dominated by OPSIN.
+#
+# So the valve stays — a document with one short name repeated without bound is
+# still worth refusing to grind on — but it is set far above anything this
+# corpus produces (largest observed: 4,597 occurrences of
+# "1,3-dihydro-2H-isoindole-2-carboxamide" in US9302989, a 5.4x margin), and
+# hitting it is now SAFE rather than silent: see `find_cid`, which never
+# returns a confident `cid` from a scan it knows it truncated.
+_MAX_OCCURRENCES = 25_000
 
 # A compound id, in either of this corpus's two conventions: bare digits
 # ("1", "402"), or alphanumeric ("1D", "12a", "I-0020", "Z1", "5A-1"). At
@@ -570,11 +653,22 @@ class AnchorResult:
         name had any id within reach. Not an error and not a clash — just
         nothing found (see "WHAT IS STILL UNANCHORED" in the module
         docstring for what this looks like in practice).
+
+    `truncated` cuts ACROSS those three: it says the scan stopped at
+    `_MAX_OCCURRENCES` with occurrences of this name still unexamined, so
+    whatever the other fields say is based on partial evidence. When it is
+    True, `cid` is ALWAYS None — "every occurrence agreed" is not a claim this
+    function can make about occurrences it never read, and asserting it anyway
+    is exactly the defect that constant's comment records. `clashed` keeps its
+    plain meaning either way (True iff two ids were actually observed to
+    disagree), and `candidates` still carries everything that WAS found, so a
+    truncated result is degraded, never silent.
     """
     name: str
     cid: str | None
     clashed: bool
     candidates: tuple[Candidate, ...] = field(default_factory=tuple)
+    truncated: bool = False
 
 
 def _consider(best_by_id: dict[str, Candidate], cid: str, distance: int,
@@ -598,6 +692,11 @@ def find_cid(text: str, name: str, *, bound: int = _ANCHOR_BOUND,
     DIFFERENT ids each have their own close evidence, both are kept and
     surfaced as a clash rather than one being picked arbitrarily.
 
+    The scan is bounded by `_MAX_OCCURRENCES`. If that bound is ever reached
+    with occurrences still unread, `AnchorResult.truncated` is True and `cid`
+    is None regardless of what was found — see that constant's comment for the
+    measurement that made this necessary, and `AnchorResult` for the contract.
+
     `patent_id` is optional and used ONLY to give the loss log
     (`sources/losses.py`) context — this function's return value does not
     depend on it, and every existing call (this module's own tests, which all
@@ -606,9 +705,23 @@ def find_cid(text: str, name: str, *, bound: int = _ANCHOR_BOUND,
     best_by_id: dict[str, Candidate] = {}
     start = 0
     seen = 0
-    while seen < _MAX_OCCURRENCES:
+    truncated = False
+    while True:
         pos = text.find(name, start)
         if pos < 0:
+            break
+        if seen >= _MAX_OCCURRENCES:
+            # An occurrence EXISTS that this scan will not look at. Checked
+            # here, after a successful `find`, rather than as the `while`
+            # condition with a `while/else`: the old form fired its loss
+            # record whenever `seen` reached the cap, including for a name
+            # occurring EXACTLY `_MAX_OCCURRENCES` times, where nothing was
+            # missed at all. That over-reported truncation by one whole class
+            # of name — see `test_exactly_the_cap_is_not_truncation`.
+            truncated = True
+            if _losses.ENABLED:
+                _losses.record("anchor_max_occurrences", patent_id, name=name,
+                                cap=_MAX_OCCURRENCES)
             break
         seen += 1
         start = pos + 1
@@ -644,26 +757,28 @@ def find_cid(text: str, name: str, *, bound: int = _ANCHOR_BOUND,
         rm = _CID_RIGHT.match(lookahead)
         if rm is not None:
             _consider(best_by_id, rm.group(1), rm.start(1), "right", lookahead)
-    else:
-        # The `while` loop's own `else`: reached only when `seen` hit
-        # `_MAX_OCCURRENCES` WITHOUT the `break` above firing — i.e. there was
-        # at least one more occurrence of `name` this function never looked
-        # at. "Never observed to bind in this corpus" per the constant's own
-        # comment; logged rather than asserted, so that claim stays checked
-        # rather than repeated.
-        if _losses.ENABLED:
-            _losses.record("anchor_max_occurrences", patent_id, name=name,
-                            cap=_MAX_OCCURRENCES)
 
     if not best_by_id:
         if _losses.ENABLED:
             _losses.record("anchor_not_found", patent_id, name=name)
-        return AnchorResult(name=name, cid=None, clashed=False, candidates=())
+        return AnchorResult(name=name, cid=None, clashed=False, candidates=(),
+                             truncated=truncated)
     candidates = tuple(sorted(best_by_id.values(), key=lambda c: c.distance))
     if len(candidates) > 1:
         if _losses.ENABLED:
             _losses.record("anchor_clash", patent_id, name=name,
                             candidates=[{"cid": c.cid, "distance": c.distance,
                                          "direction": c.direction} for c in candidates])
-        return AnchorResult(name=name, cid=None, clashed=True, candidates=candidates)
+        return AnchorResult(name=name, cid=None, clashed=True, candidates=candidates,
+                             truncated=truncated)
+    if truncated:
+        # ONE id found, but occurrences of this name were left unread. The
+        # single-candidate branch below means "every occurrence that found an
+        # id agreed" — a statement about ALL of them. It cannot be made here.
+        # Measured cost of making it anyway (US9394297, see
+        # `_MAX_OCCURRENCES`): a confident cid="7" where the complete scan
+        # finds a 31-way clash. The candidate is still returned as evidence;
+        # only the confidence is withheld.
+        return AnchorResult(name=name, cid=None, clashed=False,
+                             candidates=candidates, truncated=True)
     return AnchorResult(name=name, cid=candidates[0].cid, clashed=False, candidates=candidates)

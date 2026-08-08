@@ -127,21 +127,73 @@ TARGETED is tried before AGGRESSIVE (and the untouched cell before both) —
 OPSIN keeps the least-invasive candidate that parses, recorded in
 `.dewrap` so the corpus measurement can attribute each recovery to a cause.
 
-THE CORRUPTION FAMILY IS EXPLICITLY OUT OF SCOPE
---------------------------------------------------
-`5-eyloro` (a character substituted for `chloro`) and `propan-2-ol2` (a
-footnote digit fused onto the name — `<sup>2</sup>` keeps its content when
-tags are stripped, per `uspto_xml._text`'s own documented behaviour) are a
-DIFFERENT defect family, assigned to another agent. Nothing here attempts to
-repair either; the corpus measurement in this module's report counts how
-much of the remaining residue they account for, without touching them.
+THE CORRUPTION FAMILY: A SECOND STAGE, AND THE ORDER IS MEASURED
+------------------------------------------------------------------
+`5-eyloro` (a character substituted for `chloro`) is a DIFFERENT defect from
+a wrap space, and `sources/name_repair.py` is the module that repairs it —
+under two gates (OPSIN acceptance, plus verbatim in-document corroboration
+for every pattern but one). This module now calls it, as a RESCUE stage on
+the cells no dewrap variant resolved, and never on a cell that already
+parsed.
+
+**The composition order was measured, not assumed**, because the two stages
+mutate the same string on different axes and either could go first:
+
+    A  repair-then-dewrap : generate_candidates(raw) -> dewrap each repaired
+    B  dewrap-then-repair : dewrap(raw)              -> generate_candidates each
+
+Run over the FULL 137-patent cached corpus (`output_v3/uspto_xml/`), on the
+16,054 name-column cells no dewrap variant resolves:
+
+    order A   206,846 OPSIN candidates   18 cells recovered
+    order B   206,785 OPSIN candidates   18 cells recovered
+    identical accepted string and SMILES on all 18; 0 recovered by one only
+
+**The order does not matter here, and the reason is specific rather than
+lucky:** 17 of the 18 recover at `dewrap == "none"`, and every one of the 18
+comes from a BRACKET-STACK pattern (`stray_opening_bracket` 14,
+`stray_closing_bracket` 3, `dropped_close_bracket` 1) — scanners that count
+brackets and are blind to whitespace, so removing spaces first cannot change
+which sites they find. `name_repair`'s three REGEX-based patterns, the ones
+whose site detection a wrap space genuinely could break, recover **zero**
+table cells, so the axis on which the orders differ is never exercised.
+Order B is what is implemented, on the two grounds that separate them at
+all: 61 fewer candidates, and it keeps this module's own stage first so
+`.dewrap` still records what the dewrap did independently of `.repair`.
+
+All 18 are `corroborated`; none is accepted on OPSIN alone. The yield is
+**18 of 16,054 unresolved cells (0.11%)**, for roughly a 5.7x increase in
+this module's OPSIN candidate volume (36,157 -> ~243,000 corpus-wide). It is
+kept because the cost is local CPU on a java subprocess and $0, and because
+the 18 are confirmed rather than guessed — but "the rescue stage recovers a
+tenth of a percent of the residue" is the honest headline, not a recovery
+story.
+
+`propan-2-ol2` (a footnote digit fused onto the name — `<sup>2</sup>` keeps
+its content when tags are stripped, per `uspto_xml._text`'s own documented
+behaviour) remains OUT OF SCOPE and is deliberately untouched by both
+modules. It is not a hypothetical: **US10376513's cid 69 — the worked
+example at the top of this docstring, and `name_repair.ch_as_ey`'s single
+confirmed corpus case — carries all three defects at once.** Measured
+directly by running the current tree on that cell: TARGETED dewrap removes
+every embedded space correctly, `ch_as_ey` proposes the `eyloro` -> `chloro`
+fix, and the result still fails OPSIN purely on the trailing `2`. That cell
+is the reason `ch_as_ey` contributes 0 of the 18 above.
 
 WHAT THIS DOES NOT DO
 ------------------------
-No Markush enumeration (the patent already enumerated these), no filtering
+No Markush enumeration (the patent already enumerated these) and no filtering
 on `reagents.classify`'s verdict (labelled, never dropped — same contract
-`iupac_names.py` keeps), and no wiring into `process_patent` or any other
-caller — this module is deliberately a clean, standalone function.
+`iupac_names.py` keeps).
+
+It is called by `verify.dump`, gated on `config.IUPAC_NAMES` alongside
+`iupac_names.extract_names`, and its rows land in the SAME
+`config.STRUCTURES` artifact distinguished by `NamedCompound.source` /
+`TableName.source` (`"description"` vs `"table"`). It still merges nothing
+and joins nothing: a structure this module reads and a structure the
+description route reads are two rows, not one, even when they share a
+`.key` — deduplicating them would throw away the row id (`cid`) that is the
+whole reason for reading tables in the first place.
 """
 from __future__ import annotations
 
@@ -151,10 +203,13 @@ import re
 from dataclasses import dataclass
 
 from ..core import config
+from .dewrap import WRAP_ADJACENT as _WRAP_ADJACENT
+from .dewrap import dewrap_candidates
+from .name_repair import repair_names as _repair_names
 from .opsin import batch as _opsin_batch_shared
 from .reagents import classify as _classify_reagent
 from .uspto_assays import CID, UNKNOWN, build_columns, normalize_cid
-from .uspto_xml import Table, assemble_blocks, parse_tables
+from .uspto_xml import Table, assemble_blocks, description_text, parse_tables
 
 logger = logging.getLogger(__name__)
 
@@ -265,36 +320,20 @@ def _name_columns(table: Table) -> tuple[set[int], set[int], int | None]:
 
 
 # ── line-wrap repair ──────────────────────────────────────────────────────
-
-# Whitespace immediately before OR after one of these is a typesetting wrap
-# point, not a real space — see the module docstring for the corpus evidence
-# behind this specific character set.
-_WRAP_ADJACENT = re.compile(
-    r"(?<=[-‐‑‒–—()\[\]{},])\s+"
-    r"|\s+(?=[-‐‑‒–—()\[\]{},])")
-
-
-def dewrap_candidates(text: str) -> list[tuple[str, str]]:
-    """`[(label, candidate), ...]`, least-invasive first, for OPSIN to judge.
-
-    `label` is one of "none" / "targeted" / "aggressive" — recorded on the
-    accepted `TableName` so the corpus measurement can attribute a recovery
-    to a specific cause rather than reporting one undifferentiated total.
-    """
-    out = [("none", text)]
-    seen = {text}
-
-    targeted = _WRAP_ADJACENT.sub("", text)
-    if targeted not in seen:
-        out.append(("targeted", targeted))
-        seen.add(targeted)
-
-    aggressive = re.sub(r"\s+", "", text)
-    if aggressive not in seen:
-        out.append(("aggressive", aggressive))
-        seen.add(aggressive)
-
-    return out
+#
+# MOVED TO `sources/dewrap.py`, IMPORTED BACK UNDER THE SAME NAMES. The
+# whitespace defect this module was written for is not a table defect — the
+# identical injected space appears in `<heading>` text, which the description
+# route reads and this module never sees. Two callers means the regex and the
+# candidate generator live in one place, for exactly the reason
+# `sources/opsin.py` exists: three private copies of one wrapper all carried
+# the same bug, and fixing the copy in front of you looked like fixing it.
+#
+# `_WRAP_ADJACENT` and `dewrap_candidates` keep their names here because they
+# are this module's public surface and its tests already import them; neither
+# carries logic of its own any more. See `dewrap.py` for the corpus evidence
+# behind the character set, and for why AGGRESSIVE is offered here (a table
+# cell is one field with one value) but not on description prose.
 
 
 # ── OPSIN ───────────────────────────────────────────────────────────────
@@ -337,6 +376,13 @@ class TableName:
     reason: str = ""
     markush: bool = False
     markush_reason: str = ""
+    # `name_repair`'s pattern id when this cell only resolved after a
+    # CONFIRMED character/bracket repair applied on top of the dewrap; "" when
+    # the dewrapped (or untouched) cell parsed on its own. A non-empty value
+    # is the ONLY way to tell a cell that needed the rescue stage from one
+    # that did not, which is what the stage's yield is measured on — see
+    # "THE CORRUPTION FAMILY" in the module docstring.
+    repair: str = ""
 
     @property
     def key(self) -> str:
@@ -420,26 +466,58 @@ def extract_table_names(xml: str, patent_id: str = "") -> list[TableName]:
         for label, cand_text in dewrap_candidates(c[5]):
             flat.append((idx, label, cand_text))
 
-    smiles = _opsin_batch([f[2] for f in flat], "SMILES")
+    smiles = _opsin_batch([f[2] for f in flat], "SMILES", patent_id)
 
     # 3. Least-invasive successful dewrap wins, per candidate cell.
-    best: dict[int, tuple[str, str, str]] = {}   # idx -> (dewrap, text, smiles)
+    best: dict[int, tuple[str, str, str, str]] = {}   # idx -> (dewrap, text, smiles, repair)
     for (idx, label, text), smi in zip(flat, smiles):
         if not smi or idx in best:
             continue
-        best[idx] = (label, text, smi)
+        best[idx] = (label, text, smi, "")
+
+    # 3b. THE RESCUE STAGE — `name_repair` on what dewrapping alone could not
+    #     save. See "THE CORRUPTION FAMILY" in the module docstring for the
+    #     measurement that fixed the composition ORDER (dewrap first, repair
+    #     second) and for what the stage is worth.
+    unresolved = [i for i in range(len(candidates)) if i not in best]
+    if unresolved:
+        # Corroboration needs the patent's own flat text. `description_text`,
+        # NOT `anchor.anchor_text`: `anchor_text` applies its own
+        # dropped-open-paren repair to the document, and corroborating a
+        # proposed repair against text we already repaired ourselves would be
+        # circular — `name_repair`'s whole claim is that the corrected
+        # spelling occurs in the patent AS PUBLISHED, somewhere the corruption
+        # did not reach. `include_headings=True` because a compound's clean
+        # restatement is usually its own `<heading>`, which is exactly the
+        # text `description_text`'s default drops.
+        doc = description_text(xml, include_headings=True)
+        probes: list[tuple[int, str]] = []          # (candidate idx, dewrap label)
+        strings: list[str] = []
+        for i in unresolved:
+            for label, cand_text in dewrap_candidates(candidates[i][5]):
+                probes.append((i, label))
+                strings.append(cand_text)
+        for (i, label), res in zip(probes, _repair_names(strings, doc, patent_id)):
+            if res is None or i in best:
+                continue
+            best[i] = (label, res.repaired, res.smiles, res.pattern_id)
+        n_rescued = sum(1 for v in best.values() if v[3])
+        logger.info("table_names: %s — %d cell(s) unresolved after dewrap, "
+                    "%d rescued by name_repair", patent_id, len(unresolved),
+                    n_rescued)
+
     if not best:
         return []
 
     # 4. Second batch, InChIKey — same name string, not the SMILES, exactly
     #    the two-stage pattern `iupac_names.extract_names` uses.
     idxs = sorted(best)
-    keys = _opsin_batch([best[i][1] for i in idxs], "StdInChIKey")
+    keys = _opsin_batch([best[i][1] for i in idxs], "StdInChIKey", patent_id)
 
     out: list[TableName] = []
     for i, ik in zip(idxs, keys):
         table_id, row_idx, col_idx, signal, cid, raw = candidates[i]
-        dewrap, name, smi = best[i]
+        dewrap, name, smi, repair = best[i]
         verdict = _classify_reagent(name, smi)
         stereo = _RELATIVE_STEREO.findall(name)
         is_markush = bool(stereo)
@@ -460,12 +538,14 @@ def extract_table_names(xml: str, patent_id: str = "") -> list[TableName]:
             label=verdict.label, reason=verdict.reason,
             markush=is_markush,
             markush_reason=("relative_stereo:" + ",".join(stereo)) if stereo else "",
+            repair=repair,
         ))
 
     n_with_cid = sum(1 for tn in out if tn.cid)
     n_dewrapped = sum(1 for tn in out if tn.dewrap != "none")
+    n_repaired = sum(1 for tn in out if tn.repair)
     logger.info(
         "table_names: %s — %d candidate cells, %d resolved (%d dewrapped, "
-        "%d carry a row id)",
-        patent_id, len(candidates), len(out), n_dewrapped, n_with_cid)
+        "%d repaired, %d carry a row id)",
+        patent_id, len(candidates), len(out), n_dewrapped, n_repaired, n_with_cid)
     return out

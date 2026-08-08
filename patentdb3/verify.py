@@ -37,15 +37,34 @@ The assay dump is the reader's records as-is — one row per (compound, assay)
 measurement, every field the reader carries, nothing derived. It is long
 format; Jie's sheet is wide, and that pivot is a later step that reads this.
 
-The structures dump is `extract_names`'s output as-is — one row per distinct
-structure OPSIN resolved out of the patent's own prose. Gated on the existing
-`config.IUPAC_NAMES` flag (default OFF; no second switch — the gate lives
-here and NOT inside `extract_names`, so that function stays directly callable
-for testing). The file is
-written even when the route finds nothing, so an empty structures dump still
-means "the route ran and found zero," never "the route did not run" — the
-manifest's `iupac_names`/`structures_rows`/`structures_sources` fields are
-what actually distinguish "disabled" from "ran, found none." See `dump()`.
+The structures dump is TWO identity routes' output as-is, in one file, with
+three producers between them:
+
+    sources/iupac_names.extract_names        -> source="description"
+                                             -> source="heading"
+    sources/table_names.extract_table_names  -> source="table"
+
+`extract_names` seeds the patent's prose (`description`) and separately reads
+each `<heading>` whole (`heading` — a heading states where its own name starts
+and stops, so seeding it is solving a problem it does not have);
+`extract_table_names` reads the table cells `uspto_xml.description_text` drops
+before prose extraction begins. All three resolve through the same OPSIN gate,
+all three attempt `sources/name_repair` on what OPSIN rejects, and neither
+ROUTE merges into the other — a structure both routes see is TWO rows carrying
+two different provenances (a text offset or a heading's own id; a table id,
+row and column). The `source` column is what tells them apart and the
+manifest's `structures_sources` counts them. Nothing derives, joins, or
+deduplicates across the two routes here; that is the assembly's job, and this
+script exists to show it the raw shape.
+
+Both routes are gated on the single existing `config.IUPAC_NAMES` flag
+(default OFF; no second switch — the gate lives here and NOT inside either
+extractor, so both stay directly callable for testing). The file is written
+even when the routes find nothing, so an empty structures dump still means
+"the routes ran and found zero," never "the routes did not run" — the
+manifest's `iupac_names` / `structures_rows` / `structures_sources` /
+`structures_repaired` fields are what actually distinguish "disabled" from
+"ran, found none." See `dump()`.
 """
 from __future__ import annotations
 
@@ -62,6 +81,7 @@ from .repair.loop import repair_patent
 from .repair.rules import RuleLibrary
 from .sources import losses
 from .sources.iupac_names import NamedCompound, extract_names
+from .sources.table_names import TableName, extract_table_names
 from .sources.uspto_assays import extract_from_patent
 from .sources.uspto_xml import UsptoUnavailable, fetch_grant_xml, parse_fidelity, parse_tables
 
@@ -78,11 +98,27 @@ MANIFEST_PATH = config.MANIFEST
 FIELDS = ("cid", "assay_name", "value_numeric", "qualifier", "unit", "n_runs",
           "letter_grade", "range_lo", "range_hi", "table_id", "column_header")
 
-# Read off the dataclass itself rather than hardcoded, so an attribute added
-# to `NamedCompound` later (compound-id anchoring is in flight elsewhere)
-# shows up in the dump on its own — this script must not depend on a field
-# that does not exist yet, and must not need editing when one is added.
-STRUCT_FIELDS = tuple(f.name for f in dataclasses.fields(NamedCompound))
+# Read off the dataclasses themselves rather than hardcoded, so an attribute
+# added to either later shows up in the dump on its own — this script must not
+# depend on a field that does not exist yet, and must not need editing when one
+# is added.
+#
+# TWO ROUTES, ONE FILE, ONE HEADER. `extract_names` returns `NamedCompound`
+# (prose/headings) and `extract_table_names` returns `TableName` (table cells).
+# They are different shapes: `TableName` carries `raw_cell` / `dewrap` /
+# `table_id` / `row_index` / `column_index` / `column_signal` and no `start` or
+# `cid_clash`; `NamedCompound` is the reverse. The header is their UNION,
+# `NamedCompound`'s field order first so an existing consumer's column
+# positions do not move, and the row writer below already fills a field a
+# record does not carry with "" (`getattr(rec, f, "")`).
+#
+# NOT a second artifact and NOT a second file. `source` ("description" /
+# "table") is what tells the two apart, and the manifest tallies it — see
+# `dump()`. Splitting them into two TSVs is exactly the shape the module
+# docstring above forbids.
+STRUCT_FIELDS = tuple(dict.fromkeys(
+    [f.name for f in dataclasses.fields(NamedCompound)]
+    + [f.name for f in dataclasses.fields(TableName)]))
 
 
 def _xml(pid: str) -> str:
@@ -144,11 +180,13 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
 
     Overwrites both. DUMP_PATH is one row per measurement, every field the
     reader carries and nothing derived — no unit conversion, no pivot, no name
-    resolution. STRUCT_PATH is one row per distinct structure OPSIN resolved
-    from the patent's own prose, gated on `config.IUPAC_NAMES` and otherwise
-    untouched — no merge with DUMP_PATH, no cid join. What a later stage needs
-    that is not here is a signal the READER (or `extract_names`) should carry
-    it, not that this script should compute it.
+    resolution. STRUCT_PATH is one row per structure the two identity routes
+    resolved out of the patent — `extract_names` over prose and headings,
+    `extract_table_names` over table cells — gated on `config.IUPAC_NAMES` and
+    otherwise untouched: no merge with DUMP_PATH, no cid join, and no dedup
+    BETWEEN the two routes. What a later stage needs that is not here is a
+    signal the READER (or one of the two extractors) should carry it, not that
+    this script should compute it.
 
     HEALING RUNS PER PATENT, not as a batch afterwards. `repair_patent` takes
     one document, finds ITS gaps against ITS own baseline, and returns
@@ -165,7 +203,7 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
     DUMP_PATH.parent.mkdir(parents=True, exist_ok=True)
     STRUCT_PATH.parent.mkdir(parents=True, exist_ok=True)
     lib = RuleLibrary() if heal else None
-    n = n_struct = 0
+    n = n_struct = n_repaired = 0
     done: list[str] = []
     recovered_total = adopted_total = gaps_total = 0
     struct_sources: Counter = Counter()
@@ -226,12 +264,40 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                     # which a corpus-scale run does not keep.
                     losses.record("extract_names_exception", pid, error=repr(e))
                     names = []
-                for nc in names:
+                # THE SECOND IDENTITY ROUTE, over the same XML — the table
+                # cells `uspto_xml.description_text` drops wholesale before
+                # `extract_names` ever sees them. Its own try/except for the
+                # same reason as above: neither identity route may be able to
+                # cost the other one its rows, and neither may cost the assay
+                # dump anything.
+                #
+                # NOT DEDUPED AGAINST `names`, deliberately. A table row
+                # carries the patent's own row id (`cid`) and its table
+                # coordinates; a description row carries a text offset and an
+                # anchored id. Where both routes read the same structure, that
+                # is two independent pieces of evidence for it, and collapsing
+                # them would throw away whichever provenance lost the coin
+                # toss. `source` distinguishes them and `structures_sources`
+                # in the manifest counts them.
+                try:
+                    tnames = extract_table_names(xml, pid)
+                except Exception as e:
+                    print(f"  {pid}: table_names failed ({e})")
+                    losses.record("extract_table_names_exception", pid, error=repr(e))
+                    tnames = []
+                for nc in [*names, *tnames]:
                     vals = [str(getattr(nc, f, "") if getattr(nc, f, None) is not None else "")
                             .replace("\t", " ").replace("\n", " ") for f in STRUCT_FIELDS]
                     sfh.write("\t".join(vals) + "\n")
                     n_struct += 1
                     struct_sources[getattr(nc, "source", None) or "unknown"] += 1
+                    # `name_repair` is the only thing that sets `.repair`, on
+                    # either dataclass. Counting it here is what makes "the
+                    # repair tier ran and confirmed N structures" readable off
+                    # the manifest instead of only off a log line — the same
+                    # reason `self_heal` is recorded for the assay tier.
+                    if getattr(nc, "repair", ""):
+                        n_repaired += 1
             else:
                 # THE BIGGEST LOSS POINT IN THIS FILE: `IUPAC_NAMES` defaults
                 # OFF (`core/config.py`), so a plain `verify.dump()` call
@@ -286,6 +352,13 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
         "structures_rows": n_struct,
         "structures_fields": list(STRUCT_FIELDS),
         "structures_sources": dict(struct_sources),
+        # HOW MANY OF THOSE ROWS EXIST ONLY BECAUSE OF A CONFIRMED TEXT
+        # REPAIR (`sources/name_repair.py`, either route). 0 here with a
+        # non-zero `structures_rows` means the repair tier ran and confirmed
+        # nothing — which is its normal answer on a cleanly typeset patent —
+        # and is not the same as it never running. Sits beside
+        # `rules_adopted` for the same reason that one does.
+        "structures_repaired": n_repaired,
         # THE LOSS LOG — see `sources/losses.py`. `loss_log` is the path (so
         # a consumer never has to guess it, same rule as `dump`/`structures`
         # above); `loss_counts` is `loss_type -> row count` for this exact
@@ -303,6 +376,9 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
         print("self-heal OFF (SELF_HEAL=0) — reader only, $0")
     if config.IUPAC_NAMES:
         print(f"wrote {n_struct:,} structures for {len(done)} patent(s) -> {STRUCT_PATH}")
+        print("  by source: " + ", ".join(
+            f"{s}={c:,}" for s, c in sorted(struct_sources.items()))
+            + f"   repaired={n_repaired:,}")
     else:
         print("iupac_names OFF (IUPAC_NAMES=0) — no structures dump")
     if loss_counts:

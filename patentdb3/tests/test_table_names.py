@@ -398,3 +398,170 @@ def test_us10376513_measured_residue():
         pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
     cids = {o.cid for o in out}
     assert cids == {"291"}, sorted(c for c in cids if c)
+
+
+# ── the rescue stage: `name_repair` on what dewrapping could not save ─────
+#
+# The composition ORDER between this module's dewrap and `name_repair`'s
+# character/bracket repair was measured over the full 137-patent cached
+# corpus, on the 16,054 name-column cells no dewrap variant resolves:
+#
+#     A  repair-then-dewrap   206,846 OPSIN candidates   18 cells recovered
+#     B  dewrap-then-repair   206,785 OPSIN candidates   18 cells recovered
+#
+# same 18 cells, byte-identical accepted string and SMILES. Order B ships.
+# The tests below lock in the mechanism (who gets asked), the reason the two
+# orders agree (bracket-stack site detection is whitespace-blind), one real
+# recovery, and the out-of-scope defect that still blocks the module
+# docstring's own worked example.
+
+def test_rescue_is_asked_only_about_cells_no_dewrap_resolved(monkeypatch):
+    """`name_repair` must never see a cell that already parsed. It is not a
+    correctness question — `repair_names` short-circuits on an original that
+    parses — but a cost one: asking about every cell instead of the residue
+    would multiply this module's OPSIN volume by the ~24,000 cells that do
+    not need it. Pure: `_repair_names` is stubbed, so no OPSIN runs for the
+    rescue half."""
+    pytest.importorskip("py2opsin")
+    asked: list[str] = []
+
+    def spy(names, document_text="", patent_id=""):
+        asked.extend(names)
+        return [None] * len(names)
+
+    monkeypatch.setattr("patentdb3.sources.table_names._repair_names", spy)
+    # Row 2's `qqqphenyl` is a nonsense morpheme OPSIN cannot read, chosen
+    # over a mismatched bracket on purpose: OPSIN treats `]`/`}`/`)` far more
+    # interchangeably than expected (the same leniency behind `name_repair`'s
+    # refused Form E), so a bracket-typo cell parses anyway and would prove
+    # nothing about which cells reach the rescue stage.
+    xml = _table_xml(
+        "<row><entry>1</entry><entry>4-(4-chlorophenyl)-1-methylpiperidine</entry></row>"
+        "<row><entry>2</entry><entry>4-(4-qqqphenyl)-1-methylpiperidine</entry></row>",
+        cols=2, header_xml="<entry>No.</entry><entry>Name</entry>")
+    out = _extract(xml)
+    if not out:
+        pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
+    assert [o.cid for o in out] == ["1"]
+    assert asked, "the rescue stage never ran on the unresolved cell"
+    assert all("qqqphenyl" in a for a in asked), asked
+
+
+def test_a_cell_that_parses_on_its_own_carries_no_repair_marker():
+    """`.repair` is provenance, and provenance that fires on a clean cell is
+    worse than none — the manifest counts this field."""
+    xml = _table_xml(
+        "<row><entry>1</entry><entry>4-(4-chlorophenyl)-1-methylpiperidine</entry></row>",
+        cols=2, header_xml="<entry>No.</entry><entry>Name</entry>")
+    out = _extract(xml)
+    if not out:
+        pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
+    assert [o.repair for o in out] == [""]
+
+
+def test_bracket_stack_sites_are_whitespace_blind():
+    """WHY THE TWO ORDERS AGREE, asserted rather than asserted-about.
+
+    All 18 corpus recoveries come from `name_repair`'s bracket-stack patterns
+    (`stray_opening_bracket` 14, `stray_closing_bracket` 3,
+    `dropped_close_bracket` 1). Those scanners count brackets and never look
+    at whitespace, so dewrapping before or after them finds the SAME bracket
+    characters — which is why order A and order B recovered the same cells
+    and the same strings. Shown here on the real US10172859 cell that
+    recovers, with no OPSIN needed.
+
+    WHAT IS *NOT* CLAIMED: that the two orders generate identical candidate
+    SETS. They do not, and the difference is entirely `dropped_close_bracket`,
+    whose fix scans a fixed 60-CHARACTER window after the opener — a window
+    that reaches further into real content once spaces are gone, so order B
+    proposes insertion offsets order A never sees (this is why the corpus
+    counts differ at all: 206,846 vs 206,785). Measured: none of those
+    extra offsets ever produced a confirmed repair.
+    """
+    from patentdb3.sources.name_repair import (
+        _normalize_ws, _unmatched_closers, _unmatched_openers,
+        generate_candidates)
+
+    raw = ("[4-Fluoro-3-(5-fluoro- 7-morpholin-4-yl- quinazolin-4-yl- phenyl]-"
+           "(3-methyl- pyrazin-2-yl)- methanol")
+    flat = _normalize_ws(raw)
+    for scan in (_unmatched_openers, _unmatched_closers):
+        assert ([raw[s] for s, _ in scan(raw)]
+                == [flat[s] for s, _ in scan(flat)]), scan.__name__
+
+    delete_only = {"stray_opening_bracket", "stray_closing_bracket"}
+    order_a = {_normalize_ws(dw)
+               for rc in generate_candidates(raw) if rc.pattern_id in delete_only
+               for _, dw in dewrap_candidates(rc.repaired)}
+    order_b = {_normalize_ws(rc.repaired)
+               for _, dw in dewrap_candidates(raw)
+               for rc in generate_candidates(dw) if rc.pattern_id in delete_only}
+    assert order_a == order_b
+    assert order_a, "no repair candidate generated for the known corpus case"
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_us10172859_rescues_exactly_the_measured_cell():
+    """The one real recovery in this patent, measured against the cached XML:
+    cid 268's cell opens with a `[` that nothing closes. `name_repair`'s
+    `stray_opening_bracket` deletes it, OPSIN accepts the result, and the
+    corrected fragment is found verbatim elsewhere in US10172859's own text —
+    so it is `corroborated`, not accepted on OPSIN alone. Locked in as the
+    regression case for the rescue stage's wiring: if this drops to zero the
+    stage has become unreachable, which an import graph cannot tell you.
+    """
+    out = _extract(_xml("US10172859"), "US10172859")
+    if not out:
+        pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
+    rescued = [o for o in out if o.repair]
+    assert len(rescued) == 1, [(o.cid, o.repair) for o in rescued]
+    tn = rescued[0]
+    assert tn.repair == "stray_opening_bracket"
+    assert tn.cid == "268"
+    assert not tn.name.startswith("[")
+    assert tn.raw_cell.startswith("[")
+    assert tn.smiles
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_cid_69_is_still_blocked_by_the_out_of_scope_footnote_digit():
+    """THE MODULE DOCSTRING'S OWN WORKED EXAMPLE, AND IT STILL DOES NOT
+    RESOLVE — deliberately.
+
+    US10376513's cid 69 cell carries THREE defects at once: line-wrap spaces
+    (this module's), `chloro` written `eyloro` (`name_repair.ch_as_ey`'s one
+    confirmed corpus case), and a footnote digit fused onto the tail
+    (`propan-2-ol2`, from `<sup>2</sup>` losing its tags) which is
+    deliberately out of scope for BOTH modules. Measured against the cached
+    XML: TARGETED removes every embedded space, `ch_as_ey` proposes the
+    `eyloro` fix, and the result still fails OPSIN purely on the trailing
+    `2`. That is why `ch_as_ey` contributes 0 of the corpus's 18 rescues.
+
+    This asserts the ABSENCE stays an absence. If a later change makes cid 69
+    resolve, it has either reached into the footnote-digit family (which is
+    owned elsewhere and must not be special-cased here) or accepted a
+    structure for a name the patent never spelled — either way, re-measure
+    before editing this test.
+    """
+    from patentdb3.sources.name_repair import generate_candidates
+    from patentdb3.sources.opsin import batch as opsin_batch
+
+    pytest.importorskip("py2opsin")
+    raw = ("(2R)-1-(3-{3-[1-(4-Amino-3- methyl-1H-pyrazolo[3,4- d]pyrimidin-1-"
+           "yl)ethyl]-5-eyloro-6- fluoro-2-methoxyphenyl}azetidin- 1-yl)"
+           "propan-2-ol2")
+    tried = [dw for _, dw in dewrap_candidates(raw)]
+    tried += [rc.repaired for _, dw in dewrap_candidates(raw)
+              for rc in generate_candidates(dw)]
+    assert any("chloro" in t for t in tried), (
+        "ch_as_ey no longer proposes the fix this test is about")
+    smiles = opsin_batch(tried, "SMILES", "US10376513")
+    if len(smiles) != len(tried):
+        pytest.skip("OPSIN refused the batch — treat as unavailable")
+    assert not any(smiles), (
+        "cid 69 now resolves — the footnote digit is out of scope for this "
+        "module; re-measure before changing this assertion")
+
+    out = _extract(_xml("US10376513"), "US10376513")
+    if out:
+        assert "69" not in {o.cid for o in out}

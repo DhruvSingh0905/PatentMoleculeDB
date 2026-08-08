@@ -21,19 +21,21 @@ The patent names its compounds in text, and those names carry the patent's own
 numbering by construction — they sit in the patent's own prose, so nothing has
 to be bridged afterwards. Measured by running THIS module, not by a probe:
 
-    patent        distinct structures    names >=45 chars
-    US8952177             238                  180
-    US10214537          1,018                  887
-    US10544143            222                  165
+    patent        distinct structures    names >=45 chars    with a cid
+    US8952177             328                  270              183
+    US10214537          1,058                  920              789
+    US10544143            289                  232              179
 
 For scale: US10544143's Google Patents path produced 237 compounds. Reading the
-patent's own text produces 222 of them, offline and at $0.
+patent's own text produces 289 of them, offline and at $0.
 
-(An earlier version of this paragraph said "150 / 850 / 328". Those were counts
-from a crude throwaway regex used to test whether names were present AT ALL,
-written before this module existed, and they undercounted it. A docs pass
-caught the contradiction by re-running the code rather than trusting the
-comment — which is the only reason it was found.)
+(Two earlier versions of this paragraph were wrong, in the same way, and both
+were caught by re-running the code rather than by reading it. The first said
+"150 / 850 / 328" — counts from a crude throwaway regex written before this
+module existed. The second said "238 / 1,018 / 222", which was correct when
+written and went stale the moment `<heading>` text was folded into the corpus.
+A number in a comment is a claim about a version of the code, and it does not
+update itself.)
 
 THE HARD PART IS NOT NOMENCLATURE, IT IS BOUNDARIES
 ---------------------------------------------------
@@ -69,6 +71,114 @@ a table of R-groups, the R-groups are often text (`Me`, `Et`, `3-CH3`) but the
 scaffold is an image, and no name can be composed without it. Those compounds
 are simply absent from this module's output, and that absence is visible rather
 than papered over.
+
+REPAIRED NAMES — A SECOND CHANCE FOR A SEED THAT PARSED AS NOTHING
+--------------------------------------------------------------------
+The patent's own grant XML is corrupted in five confirmed ways that defeat
+OPSIN on names that are otherwise well formed (`sources/name_repair.py`; a
+dropped `(`, `(` written as `1-`, `ch` written as `ey`, a stray bracket, a
+dropped closer). Every seed position where NO variant parsed now gets one
+more attempt: the longest variant generated there is handed to
+`name_repair.repair_names`, which returns only what it can CONFIRM — OPSIN
+acceptance, plus, for every pattern but `dropped_open_paren`, the corrected
+fragment occurring VERBATIM elsewhere in the same document. Nothing is
+guessed and nothing unconfirmed reaches the output; a confirmed structure
+carries `.repair` (the pattern id) so it can always be told apart from one
+the patent's text produced as published.
+
+Directly measured by running this function with and without the stage (the
+stage stubbed to return nothing, everything else untouched):
+
+    patent        structures off -> on   rows carrying .repair
+    US8952177          324 -> 328                4
+    US10214537       1,043 -> 1,043              0
+    US10544143         230 -> 230                0
+    137 patents     54,206 -> 54,273            79
+
+US8952177's four are two `digit_for_paren` (its cids 92 and 105 — the only two
+instances of that corruption anywhere in the 137-patent corpus, both
+independently checked against the reference CSV's InChIKeys) and two
+`stray_opening_bracket`. Corpus-wide the 79 repaired rows net **+67**
+structures, not +79: the other 12 resolve to a structure some other span in
+the same patent already produced, and the InChIKey dedup below collapses them
+— US10544143's one confirmed repair (`azetidin-3-yl)carbamate` ->
+`azetidin-3-ylcarbamate`) is exactly that case, which is why its row reads
+230 -> 230 rather than 230 -> 231.
+
+Every recovery is purely additive: **0 structures lost** on any patent, and
+US8952177's anchor count and clash count are both unchanged (183 and 1).
+
+The stage is not free: 299,362 OPSIN candidates corpus-wide against the base
+route's 687,470, for 67 structures. It runs anyway because those 67 are
+confirmed rather than plausible, and OPSIN is a local java subprocess — the
+cost is CPU, not dollars. None of the 67 anchors to a compound id: the repaired
+spelling does not occur in the document, so `find_cid` has nothing to search
+for. They are structures, not joins.
+
+A HEADING HAS NO BOUNDARY PROBLEM
+-----------------------------------
+Everything above — seeds, twelve variants per seed, bracket balancing, leading
+prose stripped one token at a time — exists because 63.8% of OPSIN's failures
+in RUNNING PROSE are boundary errors. A `<heading>` is not running prose. The
+patent has already declared where the name starts (right after `Example 43:`)
+and where it stops (the end of the element). **Seeding a heading is solving a
+problem the heading does not have**, and it actively causes one: `_SEED`'s
+character class has no space in it, so `tert-butyl 4-(...)carboxylate` breaks
+in two and neither half is a compound.
+
+So headings get their own pass (`_heading_structures`), which hands OPSIN the
+whole thing. Three transformations, least invasive first, in one batch, with
+what each is worth over all 137 cached patents:
+
+    as_is_whole    the heading's name text as published              1,027
+    dewrap_whole   the same with `dewrap.targeted` applied — the SAME    137
+                   line-wrap space `table_names` was written for, in
+                   headings rather than table cells
+    dewrap_seeded  the dewrapped text put back through `_SEED`/           12
+                   `_variants`, for a heading whose framing this
+                   module's strip did not fully remove
+
+Population: **9,836** compound-asserting headings. Resolved — some accepted
+name a contiguous alphanumeric sub-piece of the heading covering >=90% of it —
+goes **6,013 -> 6,944**, i.e. misses **3,823 -> 2,892, down 24.4%**. Structures
+go **54,273 -> 55,434 (+1,176)**, with **0 lost on any patent**, **1,176 of
+1,176 carrying a compound id**, 676 of those ids also appearing in
+`uspto_assays`'s own cids for the same patent, and none labelled a reagent.
+
+Framing comes off first (`_heading_texts`): the id token, a leading
+`Synthesis of` / `Preparation of` / `General Procedure` / `Step N`, and a
+TRAILING parenthetical cross-reference (`(Compound 2)`, `(Isomer 1)`). Getting
+this wrong is not neutral — leaving `of Compound 1:` on the front hands OPSIN a
+string this code broke, and any recovery measured against it credits the wrong
+mechanism.
+
+**The precision gate is coverage, not OPSIN.** `_coverage` is the accepted
+string's alphanumeric length over the heading's own, and a candidate below
+`_COVERAGE_MIN` is refused however cleanly it parses. OPSIN acceptance cannot
+tell a repair from an AMPUTATION: splitting a heading on its commas and
+keeping the last fragment yields a real, well-formed molecule for ~106
+headings corpus-wide at a median coverage of 0.14 — `nicotinamide` extracted
+from `5-(4-((1R,5S)-3-azabicyclo[3.1.0]hexan-1-yl)phenyl)-2-amino-N-((1r,4R)-
+4-hydroxycyclohexyl)nicotinamide` and reported as a recovery. Commas in an
+IUPAC name are locant separators. **Nothing here splits on punctuation**, and
+`test_iupac_reagent_markush.py` holds that exact string as the counter-example.
+
+Measured on a 5-patent sample, the gate refused **486** candidates, every one
+of them from `dewrap_seeded`, median refused coverage 0.82. `as_is_whole` and
+`dewrap_whole` score 1.00 by construction, so the gate exists solely to police
+the seeded transformation — which is also the one contributing 12 of the 1,176.
+
+The route runs LAST and only ADDS: it is handed `extract_names`'s own dedup
+set, so a heading whose name the prose pass already resolved contributes
+nothing, and turning it on cannot cost the prose route a structure. That is a
+property of the construction, not a hope confirmed by measurement afterwards.
+
+A heading-sourced structure takes its `cid` from the heading itself
+(`uspto_assays.normalize_cid` of the id token) rather than from
+`anchor.find_cid`'s proximity search — the patent wrote the number and the
+name inside one element, so there is nothing to infer and no distance to
+weigh. `.source` is `"heading"` and `.start` is `-1`, because it has no
+description-text offset.
 
 REAGENT LABEL AND MARKUSH FLAG — TWO FIELDS, NOT ONE, AND WHY
 ---------------------------------------------------------------
@@ -123,8 +233,12 @@ from .opsin import batch as _opsin_batch_shared
 from . import losses as _losses
 from .anchor import anchor_text as _anchor_text
 from .anchor import find_cid as _find_cid
+from .dewrap import targeted as _dewrap_targeted
+from .name_repair import repair_names as _repair_names
 from .reagents import ReagentVerdict as _ReagentVerdict
 from .reagents import classify as _classify_reagent
+from .uspto_assays import normalize_cid as _normalize_cid
+from .uspto_xml import description_text as _description_text
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +292,68 @@ _LEAD_JUNK = re.compile(
 
 _OPEN = {"(": ")", "[": "]", "{": "}"}
 _CLOSE = {v: k for k, v in _OPEN.items()}
+
+
+# ---------------------------------------------------------------------------
+# THE HEADING ROUTE — see "A HEADING HAS NO BOUNDARY PROBLEM" in the module
+# docstring. Everything below is about ONE `<heading>` element at a time: peel
+# the framing the patent wrote around the name, hand OPSIN what is left, and
+# accept only what covers the heading's own name text.
+
+_HEADING_EL = re.compile(r"<heading\b[^>]*>(.*?)</heading>", re.S)
+
+# The id token the heading opens with. This is BOTH the framing to strip and
+# the compound number the recovered structure belongs to — the reason a
+# heading is worth reading separately at all. `\d` is required somewhere in
+# the token so a section title ("Examples", "Preparation of Intermediates")
+# does not read as a compound assertion.
+# `[A-Za-z]{0,3}[-–.]?\d...` so `I-20` and `5A-1` both read as one token: a
+# patent's own numbering routinely carries a letter series prefix, and losing
+# it would key the structure to a compound that exists but is a different one.
+_HEADING_ID = re.compile(
+    r"^(?:reference\s+|comparative\s+)?"
+    r"(?:examples?|intermediates?|compounds?|preparations?)\s*"
+    r"(?:no\.?\s*)?([A-Za-z]{0,3}[-–.]?\d[\w.\-–]*?)\s*[:.)\-–—]?\s+",
+    re.I)
+
+# Leading framing clauses, each observed on a real heading in this corpus.
+# Applied repeatedly because they stack ("Alternative Preparation of Step 2").
+_FRAMING_LEAD = re.compile(
+    r"^(?:(?:alternative\s+|general\s+)?"
+    r"(?:synthes[ie]s|preparation|procedure|method|route|scheme)\s+(?:of|for)\s+"
+    r"|general\s+procedure[:.\-–\s]+"
+    r"|step\s*\d+[a-z]?\s*[:.)\-–]?\s+"
+    r"|title\s+compound\s*[:.)\-–]?\s+)", re.I)
+
+# A TRAILING parenthetical label — `(Compound 2)`, `(Example 5A)`,
+# `(Isomer 1)`. Not part of the name; it is the patent cross-referencing its
+# own numbering. Anything else in trailing parens is left alone, because a
+# real name ends in parens often enough that a blanket strip would amputate.
+_FRAMING_TAIL = re.compile(
+    r"\s*\((?:compound|example|intermediate|isomer|enantiomer|diastereomer|"
+    r"peak|step|salt|free\s+base)\b[^()]*\)\s*$", re.I)
+
+_TAG = re.compile(r"<[^>]+>")
+_ENTITY = {"&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&apos;": "'"}
+
+# Shortest residual worth asking about. A heading whose name text is shorter
+# than this is a section title, not a compound.
+_HEADING_MIN = 20
+
+# THE PRECISION GATE, and it is not OPSIN. `coverage` is the length of the
+# ACCEPTED string over the length of the heading's own name text, comparing
+# alphanumerics only so a dewrap is not penalised for deleting the spaces it
+# was applied to remove. It exists because OPSIN acceptance alone cannot tell
+# a repair from an AMPUTATION: splitting the heading on its commas and keeping
+# the last fragment recovers a real, well-formed molecule for ~106 headings
+# corpus-wide at a median coverage of 0.14 — `nicotinamide` pulled out of
+# `5-(4-((1R,5S)-3-azabicyclo[3.1.0]hexan-1-yl)phenyl)-2-amino-N-((1r,4R)-4-
+# hydroxycyclohexyl)nicotinamide` and reported as a recovery. A comma in an
+# IUPAC name is a locant separator; the terminal fragment after one parses
+# perfectly and is a different compound. Nothing here splits on punctuation,
+# and this ratio is what would catch it if something did.
+_COVERAGE_MIN = 0.9
+_ALNUM = re.compile(r"[^0-9A-Za-z]+")
 
 
 def _balance_right(s: str) -> str | None:
@@ -288,6 +464,69 @@ def _variants(text: str, start: int, end: int, patent_id: str = "") -> list[str]
     return result
 
 
+def _heading_texts(xml: str) -> list[tuple[str, str]]:
+    """`[(compound id, name text), ...]` for every heading that ASSERTS one of
+    the patent's own compounds — its id token, then enough residual text to be
+    a name. Framing is peeled here and nowhere else.
+
+    Every clause `_FRAMING_LEAD` / `_FRAMING_TAIL` removes was observed on a
+    real heading in the cached corpus. Getting this wrong is not a neutral
+    error in either direction: leaving `of Compound 1:` on the front hands
+    OPSIN a string this code introduced the defect into, and any recovery
+    measured against it credits the wrong mechanism.
+    """
+    out: list[tuple[str, str]] = []
+    for m in _HEADING_EL.finditer(xml):
+        txt = _TAG.sub("", m.group(1))
+        for ent, ch in _ENTITY.items():
+            txt = txt.replace(ent, ch)
+        txt = re.sub(r"\s+", " ", txt).strip()
+        idm = _HEADING_ID.match(txt)
+        if not idm:
+            continue
+        name = txt[idm.end():]
+        while True:
+            stripped = _FRAMING_LEAD.sub("", name, count=1)
+            if stripped == name:
+                break
+            name = stripped
+        name = _FRAMING_TAIL.sub("", name).strip().strip(":;,. ")
+        if len(name) < _HEADING_MIN:
+            continue
+        out.append((idm.group(1), name))
+    return out
+
+
+def _coverage(accepted: str, name_text: str) -> float:
+    """How much of the heading's own name text `accepted` actually is.
+
+    Non-alphanumerics are dropped from BOTH sides so a dewrap (which deletes
+    spaces) scores 1.00 rather than being punished for doing its job, while an
+    amputation — a fragment after a comma, a trimmed `-2-yl` — still scores
+    the fraction it actually kept.
+
+    CONTAINMENT IS PART OF THE MEASURE, not an assumption about the caller.
+    A bare length ratio says nothing about whether the two strings are related:
+    an unrelated prose name that happens to be about as long as the heading
+    scores 1.00 against it. That is not hypothetical — it is what a first
+    version of this project's own before/after measurement did, and it read as
+    "the prose route already covers 9,484 of 9,836 headings" when the truth was
+    that a length ratio had been computed between two different molecules
+    (checked directly on US10544143 cid 1C: `tert-butyl 5-bromo-3-isopropyl-1H-
+    pyrrolo[3,2-b]pyridine-1-carboxylate` scored 1.00 against a triazolopyridine
+    from elsewhere in the document). Requiring `accepted` to be a contiguous
+    alphanumeric sub-piece of `name_text` cannot change what
+    `_heading_structures` accepts — every candidate it generates is derived
+    from the heading text by deleting characters — but it makes the number mean
+    what it says when anything else reads it.
+    """
+    hay = _ALNUM.sub("", name_text)
+    got = _ALNUM.sub("", accepted)
+    if not hay or not got or got not in hay:
+        return 0.0
+    return len(got) / len(hay)
+
+
 @dataclass
 class NamedCompound:
     """A name the patent states, resolved to a structure by OPSIN."""
@@ -321,6 +560,21 @@ class NamedCompound:
     # never by `reagents.classify`.
     markush: bool = False
     markush_reason: str = ""
+    # `sources/name_repair.py`'s pattern id when this structure exists only
+    # because a CONFIRMED text repair was applied to a span OPSIN rejected;
+    # "" (the overwhelming majority) when the patent's own text parsed as
+    # published. Never a guess: a repair reaches this field only after OPSIN
+    # accepts it AND — for every pattern but `dropped_open_paren` — the
+    # corrected fragment is found verbatim elsewhere in the same document.
+    # See "REPAIRED NAMES" in the module docstring.
+    repair: str = ""
+    # Which heading transformation produced this structure, for a
+    # `source == "heading"` row only: "as_is_whole" | "dewrap_whole" |
+    # "dewrap_seeded". "" on every prose-seeded row. See "A HEADING HAS NO
+    # BOUNDARY PROBLEM" — the three are measured separately because they cost
+    # different amounts of trust, and an undifferentiated total would hide
+    # which one is carrying the recovery.
+    heading_transform: str = ""
 
     @property
     def key(self) -> str:
@@ -358,6 +612,112 @@ def _opsin(names: list[str], fmt: str, patent_id: str = "") -> list[str]:
     """
     return _opsin_batch_shared(names, fmt, patent_id)
 
+
+
+def _heading_structures(xml: str, patent_id: str,
+                        seen: set[str]) -> list[NamedCompound]:
+    """Structures read from headings, whole, skipping anything already found.
+
+    THREE TRANSFORMATIONS, LEAST INVASIVE FIRST, OPSIN AND COVERAGE DECIDING
+    BETWEEN THEM — the same shape `dewrap_candidates` uses on a table cell:
+
+      as_is_whole    the heading's name text, untouched
+      dewrap_whole   the same, with `dewrap.targeted` applied
+      dewrap_seeded  the dewrapped text seeded and fanned out by `_variants`,
+                     i.e. the ordinary prose machinery, for a heading whose
+                     framing this module's strip did not fully remove
+
+    `seen` is `extract_names`'s own dedup set, passed in and NOT copied: this
+    route is a SUPPLEMENT and may only ever add. A heading whose name the
+    seeded pass already resolved contributes nothing here, which is why
+    turning this route on cannot cost the description route a structure —
+    a property worth having by construction rather than by measurement.
+
+    Two OPSIN batches for the whole document, the same two-stage pattern the
+    prose route uses.
+    """
+    heads = _heading_texts(xml)
+    if not heads:
+        return []
+
+    plan: list[tuple[int, str, str]] = []      # (heading idx, transformation, candidate)
+    for i, (_, name) in enumerate(heads):
+        plan.append((i, "as_is_whole", name))
+        flat = _dewrap_targeted(name)
+        if flat != name:
+            plan.append((i, "dewrap_whole", flat))
+        for m in _SEED.finditer(flat):
+            g = m.group(0)
+            if not (re.search(r"[a-z]{3}", g) and re.search(r"[\d\[\(\-]", g)):
+                continue
+            for v in _variants(flat, m.start(), m.end(), patent_id):
+                plan.append((i, "dewrap_seeded", v))
+
+    smiles = _opsin([c for _, _, c in plan], "SMILES", patent_id)
+
+    # First transformation that BOTH parses and covers the heading's own name
+    # text. Ordering is positional (the plan is built least-invasive first),
+    # and within `dewrap_seeded` the longest covering span wins — the same
+    # tie-break the prose route applies per seed position.
+    best: dict[int, tuple[str, str, str]] = {}     # i -> (kind, name, smiles)
+    for (i, kind, cand), smi in zip(plan, smiles):
+        if not smi:
+            continue
+        cov = _coverage(cand, heads[i][1])
+        if cov < _COVERAGE_MIN:
+            if _losses.ENABLED:
+                _losses.record("heading_coverage_too_low", patent_id,
+                                cid=heads[i][0], heading=heads[i][1],
+                                candidate=cand, transformation=kind,
+                                coverage=round(cov, 3), floor=_COVERAGE_MIN)
+            continue
+        cur = best.get(i)
+        if cur is None or (cur[0] == kind and len(cand) > len(cur[1])):
+            best[i] = (kind, cand, smi)
+    if not best:
+        return []
+
+    idxs = sorted(best)
+    keys = _opsin([best[i][1] for i in idxs], "StdInChIKey", patent_id)
+
+    out: list[NamedCompound] = []
+    for i, ik in zip(idxs, keys):
+        kind, name, smi = best[i]
+        stereo = _RELATIVE_STEREO.findall(name)
+        is_markush = bool(stereo)
+        # SAME RULE AS THE PROSE ROUTE, and for the same reason: a relative-
+        # stereo name denotes a SET, so a single-structure identifier is a
+        # false claim about it. See `extract_names`.
+        if is_markush:
+            ik = ""
+        k = ("markush::" if is_markush else "") + (ik or smi)
+        if k in seen:
+            continue
+        seen.add(k)
+        try:
+            verdict = _classify_reagent(name, smi)
+        except Exception as e:
+            if _losses.ENABLED:
+                _losses.record("reagent_classify_exception", patent_id,
+                                name=name, smiles=smi, error=repr(e))
+            verdict = _ReagentVerdict(label="compound", reason="")
+        out.append(NamedCompound(
+            patent_id=patent_id, name=name, smiles=smi, inchikey=ik, start=-1,
+            source="heading",
+            # THE COMPOUND NUMBER COMES FROM THE HEADING ITSELF, not from
+            # `anchor.find_cid`'s proximity search — the patent wrote the id
+            # and the name in one element, so there is nothing to infer and
+            # no distance to weigh. `normalize_cid` is `uspto_assays`'s own
+            # canonical form, so this id lands on the same compound the assay
+            # rows are keyed by.
+            cid=_normalize_cid(heads[i][0]) or None,
+            label=verdict.label, reason=verdict.reason,
+            markush=is_markush,
+            markush_reason=("relative_stereo:" + ",".join(stereo)) if stereo else "",
+            heading_transform=kind))
+    logger.info("iupac: %s — %d compound-asserting heading(s), %d NEW structure(s)",
+                patent_id, len(heads), len(out))
+    return out
 
 
 def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
@@ -465,6 +825,68 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
         elif _losses.ENABLED:
             _losses.record("opsin_reject", patent_id, position=pos,
                             candidate=s, stage="smiles")
+    # 3b. THE RESCUE STAGE — `sources/name_repair.py` on the seeds where NOTHING
+    #     parsed. The patent's own grant XML is corrupted in five confirmed
+    #     ways (a dropped `(`, `(` written as `1-`, `ch` written as `ey`, a
+    #     stray bracket, a dropped closer) that defeat OPSIN on names that are
+    #     otherwise well formed; `repair_names` proposes fixes for those shapes
+    #     and returns only what it can CONFIRM — OPSIN acceptance, plus (for
+    #     every pattern but `dropped_open_paren`) the corrected fragment
+    #     occurring verbatim elsewhere in this same document.
+    #
+    #     ONE CANDIDATE PER DEAD SEED, the LONGEST variant generated there. Not
+    #     all 12: the base route's own tie-break two blocks below is "longest
+    #     accepted span per seed position wins", so the longest variant is the
+    #     string this route would have kept had it parsed, and asking about the
+    #     shorter prefixes of a span that failed only multiplies candidates
+    #     (measured: 299,362 candidates corpus-wide from the longest-only rule,
+    #     against 687,470 for the base route's whole candidate set).
+    #
+    #     `_description_text(...)`, NOT `text`, IS THE CORROBORATION CORPUS —
+    #     the one place this function deliberately pays for a second flattening
+    #     pass. `text` is `_anchor_text`, which has already had `anchor.py`'s
+    #     dropped-open-paren repair applied to it; corroborating a proposed
+    #     repair against a document THIS PACKAGE edited would let a fix confirm
+    #     against our own earlier fix. `name_repair`'s whole claim is that the
+    #     corrected spelling occurs in the patent AS PUBLISHED, so it gets the
+    #     published text and nothing else.
+    #
+    #     `IUPAC_MIN_SEED` IS RE-APPLIED to the repaired string, because a
+    #     repair can SHORTEN a name below the floor `_variants.add()` enforces
+    #     on every other candidate. Measured on US10214537 and US10544143: the
+    #     only things this rejects are NMR solvents that reached the seed stage
+    #     with a stray bracket attached — `methanol-d4)` -> `methanol-d4` (11
+    #     chars), `1,4-dioxane)` -> `1,4-dioxane` (11) — which the base route
+    #     already declines at exactly the same floor. Without it the rescue
+    #     stage would quietly re-admit what the floor exists to keep out.
+    repair_by_pos: dict[int, str] = {}
+    live = {p for p, _, _ in kept}
+    dead: dict[int, str] = {}
+    for pos, s in cands:
+        if pos in live:
+            continue
+        if pos not in dead or len(s) > len(dead[pos]):
+            dead[pos] = s
+    if dead:
+        published = _description_text(xml, include_headings=True)
+        order = sorted(dead)
+        for p, res in zip(order, _repair_names([dead[p] for p in order],
+                                               published, patent_id)):
+            if res is None:
+                continue
+            if len(res.repaired) < config.IUPAC_MIN_SEED:
+                if _losses.ENABLED:
+                    _losses.record("repair_below_seed_floor", patent_id, position=p,
+                                    original=res.original, repaired=res.repaired,
+                                    pattern=res.pattern_id,
+                                    length=len(res.repaired),
+                                    floor=config.IUPAC_MIN_SEED)
+                continue
+            kept.append((p, res.repaired, res.smiles))
+            repair_by_pos[p] = res.pattern_id
+        logger.info("iupac: %s — %d dead seed(s), %d repaired",
+                    patent_id, len(dead), len(repair_by_pos))
+
     if not kept:
         if _losses.ENABLED:
             _losses.record("no_candidates_kept", patent_id, total_candidates=len(cands))
@@ -557,7 +979,8 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
             patent_id=patent_id, name=name, smiles=smi, inchikey=ik, start=pos,
             label=verdict.label, reason=verdict.reason,
             markush=is_markush,
-            markush_reason=("relative_stereo:" + ",".join(stereo)) if stereo else ""))
+            markush_reason=("relative_stereo:" + ",".join(stereo)) if stereo else "",
+            repair=repair_by_pos.get(pos, "")))
 
     # 5. anchor each structure to the patent's OWN compound number — see
     #    `anchor.py`'s module docstring for what was measured and why.
@@ -575,6 +998,21 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
             nc.cid = result.cid
             if result.clashed:
                 nc.cid_clash = "|".join(c.cid for c in result.candidates)
+
+    # 6. THE HEADING ROUTE — runs LAST, and only adds. See
+    #    `_heading_structures` and "A HEADING HAS NO BOUNDARY PROBLEM" in the
+    #    module docstring. It is deliberately outside the anchoring loop
+    #    above: a heading-sourced structure already carries the id the patent
+    #    wrote beside it, so running `find_cid`'s proximity search over it
+    #    would replace direct evidence with an inference. Its own try/except
+    #    because it is the newest thing in this function and must not be able
+    #    to cost the prose route the structures it already resolved.
+    try:
+        out.extend(_heading_structures(xml, patent_id, seen))
+    except Exception as e:
+        if _losses.ENABLED:
+            _losses.record("heading_route_exception", patent_id, error=repr(e))
+        logger.warning("iupac: %s — heading route failed: %r", patent_id, e)
     anchored = sum(1 for nc in out if nc.cid)
     clashed = sum(1 for nc in out if nc.cid_clash)
     reagents_n = sum(1 for nc in out if nc.label == "reagent")

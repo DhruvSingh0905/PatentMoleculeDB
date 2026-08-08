@@ -153,9 +153,43 @@ unmodified `name` against OPSIN as element 0 of its own batch and returns
 `None` immediately if it already parses — a name that is not actually
 broken is never "repaired" into a different, still-valid string.
 
-It is not wired into `iupac_names.py`, `anchor.py`, or `table_names.py`.
-Those are owned elsewhere; this module exposes `repair_name` and
-`generate_candidates` for another agent to call, and touches no other file.
+It does not know its callers. Two of them now exist — `table_names.py` calls
+`repair_names` on every name-column cell no dewrap variant resolved, and
+`iupac_names.py` calls it on every description seed no variant resolved — but
+both decide FOR THEMSELVES when a name has failed and what document text to
+corroborate against. Nothing about this module changed to accommodate either
+(`PATTERNS`, `generate_candidates`, the two gates and their order are
+byte-identical); the only addition is `repair_names`, a batched form of
+`repair_name` that exists because those callers hand it thousands of names per
+patent and OPSIN is a java subprocess. See "MEASURED ON THE WIRED CALLERS"
+below for what the two together actually recover.
+
+MEASURED ON THE WIRED CALLERS
+-------------------------------
+Both callers were A/B'd by stubbing this module out and changing nothing else,
+over all 137 cached patents:
+
+    caller                     structures off -> on   rows carrying .repair
+    iupac_names.extract_names       54,206 -> 54,273           79
+    table_names.extract_table_names  8,308 ->  8,326           18
+
+The description route's 79 confirmed repairs net +67 structures; the other 12
+resolve to a structure some other span in the same patent already produced and
+are collapsed by that module's InChIKey dedup. All 18 table recoveries are
+`corroborated` — none is accepted on OPSIN alone — and they come entirely from
+the three BRACKET-STACK patterns (`stray_opening_bracket` 14,
+`stray_closing_bracket` 3, `dropped_close_bracket` 1).
+
+**`ch_as_ey` recovers nothing through either caller, and the reason is worth
+recording rather than reading as the pattern misfiring.** Its single confirmed
+corpus case, US10376513 compound #69, sits in a table cell that carries THREE
+defects at once: the line-wrap spaces `table_names` removes, the `eyloro`
+substitution this pattern fixes, and a footnote digit fused onto the tail
+(`propan-2-ol2`, from `<sup>2</sup>` losing its tags) which is deliberately
+out of scope for both modules. Measured by running the current tree on that
+exact cell: the dewrap works, this pattern's fix is proposed, and OPSIN still
+rejects the result purely on the trailing `2`. The pattern is correct; it is
+blocked downstream of itself.
 
 MEASURED FALSE-POSITIVE RATE
 ------------------------------
@@ -240,9 +274,17 @@ locale dependence:
 
 CALL SIGNATURE
 ---------------
-    from patentdb3.sources.name_repair import repair_name
+    from patentdb3.sources.name_repair import repair_name, repair_names
 
     result = repair_name(corrupted_name, document_text=patent_flat_text)
+    results = repair_names([n1, n2, ...], document_text=patent_flat_text)
+
+`repair_names` is the form both wired callers use: same gates, same registry
+order, same first-confirmed-wins, one entry per input in order, but TWO OPSIN
+subprocess launches for the whole list instead of two per name. `repair_name`
+is literally `repair_names([name], document_text)[0]`, so there is one
+implementation of the gates and no second copy to drift.
+
     if result is not None:
         # result.repaired, result.smiles, result.inchikey,
         # result.pattern_id, result.confirmation ("opsin_only" | "corroborated")
@@ -616,46 +658,89 @@ class RepairResult:
     probe: str = ""            # the corroborating text actually found; "" if none
 
 
-def repair_name(name: str, document_text: str = "") -> RepairResult | None:
-    """Repair `name` if, and only if, a candidate from `PATTERNS` can be
-    CONFIRMED — see the module docstring's "THE GOVERNING CONSTRAINT".
-    Returns `None` if nothing confirms, including when `name` was never
-    actually broken (see "WHAT THIS DOES NOT DO").
+def repair_names(names: list[str], document_text: str = "",
+                 patent_id: str = "") -> list[RepairResult | None]:
+    """`repair_name`, over a whole list, in TWO OPSIN calls instead of 2N.
+
+    Returns one entry per input, in order — `None` where nothing confirmed,
+    exactly as `repair_name` returns `None`. Every gate is the same object
+    doing the same job: `generate_candidates`, the original-parses
+    short-circuit, `PATTERNS`'s own registry/site/fix ordering,
+    `trusted or corroborated`, first-confirmed-wins. Nothing here decides
+    anything `repair_name` did not already decide; the only difference is
+    that the OPSIN calls are pooled.
+
+    WHY THIS EXISTS. OPSIN is a java subprocess: `repair_name` pays one
+    process launch per name (two, on a win). The callers wired in during
+    this task hand it thousands of names per patent — every table cell
+    `table_names` could not resolve, every description seed `iupac_names`
+    could not resolve — and at that scale per-name launches, not the parsing,
+    are the whole cost. `repair_name` is now this function at N=1, so there
+    is one implementation of the gates and no second copy to drift.
     """
-    cands = generate_candidates(name)
-    if not cands:
-        return None
+    results: list[RepairResult | None] = [None] * len(names)
 
-    # Element 0 is the ORIGINAL name, unmodified — the safety net described
-    # in the module docstring. Batched together with every candidate so this
-    # costs no extra OPSIN call.
-    batch = [name] + [c.repaired for c in cands]
-    smiles = _opsin_batch(batch, "SMILES")
-    if smiles[0]:
-        logger.info("name_repair: %r already parses; nothing to repair", name)
-        return None
-    cand_smiles = smiles[1:]
+    # ONE flat batch: for each name, the ORIGINAL (the safety net described
+    # in the module docstring) followed by its candidates. `index` records
+    # which name and which candidate each position belongs to; `-1` marks the
+    # original. Pairing stays positional, which is exactly what
+    # `sources/opsin.batch` guarantees or refuses.
+    plans: list[list[RepairCandidate]] = []
+    flat: list[str] = []
+    index: list[tuple[int, int]] = []
+    for i, name in enumerate(names):
+        cands = generate_candidates(name)
+        plans.append(cands)
+        if not cands:
+            continue
+        index.append((i, -1))
+        flat.append(name)
+        for k, c in enumerate(cands):
+            index.append((i, k))
+            flat.append(c.repaired)
+    if not flat:
+        return results
 
-    # Normalized ONCE, not per candidate — see `_normalize_ws`'s comment for
-    # why whitespace runs (line-wrap noise) are collapsed before comparing.
+    smiles = _opsin_batch(flat, "SMILES", patent_id)
+    parsed: dict[tuple[int, int], str] = {}
+    for key, smi in zip(index, smiles):
+        if smi:
+            parsed[key] = smi
+
+    # Normalized ONCE for the whole list, not per candidate — see
+    # `_normalize_ws`'s comment for why whitespace is stripped at all.
     doc_norm = _normalize_ws(document_text) if document_text else ""
 
-    for cand, smi in zip(cands, cand_smiles):
-        if not smi:
+    winners: list[tuple[int, RepairCandidate, str, bool, str]] = []
+    for i, cands in enumerate(plans):
+        if not cands:
             continue
-        pat = _PATTERNS_BY_ID[cand.pattern_id]
-        probe = _probe_window(cand.repaired, cand.span)
-        corroborated = bool(doc_norm) and _normalize_ws(probe) in doc_norm
-        if not (pat.trusted or corroborated):
+        if (i, -1) in parsed:
+            logger.info("name_repair: %r already parses; nothing to repair",
+                        names[i])
             continue
-        ik_batch = _opsin_batch([cand.repaired], "StdInChIKey")
-        ik = ik_batch[0] if ik_batch else ""
+        for k, cand in enumerate(cands):
+            smi = parsed.get((i, k))
+            if not smi:
+                continue
+            pat = _PATTERNS_BY_ID[cand.pattern_id]
+            probe = _probe_window(cand.repaired, cand.span)
+            corroborated = bool(doc_norm) and _normalize_ws(probe) in doc_norm
+            if not (pat.trusted or corroborated):
+                continue
+            winners.append((i, cand, smi, corroborated, probe))
+            break
+    if not winners:
+        return results
+
+    iks = _opsin_batch([w[1].repaired for w in winners], "StdInChIKey", patent_id)
+    for (i, cand, smi, corroborated, probe), ik in zip(winners, iks):
         logger.info(
             "name_repair: %r -> %r via %s (%s)",
-            name, cand.repaired, cand.pattern_id,
+            names[i], cand.repaired, cand.pattern_id,
             "corroborated" if corroborated else "opsin_only")
-        return RepairResult(
-            original=name,
+        results[i] = RepairResult(
+            original=names[i],
             repaired=cand.repaired,
             smiles=smi,
             inchikey=ik,
@@ -663,4 +748,18 @@ def repair_name(name: str, document_text: str = "") -> RepairResult | None:
             confirmation="corroborated" if corroborated else "opsin_only",
             probe=probe if corroborated else "",
         )
-    return None
+    return results
+
+
+def repair_name(name: str, document_text: str = "") -> RepairResult | None:
+    """Repair `name` if, and only if, a candidate from `PATTERNS` can be
+    CONFIRMED — see the module docstring's "THE GOVERNING CONSTRAINT".
+    Returns `None` if nothing confirms, including when `name` was never
+    actually broken (see "WHAT THIS DOES NOT DO").
+
+    `repair_names([name], document_text)[0]` — the single-name form of the
+    batched function above, kept because it is the readable call site and the
+    one the tests and the docstring's CALL SIGNATURE section document. It
+    holds no logic of its own, so the two forms cannot disagree.
+    """
+    return repair_names([name], document_text)[0]
