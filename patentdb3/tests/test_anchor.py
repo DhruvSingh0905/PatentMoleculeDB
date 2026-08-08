@@ -307,7 +307,7 @@ def test_extract_names_reproduces_measured_anchor_rate():
     """Locks in the headline number from this task's report: with the false-
     anchor fix (`_LEFT_GAP_OK`, the `(?<![A-Za-z0-9])` digit-run guard —
     see `anchor.py`'s "THE FALSE ANCHORS" section), US8952177 anchors 96 of
-    234 distinct structures, 0 clashed.
+    308 distinct structures, 1 clashed.
 
     234, not 238: `iupac_names.extract_names` candidate generation is owned
     by a different module (this file owns `anchor.py` only) and can drift
@@ -332,8 +332,25 @@ def test_extract_names_reproduces_measured_anchor_rate():
         pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
     anchored = sum(1 for nc in out if nc.cid)
     clashed = sum(1 for nc in out if nc.cid_clash)
-    assert len(out) == 234, (
-        f"candidate generation drifted ({len(out)} distinct structures, was 234) — "
+    assert len(out) == 308, (
+        f"candidate generation drifted ({len(out)} distinct structures, was 308) — "
         f"this module did not change it; re-measure before touching this assertion")
-    assert anchored == 96, f"anchor rate changed: {anchored}/234 (was 96/234, see anchor.py docstring)"
-    assert clashed == 0, f"clash count changed: {clashed} (was 0)"
+    # 165/308 = 53.6%. Was 96/234 = 41.0% before `description_text` began
+    # including `<heading>`. The jump is not luck: a heading pair is
+    # `Example 12` immediately followed by the name, with NOTHING between them
+    # but whitespace — exactly the shape `_LEFT_GAP_OK` was written to accept,
+    # and exactly what a prose cross-reference ("...analogous to Example 1,
+    # substituting X") is not. Heading extraction and citation rejection
+    # compound: anchors nearly doubled while clashes went 0 -> 1.
+    assert anchored == 165, f"anchor rate changed: {anchored}/308 (was 165/308, see anchor.py docstring)"
+    # ONE clash, and it is the mechanism working rather than a defect. The name
+    # is the stereo-UNDEFINED parent — `2-{1-(4-Bromobenzyl)-...}cyclohexane-
+    # carboxylic acid`, no descriptor — while Examples 1, 3, 5, 6 and 7 are its
+    # stereoisomer variants, each heading stating the same skeleton with a
+    # different descriptor. The flat name genuinely occurs beside all five, so
+    # `cid` is None and all five candidates are surfaced for reconciliation.
+    # Picking one would be a coin flip between five real compounds.
+    #
+    # Was 0 before headings entered candidate generation, only because the flat
+    # parent was not being extracted at all.
+    assert clashed == 1, f"clash count changed: {clashed} (was 1)"

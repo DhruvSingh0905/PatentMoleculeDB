@@ -378,21 +378,20 @@ def _clean_fragment(s: str) -> str:
 
 
 def anchor_text(xml: str) -> str:
-    """`description_text()`, but with `<heading>` text put back in.
+    """The heading-inclusive flattening. DELEGATES — it does not reimplement.
 
-    This is the only place a compound's own number and its name are ever
-    adjacent — see "THE RULE" in the module docstring. Tables are still
-    dropped (same reason `description_text` drops them); this corpus is used
-    for id anchoring ONLY, never for name/SMILES extraction, and callers
-    must not treat its offsets as interchangeable with `description_text`'s.
+    This used to carry its own copy of the `<description>`/`<tables>`/tag
+    regexes, identical in effect to `description_text(include_headings=True)`.
+    Two implementations of one rule drift: a fix to the tables-dropping or the
+    entity handling in one would silently not reach the other, and anchoring
+    would then be matching against a document extraction no longer produces.
+
+    Kept as a name because it says what the text is FOR, and because tests and
+    `iupac_names` both read better for it.
     """
-    m = re.search(r"<description\b[^>]*>(.*?)</description>", xml, re.S)
-    if not m:
-        return ""
-    body = m.group(1)
-    body = re.sub(r"<tables\b.*?</tables>", "\n", body, flags=re.S)
-    parts = re.findall(r"<(?:heading|p)\b[^>]*>(.*?)</(?:heading|p)>", body, re.S)
-    return "\n".join(t for t in (_clean_fragment(p) for p in parts) if t)
+    from .uspto_xml import description_text
+
+    return description_text(xml, include_headings=True)
 
 
 @dataclass(frozen=True)

@@ -339,7 +339,21 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
     # like a broken extractor rather than a disabled route. A pure function
     # should not consult a global, and whether to RUN this route is the
     # caller's decision, not this module's.
-    text = description_text(xml)
+    # ONE CORPUS, headings included. Both the compound's name and its
+    # `Example N` number are `<heading>` elements — the `<p>` beneath is the
+    # synthesis procedure — so `<p>`-only text loses the identity twice over.
+    # Measured over 137 patents against a `<p>`-only baseline: structures
+    # 44,959 -> 54,833 (+22.0%) with ZERO patents regressing, anchor rate
+    # 37.5% -> 40.8%, precision against the hand-checked reference
+    # 89.1% -> 92.2%.
+    #
+    # A two-corpus alternative was built and benchmarked on the same harness
+    # (extract from `<p>` and `<heading>` separately, merge on InChIKey). It
+    # tied on coverage — 6 structures apart corpus-wide — and lost on
+    # everything else: 532 fewer anchors and 41% slower. The reason is
+    # positional: a heading-sourced name sits beside its own number, while the
+    # same name restated mid-prose usually does not.
+    text = description_text(xml, include_headings=True)
     if not text:
         return []
 
@@ -396,7 +410,14 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
 
     # 5. anchor each structure to the patent's OWN compound number — see
     #    `anchor.py`'s module docstring for what was measured and why.
-    anchor_src = _anchor_text(xml)
+    # THE SAME STRING `text` — not a second flattening. `anchor_text(xml)` is
+    # byte-identical to `description_text(xml, include_headings=True)` (verified
+    # on the corpus), so reusing `text` removes one full pass over every
+    # document AND makes the offset spaces identical by construction rather
+    # than by convention. The "offsets are not interchangeable" hazard that
+    # `anchor_text`'s docstring warns about cannot arise when there is one
+    # string.
+    anchor_src = text
     if anchor_src:
         for nc in out:
             result = _find_cid(anchor_src, nc.name)

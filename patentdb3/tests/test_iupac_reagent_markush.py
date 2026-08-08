@@ -152,8 +152,11 @@ def test_reagent_label_distribution_matches_measured_baseline():
 def test_asterisk_fix_recovers_relative_stereo_names_as_markush():
     out = _extract()
     markush = [nc for nc in out if nc.markush]
-    assert len(markush) == 11, (
-        f"markush count drifted ({len(markush)}, was 11) — re-measure before touching this")
+    # 16, was 11 before `<heading>` text entered candidate generation: five
+    # more relative-stereo names are stated only in an Example heading and were
+    # never seen by a `<p>`-only pass.
+    assert len(markush) == 16, (
+        f"markush count drifted ({len(markush)}, was 16) — re-measure before touching this")
     for nc in markush:
         assert _RELATIVE_STEREO.search(nc.name), nc.name
         assert nc.markush_reason.startswith("relative_stereo:"), nc.markush_reason
