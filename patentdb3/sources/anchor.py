@@ -290,6 +290,8 @@ import html
 import re
 from dataclasses import dataclass, field
 
+from . import losses as _losses
+
 # ---------------------------------------------------------------------------
 # Tunables — each one's value is a measurement, not a default. See the module
 # docstring for the sweep / ablation that produced it.
@@ -455,7 +457,55 @@ def _repair_dropped_open_paren(text: str) -> str:
     return _DROPPED_OPEN_PAREN.sub(lambda m: "[(" + m.group(1) + ")", text)
 
 
-def anchor_text(xml: str) -> str:
+# ---------------------------------------------------------------------------
+# TABLES-DROPPED LOSS DETECTION — observability only, never used to extract.
+#
+# `description_text()` (`uspto_xml.py`, not owned by this task) strips every
+# `<tables>...</tables>` block out of the description body before returning
+# text — "handled structurally by parse_tables", per that function's own
+# comment, which is true for the ASSAY side but there is no equivalent
+# structural reader for a compound NAME that happens to sit inside a table
+# cell (a Markush R-group table naming a substituent, a table row restating
+# "Example 12: 2-{...}..." instead of a heading). Whatever named structure
+# was in there is invisible to `extract_names` from the moment
+# `description_text` returns, with nothing recording that a block existed at
+# all.
+#
+# This module cannot fix that — `uspto_xml.py` is out of scope for this task,
+# and the structural fix (routing table cells through `iupac_names`'
+# candidate machinery, or through `parse_tables` and back) is a real, separate
+# piece of work. What it CAN do, cheaply and without touching the other
+# module, is measure the loss: re-find the same `<tables>` blocks
+# `description_text` is about to discard and count how much of it LOOKS
+# like a chemical name, using the same permissive character class
+# `iupac_names._NAME_CHARS` is built from (duplicated here rather than
+# imported — `iupac_names` imports THIS module, so the reverse import would
+# be circular) and the same two-part shape filter `extract_names` applies to
+# a real seed (a run of >=3 lowercase letters, and a digit/bracket/dash
+# somewhere in it). This never feeds anything back into extraction; it is
+# read once, per patent, purely to write a `tables_dropped` record.
+_TABLES_BLOCK = re.compile(r"<tables\b.*?</tables>", re.S)
+_NAME_LIKE_IN_TABLE = re.compile(r"[A-Za-z0-9\[\]\(\)\{\}',\-\+\.′’*]{12,400}")
+_DESCRIPTION_BODY = re.compile(r"<description\b[^>]*>(.*?)</description>", re.S)
+
+
+def _log_dropped_tables(xml: str, patent_id: str) -> None:
+    m = _DESCRIPTION_BODY.search(xml)
+    if not m:
+        return
+    body = m.group(1)
+    for tm in _TABLES_BLOCK.finditer(body):
+        block = tm.group(0)
+        cleaned = _clean_fragment(block)
+        candidates = [g for g in _NAME_LIKE_IN_TABLE.findall(cleaned)
+                      if re.search(r"[a-z]{3}", g) and re.search(r"[\d\[\(\-]", g)]
+        _losses.record("tables_dropped", patent_id,
+                        position=tm.start(), chars=len(block),
+                        name_like_candidates=len(candidates),
+                        sample=candidates[:5])
+
+
+def anchor_text(xml: str, patent_id: str = "") -> str:
     """The heading-inclusive flattening. DELEGATES — it does not reimplement.
 
     This used to carry its own copy of the `<description>`/`<tables>`/tag
@@ -473,9 +523,16 @@ def anchor_text(xml: str) -> str:
     means every caller of `anchor_text` (this module's tests, and
     `iupac_names.extract_names`, which now reuses this exact string for
     candidate generation too) sees the same repaired text once.
+
+    `patent_id` is optional and used ONLY for loss-log context (see
+    "TABLES-DROPPED LOSS DETECTION" above) — every existing caller that omits
+    it (this module's own tests) is unaffected; the returned text is
+    identical either way.
     """
     from .uspto_xml import description_text
 
+    if _losses.ENABLED:
+        _log_dropped_tables(xml, patent_id)
     return _repair_dropped_open_paren(description_text(xml, include_headings=True))
 
 
@@ -528,7 +585,8 @@ def _consider(best_by_id: dict[str, Candidate], cid: str, distance: int,
                                      context=" ".join(context.split())[:48])
 
 
-def find_cid(text: str, name: str, *, bound: int = _ANCHOR_BOUND) -> AnchorResult:
+def find_cid(text: str, name: str, *, bound: int = _ANCHOR_BOUND,
+             patent_id: str = "") -> AnchorResult:
     """The patent's own id for `name`, or the clash if its occurrences disagree.
 
     Every occurrence of `name` in `text` is a candidate — a name stated once
@@ -539,6 +597,11 @@ def find_cid(text: str, name: str, *, bound: int = _ANCHOR_BOUND) -> AnchorResul
     genuine adjacent anchor always beats a coincidental one, but if two
     DIFFERENT ids each have their own close evidence, both are kept and
     surfaced as a clash rather than one being picked arbitrarily.
+
+    `patent_id` is optional and used ONLY to give the loss log
+    (`sources/losses.py`) context — this function's return value does not
+    depend on it, and every existing call (this module's own tests, which all
+    omit it) is unaffected.
     """
     best_by_id: dict[str, Candidate] = {}
     start = 0
@@ -581,10 +644,26 @@ def find_cid(text: str, name: str, *, bound: int = _ANCHOR_BOUND) -> AnchorResul
         rm = _CID_RIGHT.match(lookahead)
         if rm is not None:
             _consider(best_by_id, rm.group(1), rm.start(1), "right", lookahead)
+    else:
+        # The `while` loop's own `else`: reached only when `seen` hit
+        # `_MAX_OCCURRENCES` WITHOUT the `break` above firing — i.e. there was
+        # at least one more occurrence of `name` this function never looked
+        # at. "Never observed to bind in this corpus" per the constant's own
+        # comment; logged rather than asserted, so that claim stays checked
+        # rather than repeated.
+        if _losses.ENABLED:
+            _losses.record("anchor_max_occurrences", patent_id, name=name,
+                            cap=_MAX_OCCURRENCES)
 
     if not best_by_id:
+        if _losses.ENABLED:
+            _losses.record("anchor_not_found", patent_id, name=name)
         return AnchorResult(name=name, cid=None, clashed=False, candidates=())
     candidates = tuple(sorted(best_by_id.values(), key=lambda c: c.distance))
     if len(candidates) > 1:
+        if _losses.ENABLED:
+            _losses.record("anchor_clash", patent_id, name=name,
+                            candidates=[{"cid": c.cid, "distance": c.distance,
+                                         "direction": c.direction} for c in candidates])
         return AnchorResult(name=name, cid=None, clashed=True, candidates=candidates)
     return AnchorResult(name=name, cid=candidates[0].cid, clashed=False, candidates=candidates)

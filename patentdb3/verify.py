@@ -60,6 +60,7 @@ from .core import config
 from .core.cost_tracker import cost_tracker
 from .repair.loop import repair_patent
 from .repair.rules import RuleLibrary
+from .sources import losses
 from .sources.iupac_names import NamedCompound, extract_names
 from .sources.uspto_assays import extract_from_patent
 from .sources.uspto_xml import UsptoUnavailable, fetch_grant_xml, parse_fidelity, parse_tables
@@ -177,6 +178,13 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                 xml = _xml(pid)
             except (FileNotFoundError, UsptoUnavailable) as e:
                 print(f"  {pid}: no XML ({e})")
+                # A patent that never gets its XML loses BOTH artifacts this
+                # run would otherwise write for it — the assay dump above
+                # AND the structures dump below, since neither ever runs for
+                # this pid. One record here covers both losses; nothing
+                # downstream can distinguish "we never tried" from "we tried
+                # and got nothing" without it.
+                losses.record("xml_fetch_failed", pid, stage="initial_fetch", error=str(e))
                 continue
             try:
                 if heal:
@@ -193,6 +201,7 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                     recs = extract_from_patent(xml)
             except (FileNotFoundError, UsptoUnavailable) as e:
                 print(f"  {pid}: no XML ({e})")
+                losses.record("xml_fetch_failed", pid, stage="extract_or_heal", error=str(e))
                 continue
             for r in recs:
                 vals = [str(getattr(r, f, "") if getattr(r, f, None) is not None else "")
@@ -209,6 +218,13 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                     names = extract_names(xml, pid)
                 except Exception as e:
                     print(f"  {pid}: iupac_names failed ({e})")
+                    # A crash here loses EVERY structure `extract_names` would
+                    # have found for this patent, silently — `names = []`
+                    # below makes the rest of the loop behave exactly as
+                    # before (empty structures dump for this pid), but now
+                    # the reason is on record instead of only on stdout,
+                    # which a corpus-scale run does not keep.
+                    losses.record("extract_names_exception", pid, error=repr(e))
                     names = []
                 for nc in names:
                     vals = [str(getattr(nc, f, "") if getattr(nc, f, None) is not None else "")
@@ -216,8 +232,25 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                     sfh.write("\t".join(vals) + "\n")
                     n_struct += 1
                     struct_sources[getattr(nc, "source", None) or "unknown"] += 1
+            else:
+                # THE BIGGEST LOSS POINT IN THIS FILE: `IUPAC_NAMES` defaults
+                # OFF (`core/config.py`), so a plain `verify.dump()` call
+                # never even ATTEMPTS structures for `pid` — not "found
+                # zero," never tried. One record per pid rather than one for
+                # the whole run so this log stays queryable the same way
+                # every other `patent_id`-keyed record here is.
+                losses.record("structures_route_disabled", pid,
+                               reason="config.IUPAC_NAMES is False")
 
             done.append(pid)
+
+    # THE THIRD ARTIFACT. Flushed/closed before the manifest is written (and
+    # before its own summary is read back) so both are accurate about a run
+    # that has actually finished, not one still buffered in memory. See
+    # `sources/losses.py` for the schema and why it lives beside DUMP/
+    # STRUCTURES rather than under a new path.
+    losses.close()
+    loss_counts = losses.summary()
 
     # The manifest. Written EVERY run, overwritten in place, so it always names
     # the current dumps. Anything downstream reads the paths from here rather
@@ -253,6 +286,13 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
         "structures_rows": n_struct,
         "structures_fields": list(STRUCT_FIELDS),
         "structures_sources": dict(struct_sources),
+        # THE LOSS LOG — see `sources/losses.py`. `loss_log` is the path (so
+        # a consumer never has to guess it, same rule as `dump`/`structures`
+        # above); `loss_counts` is `loss_type -> row count` for this exact
+        # run, read back from the file itself rather than kept as a running
+        # total, so it can never drift from what is actually on disk.
+        "loss_log": str(losses.LOSS_LOG),
+        "loss_counts": loss_counts,
     }, indent=2) + "\n")
 
     print(f"\nwrote {n:,} rows for {len(done)} patent(s) -> {DUMP_PATH}")
@@ -265,6 +305,16 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
         print(f"wrote {n_struct:,} structures for {len(done)} patent(s) -> {STRUCT_PATH}")
     else:
         print("iupac_names OFF (IUPAC_NAMES=0) — no structures dump")
+    if loss_counts:
+        total_losses = sum(loss_counts.values())
+        top = sorted(loss_counts.items(), key=lambda kv: -kv[1])[:5]
+        print(f"loss log: {total_losses:,} record(s), {len(loss_counts)} type(s) "
+              f"-> {losses.LOSS_LOG}")
+        print("  top types: " + ", ".join(f"{t}={c:,}" for t, c in top))
+    elif losses.ENABLED:
+        print(f"loss log: 0 records -> {losses.LOSS_LOG}")
+    else:
+        print("loss log OFF (LOG_LOSSES=0)")
     print(f"manifest -> {MANIFEST_PATH}")
     return n
 

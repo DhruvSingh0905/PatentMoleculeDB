@@ -119,8 +119,10 @@ import re
 from dataclasses import dataclass
 
 from ..core import config
+from . import losses as _losses
 from .anchor import anchor_text as _anchor_text
 from .anchor import find_cid as _find_cid
+from .reagents import ReagentVerdict as _ReagentVerdict
 from .reagents import classify as _classify_reagent
 
 logger = logging.getLogger(__name__)
@@ -140,6 +142,13 @@ logger = logging.getLogger(__name__)
 # contains one once it IS extracted.
 _NAME_CHARS = r"A-Za-z0-9\[\]\(\)\{\}',\-\+\.′’*"
 _SEED = re.compile(rf"[{_NAME_CHARS}]{{{config.IUPAC_MIN_SEED},400}}")
+
+# Loss-observability only — NEVER used for extraction. Same character class as
+# `_SEED`, no minimum length, so it also matches the runs `_SEED`'s own
+# `{IUPAC_MIN_SEED,400}` quantifier makes it impossible for `_SEED` to ever
+# see. `extract_names` uses this to find and log `seed_too_short` events; nothing
+# reads its matches for anything else.
+_SEED_SCAN_ALL = re.compile(rf"[{_NAME_CHARS}]+")
 
 # A relative-stereo descriptor: an R/S/E/Z letter immediately followed by the
 # asterisk that means "this centre's configuration is defined only RELATIVE
@@ -205,12 +214,20 @@ def _balance_left(s: str) -> str | None:
     return s if depth == 0 else None
 
 
-def _variants(text: str, start: int, end: int) -> list[str]:
+def _variants(text: str, start: int, end: int, patent_id: str = "") -> list[str]:
     """Every span worth asking OPSIN about, for one seed. Brute force, bounded.
 
     Bounded by `IUPAC_MAX_VARIANTS` because a seed near a bracket-heavy stretch
     can otherwise generate dozens, and the batch is what makes this cheap. The
     order matters only in that the caller keeps the LONGEST accepted one.
+
+    Two loss points live here, both logged, neither changing what is
+    returned: a trimmed candidate that falls below `IUPAC_MIN_SEED` is
+    dropped by `add()` exactly as before — the `if` that used to guard
+    `out.append` is byte-for-byte unchanged; only its `else` is new — and any
+    variant past `IUPAC_MAX_VARIANTS` after the final slice is dropped
+    exactly as before too, logged just ahead of the same `out[:...]`
+    expression this function always returned.
     """
     raw = text[start:end]
     out: list[str] = []
@@ -221,6 +238,13 @@ def _variants(text: str, start: int, end: int) -> list[str]:
         s = s.strip(" \t .,;:")
         if len(s) >= config.IUPAC_MIN_SEED and s not in out:
             out.append(s)
+        elif _losses.ENABLED and s:
+            if len(s) < config.IUPAC_MIN_SEED:
+                _losses.record("variant_too_short", patent_id, position=start,
+                                candidate=s, length=len(s), floor=config.IUPAC_MIN_SEED)
+            else:                                   # length OK, just a duplicate
+                _losses.record("variant_duplicate", patent_id, position=start,
+                                candidate=s)
 
     add(raw)
     # ...with a closed-list tail word pulled in across the space
@@ -242,11 +266,25 @@ def _variants(text: str, start: int, end: int) -> list[str]:
         cur = stripped
         add(cur)
         add(_balance_right(cur))
+    else:
+        # The `for` loop's own `else`: only reached if all 3 iterations ran
+        # WITHOUT the `break` above firing — i.e. `_LEAD_JUNK` may still
+        # match `cur` and there could be a 4th layer of leading prose this
+        # bounded loop never strips. Cheap to check once, here, rather than
+        # assume the cap is never hit.
+        if _losses.ENABLED and _LEAD_JUNK.match(cur):
+            _losses.record("lead_junk_cap_reached", patent_id, position=start,
+                            remaining=cur, iterations=3)
     # ...and from each internal boundary, for a name welded onto a preceding
     # word with no space (the `## Example N` / header-contamination shape)
     for m in list(re.finditer(r"[-\)\]\}]", raw))[:4]:
         add(_balance_right(raw[m.end():]))
-    return out[: config.IUPAC_MAX_VARIANTS]
+    result = out[: config.IUPAC_MAX_VARIANTS]
+    if _losses.ENABLED and len(out) > config.IUPAC_MAX_VARIANTS:
+        _losses.record("variant_truncated", patent_id, position=start, seed=raw,
+                        generated=len(out), kept=len(result),
+                        dropped=out[config.IUPAC_MAX_VARIANTS:])
+    return result
 
 
 @dataclass
@@ -307,12 +345,28 @@ class NamedCompound:
 # clash surfaces instead of silently refusing to anchor.
 
 
-def _opsin(names: list[str], fmt: str) -> list[str]:
+def _opsin(names: list[str], fmt: str, patent_id: str = "") -> list[str]:
     """Batch OPSIN. One subprocess for the whole list.
 
     `tmp_fpath` is pid-scoped: py2opsin writes its input to a shared temp file
     whose default name is a constant, so two processes running concurrently
     overwrite each other's input and silently get each other's answers.
+
+    THE LOSS POINT NAMED IN THE TASK BRIEF: the `except` branch below returns
+    `[""] * len(names)` — EVERY candidate in the batch silently reads as
+    "OPSIN rejected it," indistinguishable downstream from a batch that
+    really was all garbage. That return value is UNCHANGED (a caller must
+    keep working when OPSIN cannot run at all); what changes is that the
+    event is now recorded, not only printed through `logger.warning`.
+
+    A second, unnamed-in-the-brief failure mode lives here too: `py2opsin`
+    returns `False` (not a list, not a raised exception) when the OPSIN
+    subprocess exits non-zero, and the line below this docstring
+    (`list(out) + ...`) has always raised `TypeError` on that — `list(False)`
+    is not iterable. That crash is NOT suppressed here (fixing it would
+    change behaviour this task is not scoped to touch); the record below just
+    makes sure the crash's PRECONDITION is visible before it happens, instead
+    of a bare traceback with no indication how many names or which format.
     """
     if not names:
         return []
@@ -323,9 +377,19 @@ def _opsin(names: list[str], fmt: str) -> list[str]:
         out = py2opsin(names, output_format=fmt, tmp_fpath=tmp)
     except Exception as e:                       # OPSIN is a java subprocess
         logger.warning("opsin: batch of %d failed: %r", len(names), e)
+        if _losses.ENABLED:
+            _losses.record("opsin_batch_exception", patent_id, fmt=fmt,
+                            batch_size=len(names), error=repr(e))
         return [""] * len(names)
     if isinstance(out, str):
         out = [out]
+    if _losses.ENABLED:
+        if not isinstance(out, list):
+            _losses.record("opsin_batch_malformed_output", patent_id, fmt=fmt,
+                            batch_size=len(names), returned_type=type(out).__name__)
+        elif len(out) != len(names):
+            _losses.record("opsin_output_length_mismatch", patent_id, fmt=fmt,
+                            batch_size=len(names), returned=len(out))
     return list(out) + [""] * (len(names) - len(out))
 
 
@@ -373,21 +437,52 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
     # position, not only at some other correctly-typeset restatement of the
     # same structure elsewhere in the document — which is what `find_cid`
     # needs to anchor it to its own heading's id at all.
-    text = _anchor_text(xml)
+    text = _anchor_text(xml, patent_id)
     if not text:
+        if _losses.ENABLED:
+            _losses.record("no_text", patent_id, reason="anchor_text returned empty")
         return []
 
-    # 1. seeds — every run of name-legal characters that could start a name
-    seeds = [(m.start(), m.end()) for m in _SEED.finditer(text)
-             if re.search(r"[a-z]{3}", m.group(0))
-             and re.search(r"[\d\[\(\-]", m.group(0))]
+    # 1. seeds — every run of name-legal characters that could start a name.
+    #    Two loss points logged here, neither changing `seeds`:
+    #      - a raw `_SEED` match that fails the shape filter (`elif` below;
+    #        the `if` is the SAME condition the list comprehension used to
+    #        apply, just spelled as a loop so the rejected half is visible).
+    #      - a run of name-chars that never reaches `_SEED` at all because it
+    #        is SHORTER than `IUPAC_MIN_SEED` — `_SEED`'s own quantifier
+    #        (`{IUPAC_MIN_SEED,400}`) means such a run is never a regex match
+    #        in the first place, so it has to be found with a second,
+    #        unbounded-minimum scan over the same character class, purely for
+    #        this record. Gated on `_losses.ENABLED` because it is a second
+    #        full-document regex pass that exists for no reason but the log.
+    seeds: list[tuple[int, int]] = []
+    for m in _SEED.finditer(text):
+        g = m.group(0)
+        has_letters = bool(re.search(r"[a-z]{3}", g))
+        has_shape = bool(re.search(r"[\d\[\(\-]", g))
+        if has_letters and has_shape:
+            seeds.append((m.start(), m.end()))
+        elif _losses.ENABLED:
+            _losses.record("seed_filtered", patent_id, position=m.start(),
+                            candidate=g,
+                            reason=("no_3_lowercase_run" if not has_letters
+                                    else "no_digit_bracket_dash"))
+    if _losses.ENABLED:
+        for m in _SEED_SCAN_ALL.finditer(text):
+            g = m.group(0)
+            if (len(g) < config.IUPAC_MIN_SEED
+                    and re.search(r"[a-z]{3}", g) and re.search(r"[\d\[\(\-]", g)):
+                _losses.record("seed_too_short", patent_id, position=m.start(),
+                                candidate=g, length=len(g), floor=config.IUPAC_MIN_SEED)
 
     # 2. brute force: fan every seed out into candidate spans
     cands: list[tuple[int, str]] = []
     for s, e in seeds:
-        for v in _variants(text, s, e):
+        for v in _variants(text, s, e, patent_id):
             cands.append((s, v))
     if not cands:
+        if _losses.ENABLED:
+            _losses.record("no_candidates", patent_id, seeds=len(seeds))
         return []
     logger.info("iupac: %s — %d seeds -> %d candidate spans",
                 patent_id, len(seeds), len(cands))
@@ -395,21 +490,48 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
     # 3. OPSIN is the acceptance gate. One batch for SMILES, one for InChIKey
     #    over only what survived — the second batch is small.
     strings = [c for _, c in cands]
-    smiles = _opsin(strings, "SMILES")
-    kept = [(pos, s, smi) for (pos, s), smi in zip(cands, smiles) if smi]
+    smiles = _opsin(strings, "SMILES", patent_id)
+    kept: list[tuple[int, str, str]] = []
+    for (pos, s), smi in zip(cands, smiles):
+        if smi:
+            kept.append((pos, s, smi))
+        elif _losses.ENABLED:
+            _losses.record("opsin_reject", patent_id, position=pos,
+                            candidate=s, stage="smiles")
     if not kept:
+        if _losses.ENABLED:
+            _losses.record("no_candidates_kept", patent_id, total_candidates=len(cands))
         return []
-    keys = _opsin([s for _, s, _ in kept], "StdInChIKey")
+    keys = _opsin([s for _, s, _ in kept], "StdInChIKey", patent_id)
 
-    # 4. longest accepted span per seed position, then dedup by structure
+    # 4. longest accepted span per seed position, then dedup by structure.
+    # `shorter_span_discarded` logs the LOSING candidate at each position —
+    # whichever of the old `best[pos]` or the new `(pos, name, smi)` is not
+    # the longer one — without changing which one wins: the `if` below is the
+    # same `cur is None or len(name) > len(cur[0])` test this function always
+    # used, just with an `else` added to say what it discarded.
     best: dict[int, tuple[str, str, str]] = {}
     for (pos, name, smi), ik in zip(kept, keys):
+        if not ik and _losses.ENABLED:
+            _losses.record("inchikey_resolution_empty", patent_id, position=pos,
+                            name=name, smiles=smi)
         cur = best.get(pos)
         if cur is None or len(name) > len(cur[0]):
+            if cur is not None and _losses.ENABLED:
+                _losses.record("shorter_span_discarded", patent_id, position=pos,
+                                discarded=cur[0], kept=name,
+                                discarded_length=len(cur[0]), kept_length=len(name))
             best[pos] = (name, smi, ik)
+        elif _losses.ENABLED:
+            _losses.record("shorter_span_discarded", patent_id, position=pos,
+                            discarded=name, kept=cur[0],
+                            discarded_length=len(name), kept_length=len(cur[0]))
 
     out: list[NamedCompound] = []
     seen: set[str] = set()
+    seen_first: dict[str, str] = {}    # k -> the name that first claimed it,
+                                        # LOGGING ONLY — `seen` alone still
+                                        # decides the dedup, unchanged
     for pos in sorted(best):
         name, smi, ik = best[pos]
         # MARKUSH IS DECIDED BEFORE DEDUP, and that ordering is the point.
@@ -439,12 +561,31 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
         # and must not deduplicate against one another; two generics still do.
         k = ("markush::" if is_markush else "") + (ik or smi)
         if k in seen:
+            if _losses.ENABLED:
+                _losses.record("dedup_collision", patent_id, position=pos,
+                                dropped_name=name, kept_name=seen_first.get(k, ""),
+                                key=k, markush=is_markush)
             continue
         seen.add(k)
+        if _losses.ENABLED:
+            seen_first[k] = name
         # Reagent/trace-fragment LABEL — never a filter, see the module
         # docstring. Computed here, once per distinct structure, so every
         # caller of this function gets it for free rather than re-deriving it.
-        verdict = _classify_reagent(name, smi)
+        # Not previously guarded: an exception here (RDKit missing, a
+        # malformed SMILES `classify`'s own backstop cannot parse) would
+        # crash `extract_names` for the WHOLE patent, discarding every
+        # structure already resolved above with nothing recording why. Falls
+        # back to the same neutral default `NamedCompound.label`/`.reason`
+        # already carry — i.e. behaves as if `reagents.classify` had matched
+        # neither of its tiers, never as a fabricated "reagent" verdict.
+        try:
+            verdict = _classify_reagent(name, smi)
+        except Exception as e:
+            if _losses.ENABLED:
+                _losses.record("reagent_classify_exception", patent_id, position=pos,
+                                name=name, smiles=smi, error=repr(e))
+            verdict = _ReagentVerdict(label="compound", reason="")
         out.append(NamedCompound(
             patent_id=patent_id, name=name, smiles=smi, inchikey=ik, start=pos,
             label=verdict.label, reason=verdict.reason,
@@ -463,7 +604,7 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
     anchor_src = text
     if anchor_src:
         for nc in out:
-            result = _find_cid(anchor_src, nc.name)
+            result = _find_cid(anchor_src, nc.name, patent_id=patent_id)
             nc.cid = result.cid
             if result.clashed:
                 nc.cid_clash = "|".join(c.cid for c in result.candidates)
