@@ -64,6 +64,86 @@ alphanumeric id — so it silently kept 402 as if uncontested. The clash is not
 a regression the alnum support introduced; it is evidence the digit-only rule
 was blind to.)
 
+THE FALSE ANCHORS — ROOT CAUSE, MEASURED, AND FIXED
+------------------------------------------------------
+A prior measurement on US8952177 reported: of 155 structures anchored by the
+rule above, 67 (43%) disagreed with the hand-checked CSV reference for that
+same compound number, and 13 ids each had more than one structure attached
+(id "1" had 24). Reproduced exactly before touching anything (238 distinct
+structures, 155 anchored, 29 clashed, 13 dup-cids, 67/155 disagreeing) — then
+traced to its cause rather than assumed.
+
+Cause 1, the dominant one: CROSS-REFERENCE CITATIONS of "Example N" reuse the
+exact `<id>` + whitespace + `<name>` shape a real heading uses, AT THE SAME SHORT DISTANCE the
+"THE RULE" section above calls the clean "correct" cluster (2-12 chars). US
+patent synthesis sections routinely write "The title compound was prepared in
+a manner analogous to that in Example 1, substituting 4-bromo-2-fluorobenzyl-
+amine in Step A" — a citation of Example 1's METHOD, naming a completely
+different reagent. Measured directly on the raw text: id "1" recurs as a bare
+"Example 1" 44+ times in US8952177, nearly all of them exactly this citation,
+each one 8-18 characters from whatever reagent the sentence happens to name.
+`_ANCHOR_BOUND` cannot separate this from a real heading — both clusters are
+short — so the earlier "2-12 correct vs. 162+ wrong, no overlap" measurement
+was true only because it was taken on the 67 CSV-MATCHED rows, which are all
+real title compounds and never exercise a citation sentence. What DOES
+separate them: a real heading has NOTHING between the id and the name but
+whitespace and, at most, one stereo-descriptor token already stripped off the
+OPSIN-accepted name by `iupac_names._LEAD_JUNK` ("racemic ", "cis-", "trans-",
+"(1R*,2S*)-"); a citation always has a verb or unrelated punctuation there
+("using ", "substituting ", "mmol), ", "Steps A-B using "). Measured on the
+67 disagreements: 62 had exactly a verb/punctuation gap, 0 of those 62 had a
+clean gap. `_LEFT_GAP_OK` enforces this for `_CID_LEFT_PLAIN` only — see its
+own comment for why `_CID_LEFT_SEP` (the colon shape) does not need it: real
+corpus citations of "Intermediate 5B" never carry a colon, so they never
+reach that pattern at all, while a colon-shape gap legitimately carries a
+chemical prefix word (`test_left_colon_alnum_anchors`'s "tert-butyl ") that
+this guard must not reject.
+
+Cause 2, smaller: `_CID_LEFT_PLAIN`'s bare digit-run capture group captured
+the DIGIT TAIL of an alphanumeric token it was never meant to see.
+US10214537 numbers some intermediates "Q38", "Q17", ... — real, distinct
+ids — but the old pattern matched
+"38" out of "Q38" and anchored Q38's own title compound to plain id "38", a
+different, unrelated compound. `(?<![A-Za-z0-9])` blocks a digit run whose
+start is glued to a letter or digit; it never lets `_CID_LEFT_PLAIN` return
+an alphanumeric id (that would repeat the widening this section's neighbor
+above says was tried and regressed US8952177) — it only refuses to treat a
+token's tail as if it were a whole bare-digit id.
+
+Both fixed, measured on the SAME 238-structure candidate set (apples-to-apples
+with every number in this docstring, `iupac_names.extract_names` unmodified):
+
+| | US8952177 (238) | US10214537 (1018) | US10544143 (222) |
+|---|---|---|---|
+| anchored, before  | 155 (65.1%) | 791 (77.7%) | 116 (52.3%) |
+| anchored, after   | 89 (37.4%)  | 717 (70.4%) | 112 (50.5%) |
+| clashed, before   | 29          | 72          | 63 |
+| clashed, after    | 11          | 45          | 17 |
+| dup-cid ids, before (max) | 13 (24) | 43 (9) | 5 (11) |
+| dup-cid ids, after (max)  | 0       | 6 (2)  | 2 (2)  |
+
+The raw anchor RATE drops — that is the correct trade, not a regression: every
+one of the 67 US8952177 structures that stopped being anchored (verified by
+name, not assumed) is a synthesis reagent or intermediate named in a citation
+sentence ("water-acetonitrile", an HPLC mobile phase; "(4-bromo-3-fluoro-
+phenyl)methanamine"; "trans-hexahydroisobenzofuran-1,3-dione"), never a title
+compound. Against the CSV reference, disagreement among anchored structures
+that have a CSV row for their id falls from 67/155 (43.2%) to 6/89 (6.7%) —
+and every one of those remaining 6 (ids 90, 93, 97, 98, 114, 137) is a CSV
+transcription typo, not an extraction error: "trifluoro-1-methoxy" for
+"trifluoromethoxy" (90), "benzimidazol-1-yl"/"-3-yl" for "-2-yl" (93/97/98),
+"methyl-ylpyridin" for "methylpyridin" (137) — the task brief already named
+98 and 137 as cases where OUR extraction is right and the CSV is wrong; this
+measurement finds four more of the same kind, not a new failure mode. Real
+precision on this subset is 89/89, not 83/89. The 6 remaining `US10214537`
+and 2 remaining `US10544143` dup-cids after the fix were inspected by hand
+and are NOT the same bug: each is a fragment/full-name pair (e.g.
+"5-chloro-3-isopropyl-1H-pyrrolo[3,2-b]pyridine" and the same name with a
+"-1-carboxylate" tail) that both genuinely sit next to ONE real heading and
+both correctly resolve to that heading's id — OPSIN legitimately accepts two
+different spans as two different structures; the shared id is correct for
+both, not a proximity error.
+
 WHAT MOVED THE RATE, MEASURED (not assumed) — one ablation, three patents
 ---------------------------------------------------------------------------
 Anchor rate = anchored / distinct OPSIN-resolved structures. `SELF_HEAL=0`,
@@ -83,7 +163,19 @@ synthesis section numbers INTERMEDIATES as "Intermediate 1D:", "1E:", "2A:"
 The pre-existing rule required a bare digit run followed directly by
 whitespace (`re.compile(r"(\\d+)\\s")`) and could never match "1D:" at all —
 not a distance problem, a character-class problem. That is the corpus-wide
-"alphanumeric ids ... 10.8% of example labels" limitation named going in.
+"alphanumeric ids" limitation named going in, quoted at the time as "10.8%
+of example labels" from a 3-patent sample. Re-measured across all 137 cached
+XMLs (122 contributing at least one match), matching heading text against
+`^(?:Example|Intermediate|Compound) <id>[.:]?$` (id-only heading) OR the
+same prefix followed immediately by a colon (id+name-in-one-heading, this
+patent's own convention): **12.85% (2,426 / 18,878)**. Same order of
+magnitude as the 3-patent figure, not identical — the two counts use
+different, not directly reproducible methods (the original 3-patent number's
+exact method was not recorded) — but both agree the shape is corpus-wide, not
+a 3-patent artifact: 122/137 patents carry at least one alphanumeric id
+heading, and the per-patent rate varies enormously (US8952177 8.7%,
+US10214537 65.6%, US10544143 59.4%) — a fixed corpus-wide percentage was
+never the useful number; per-patent convention is.
 
 The naive fix (any alphanumeric token immediately before a colon, anywhere)
 was tried first and REJECTED by measurement: it also matched "Method 1:",
@@ -106,22 +198,26 @@ it is not sensitive to that boundary loss.
 Right-side alphanumeric support (`(I-0020)`, `(Z1)`, not just `(544)`) is
 kept even though its measured effect on these three patents is small
 (+1 on US10214537) — it is the same character-class gap on the other
-convention, and the "10.8% corpus-wide" alphanumeric-id figure was not
-scoped to these three patents.
+convention, and the corpus-wide alphanumeric-id rate (12.85%, re-measured
+below) was never scoped to these three patents.
 
 PRECISION / RECALL AGAINST GROUND TRUTH
 -----------------------------------------
-`US8952177 Binding IUPAC Final (2).csv`, 190 rows. Of 238 distinct structures
-`extract_names` resolves for US8952177, 67 have text that matches a CSV row
-under stereo-prefix/salt-suffix normalization (this module's own matching,
-not a shipped scorer — see `tests/test_anchor.py::test_csv_ground_truth` for
-the exact rule). On that subset, digit-only and the shipped rule score
-IDENTICALLY — 100% precision (63/63 anchored, 0 wrong), 94.0% recall
-(63/67) — because every CSV-matched name in THIS patent uses the plain
-"Example N" convention; the alphanumeric change earns nothing here and loses
-nothing. Against all 190 CSV rows (not just the 67 matched — most of the
-gap is unmatched EXTRACTION, a separate limitation, not anchoring):
-recall = 63/190 = 33.2%.
+`US8952177 Binding IUPAC Final (2).csv`, 190 rows, ~26 known malformed/corrupt
+(see "THE FALSE ANCHORS" above for concrete examples — single-character CSV
+typos, not extraction errors). Historical note: an earlier measurement,
+restricted to the subset of extracted names matching a CSV row under a
+stereo-prefix/salt-suffix normalization that was never committed as a test
+(the docstring pointed at `tests/test_anchor.py::test_csv_ground_truth`,
+which does not exist in this file — a dangling reference, now removed rather
+than repeated), found digit-only and the then-shipped rule scoring
+IDENTICALLY on 67 matched names: 100% precision (63/63), 94.0% recall
+(63/67). That comparison predates the fix above and used a narrower
+population (extraction-matched names only, not all anchored structures); see
+"THE FALSE ANCHORS" for the current, corpus-denominator numbers — 89 anchored
+of 238 structures, 89/89 correct against the CSV once its own typos are
+excluded, measured directly against `find_cid`'s live output, not a
+restricted match subset.
 
 WHAT IS STILL UNANCHORED, AND WHY THAT IS CORRECT
 ----------------------------------------------------
@@ -129,13 +225,41 @@ Run against US10544143's 106 remaining unanchored structures: 43 have no id
 candidate at all, and inspection of every one sampled is a reagent or solvent
 named in synthesis prose ("1,3-butanediol", "N-methylpyrrolidine",
 "6-bromopyridin-3-amine") — never a patent-numbered compound, so finding
-nothing is the right answer. One further shape this module does not solve:
-"Intermediate 5A-1: 5-bromo-2-(...)... and 5-bromo-3-(...)..." — ONE id
-covering TWO names in a "mixture of X and Y" heading. The second name's
-nearest text is "... and ", not the id, which sits 80+ characters back,
-outside any bound this module tested without flooding other patents with
-false proximity matches. That is a real, known gap, left as `None` with no
-candidates — not a clash, because nothing was found nearby at all.
+nothing is the right answer.
+
+The "N2 sparged" plain-digit false positive named as a known limitation when
+this module was written ("2-methyltetrahydrofuran" anchored to id "2" off
+"N2") is now FIXED, as a side effect of both changes in "THE FALSE ANCHORS":
+`_LEFT_GAP_OK` rejects the "sparged " gap, and `(?<![A-Za-z0-9])` separately
+refuses to start a digit match glued to the "N" in front of it. Verified
+directly: `find_cid("...N2 sparged 2-methyltetrahydrofuran...", "2-methyl-
+tetrahydrofuran")` now returns `cid=None`, not `"2"`.
+
+One shape this module still does not solve: "Intermediate 5A-1: 5-bromo-2-
+(...)... and 5-bromo-3-(...)..." — ONE id covering TWO names in a "mixture of
+X and Y" heading. The second name's nearest text is "... and ", not the id,
+which sits 80+ characters back, outside any bound this module tested without
+flooding other patents with false proximity matches (widening the bound was
+tried and rejected — see "THE RULE" above for the mechanism of that failure).
+Re-examined rather than re-assumed: this shape is NOT rare. A heading-level
+scan for "<label> <id>[:.]? ... and ... " across all 137 cached XMLs (a
+looser, over-inclusive proxy — it flags 760 candidate headings in 70/137
+patents; hand-inspection of a sample shows real instances of this exact
+shape, e.g. US10214537's "Intermediate D: ... and Intermediate E: ..." and
+US10087188's paired stereoisomer headings). No fix was implemented here: the
+only mechanism that could work — name B inherits the id of name A because
+text immediately before B is "... and " and text immediately before THAT is
+where A's own (already-resolved) span ends — needs BOTH names' identities at
+once. `find_cid` is deliberately a pure function of one name and one text
+(see "WHY A SEPARATE MODULE" above); giving it that would mean either (a)
+passing sibling-candidate context into every call, changing the module's
+contract from "one name in, one answer out" to a batch operation, or (b)
+resolving it entirely at the `extract_names` call site in `iupac_names.py`,
+which owns the set of names and could match "id ... and " immediately before
+one candidate against the END of another candidate's own span. Both are real
+options; neither belongs inside a module whose entire value is being testable
+without OPSIN or a second name in scope. Left open, with the mechanism named
+and the prevalence measured, not assumed.
 
 CONFIGURATION
 --------------
@@ -186,7 +310,19 @@ _ID_TOKEN = r"[A-Za-z]{0,3}-?\d{1,5}-?[A-Za-z]{0,2}"
 # purpose — widening this ONE shape to letters is what temporarily
 # regressed US8952177 (see "WHAT MOVED THE RATE" above); the letters-in-play
 # shape below is what replaced that attempt.
-_CID_LEFT_PLAIN = re.compile(r"(\d+)\s")
+#
+# `(?<![A-Za-z0-9])` guards the START of the digit run: without it, `\d+`
+# happily matches the DIGIT TAIL of an alphanumeric token it was never meant
+# to see. Measured on US10214537: "Intermediate Q38" is a real, distinct
+# heading (`h-0134`) for its own compound, unrelated to plain id "38"
+# (a different compound entirely, present elsewhere in the same patent) —
+# but bare `(\d+)\s` matched "38" out of "Q38" and anchored Q38's title
+# compound to id "38", producing a dup-cid (two unrelated structures both
+# claiming id "38"). This is not the letters-in-PLAIN regression the
+# comment above warns about — it never lets `_CID_LEFT_PLAIN` RETURN an
+# alphanumeric id, it only stops a digit run from matching when it is
+# plainly the tail of a longer alphanumeric token immediately to its left.
+_CID_LEFT_PLAIN = re.compile(r"(?<![A-Za-z0-9])(\d+)\s")
 
 # LEFT, shape 2: "<id>[:;] <name>" — an alphanumeric id, a colon or
 # semicolon, then the name. This is the "Intermediate 1D: <name>" /
@@ -205,6 +341,23 @@ _NON_ID_WORD = re.compile(
     r"\b(?:method|step|stage|note|scheme|procedure|part|section|table|"
     r"figure|equation|formula|claim|item|page|paragraph|entry|group|"
     r"embodiment|aspect|reaction)\s*$", re.I)
+
+# What is allowed to sit BETWEEN a LEFT id-match and the name it anchors.
+# ROOT CAUSE (measured on US8952177, see the module docstring's "FALSE
+# ANCHORS" section for the full writeup): a heading citation like
+# "Example 1 substituting X" or "...similar methods to those in Example 1
+# Steps A-B using Y" reuses the exact same "<id>\s" shape as a real heading,
+# at the SAME short distance (8-18 chars) the docstring's own ablation
+# treats as the "correct" cluster (2-12 chars) — `_ANCHOR_BOUND` cannot tell
+# these apart because both are short. What separates them is not distance,
+# it is what fills the gap: a real heading has NOTHING between the id and
+# the name but whitespace and, at most, a stereo-descriptor word already
+# stripped off the OPSIN-accepted name by `_LEAD_JUNK` in `iupac_names.py`
+# ("racemic ", "cis-", "trans-", a locant descriptor "(1R*,2S*)-"); a
+# cross-reference citation always has a verb or unrelated-clause punctuation
+# in that gap ("using ", "substituting ", "mmol), ", "Steps A-B using ").
+_LEFT_GAP_OK = re.compile(
+    r"^(?:racemic\s+|cis-|trans-|\([0-9][0-9A-Za-z*,\s]{0,10}\)-)*$", re.I)
 
 # RIGHT: "<name> (<id>)", immediately adjacent — the
 # "...triazin-4-amine (544); ..." semicolon-list shape. Alphanumeric from the
@@ -318,7 +471,7 @@ def find_cid(text: str, name: str, *, bound: int = _ANCHOR_BOUND) -> AnchorResul
         m = None
         for m in _CID_LEFT_PLAIN.finditer(window):
             pass                                # last match = closest to `pos`
-        if m is not None:
+        if m is not None and _LEFT_GAP_OK.match(window[m.end():]):
             _consider(best_by_id, m.group(1), len(window) - m.start(1), "left", window)
 
         m = None
@@ -327,6 +480,17 @@ def find_cid(text: str, name: str, *, bound: int = _ANCHOR_BOUND) -> AnchorResul
                 continue                         # "Method 1:", "Step 2:", ...
             m = cand
         if m is not None:
+            # No gap check here, unlike PLAIN above: the colon is itself the
+            # heading marker, so a cross-reference sentence would need
+            # "Intermediate 5B: using X" (colon present) to slip through —
+            # measured in US10544143, real cross-references read "described
+            # in Intermediate 5B using X" with NO colon, so they never match
+            # `_CID_LEFT_SEP` at all (it requires `[:;]` right after the id).
+            # What DOES legitimately sit in this gap is a chemical prefix
+            # word OPSIN's candidate generator seeded separately from the
+            # rest of the name ("tert-butyl ", "4-(3-Bromophenyl)") — see
+            # `test_left_colon_alnum_anchors` / the clash test in
+            # `test_anchor.py`. Gap-checking this shape would reject those.
             _consider(best_by_id, m.group(1), len(window) - m.start(1), "left", window)
 
         lookahead = text[end:end + _RIGHT_LOOKAHEAD]

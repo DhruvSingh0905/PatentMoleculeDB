@@ -88,27 +88,72 @@ def test_blacklisted_word_before_colon_is_not_a_compound_id():
     assert r.candidates == ()
 
 
-def test_left_colon_blacklist_does_not_reach_the_plain_digit_rule():
-    """Documents a KNOWN, PRE-EXISTING limitation rather than hiding it.
+def test_n2_sparged_no_longer_a_false_positive():
+    """FIXED — this used to document a known, pre-existing limitation.
 
-    `_NON_ID_WORD` only guards the colon-separated shape (`_CID_LEFT_SEP`);
-    the plain "<digits> <name>" shape (`_CID_LEFT_PLAIN`) is untouched from
-    the original inline rule and has no such guard. So "N2 sparged
-    2-methyltetrahydrofuran" — nitrogen gas, not a compound id — still
-    anchors this solvent name to "2", exactly as the ORIGINAL digit-only
-    rule already did before this module existed. This was deliberate: the
-    module docstring's "WHAT MOVED THE RATE" section shows widening the
-    PLAIN rule itself (rather than adding the separate colon-shape rule) is
-    what regressed US8952177 (65.1% -> 64.3%, wrong values). Leaving
-    `_CID_LEFT_PLAIN` exactly as validated, and adding the alnum/colon
-    support as a SEPARATE pattern, avoided that regression — at the cost of
-    this one pre-existing false positive going unfixed. Not silently true:
-    asserted here so a future change to `_CID_LEFT_PLAIN` has a test to
-    explain why it must stay conservative.
+    "N2 sparged 2-methyltetrahydrofuran" (nitrogen gas, not a compound id)
+    used to anchor the solvent name to id "2", purely because a bare digit
+    run ("2" from "N2") sat within `_ANCHOR_BOUND` of the name. Two
+    independent guards now both refuse this, for different reasons — see
+    `anchor.py`'s "THE FALSE ANCHORS" section:
+
+    1. `(?<![A-Za-z0-9])` on `_CID_LEFT_PLAIN` refuses to start a digit match
+       glued to the "N" in front of it — "2" is the tail of "N2", not a bare
+       id, the same reasoning that fixes the unrelated "Q38" collision on
+       US10214537.
+    2. `_LEFT_GAP_OK` refuses the match anyway even if (1) did not exist:
+       the gap between the id and the name ("sparged ") is not a bare
+       whitespace/stereo-prefix gap.
+
+    Either guard alone is sufficient here; both are asserted together
+    because this text exercises both.
     """
     text = "benzylamine (75.0 g), N2 sparged 2-methyltetrahydrofuran (750 mL)\n"
     r = find_cid(text, "2-methyltetrahydrofuran")
-    assert r.cid == "2"          # known false positive, pre-dates this module
+    assert r.cid is None
+    assert not r.clashed
+    assert r.candidates == ()
+
+
+def test_digit_run_glued_to_a_letter_is_not_a_bare_id():
+    """The "Q38" collision, isolated from the N2 case above and from OPSIN.
+
+    Measured on US10214537: "Intermediate Q38" is a real, distinct heading
+    for its own title compound. Before `(?<![A-Za-z0-9])`, bare `(\\d+)\\s`
+    matched "38" out of "Q38" and anchored Q38's compound to unrelated plain
+    id "38" — a dup-cid, not a clash, because nothing else in the window
+    disagreed with the (wrong) match.
+    """
+    text = "Intermediate Q38\n1-(4-(3-Bromophenyl)-3-(2-fluorophenyl)piperazin-1-yl)ethanone\n"
+    r = find_cid(text, "1-(4-(3-Bromophenyl)-3-(2-fluorophenyl)piperazin-1-yl)ethanone")
+    assert r.cid is None          # "Q38" is alphanumeric; PLAIN must not see "38"
+    assert not r.clashed
+    assert r.candidates == ()
+
+
+def test_citation_of_a_prior_example_does_not_anchor_a_different_reagent():
+    """The dominant root cause behind the 43%/13-cid false-anchor finding.
+
+    "prepared ... analogous to that in Example 1, substituting X" cites
+    Example 1's METHOD while naming X, a reagent for THIS (later, unlabeled)
+    example — not Example 1's own title compound. The old rule anchored X to
+    "1" anyway because the digit-plus-whitespace shape and the short distance
+    (here: "substituting ") look identical to a real heading's "Example
+    1\\nracemic ...". `_LEFT_GAP_OK` rejects it: nothing but a bare
+    stereo-prefix word is allowed between the id and the name.
+    """
+    text = (
+        "Example 1\nracemic cis-2-{1-(4-Bromobenzyl)}cyclohexanecarboxylic acid\n"
+        "The title compound was prepared in a manner analogous to that in "
+        "Example 1 substituting trans-hexahydroisobenzofuran-1,3-dione in Step C.\n"
+    )
+    r = find_cid(text, "trans-hexahydroisobenzofuran-1,3-dione")
+    assert r.cid is None
+    assert not r.clashed
+    assert r.candidates == ()
+    # the real heading occurrence is untouched by the same fix
+    r2 = find_cid(text, "cis-2-{1-(4-Bromobenzyl)}cyclohexanecarboxylic acid")
+    assert r2.cid == "1"
 
 
 # ── right, "<name> (<id>)" — the semicolon-list shape ────────────────────
@@ -259,11 +304,19 @@ def test_real_xml_generic_fragment_clashes_rather_than_guesses():
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_extract_names_reproduces_measured_anchor_rate():
-    """Locks in the headline number from this task's report: 238 distinct
-    structures, 155 anchored (65.1%) on US8952177 with the shipped rule.
-    Skips (not fails) if OPSIN cannot run here — this is the one test in
-    the file that needs it, and its absence is an environment fact, not an
-    anchoring regression.
+    """Locks in the headline number from this task's report: with the false-
+    anchor fix (`_LEFT_GAP_OK`, the `(?<![A-Za-z0-9])` digit-run guard —
+    see `anchor.py`'s "THE FALSE ANCHORS" section), US8952177 anchors 96 of
+    234 distinct structures, 0 clashed.
+
+    234, not 238: `iupac_names.extract_names` candidate generation is owned
+    by a different module (this file owns `anchor.py` only) and can drift
+    independently of anything here — it already had, mid-task, from a
+    concurrent change to that file. If this assertion fails on `len(out)`,
+    re-measure candidate generation before assuming an anchoring regression;
+    this module does not produce that count. Skips (not fails) if OPSIN
+    cannot run here — this is the one test in the file that needs it, and
+    its absence is an environment fact, not an anchoring regression.
     """
     pytest.importorskip("py2opsin")
     import logging
@@ -279,8 +332,8 @@ def test_extract_names_reproduces_measured_anchor_rate():
         pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
     anchored = sum(1 for nc in out if nc.cid)
     clashed = sum(1 for nc in out if nc.cid_clash)
-    assert len(out) == 238, (
-        f"candidate generation drifted ({len(out)} distinct structures, was 238) — "
+    assert len(out) == 234, (
+        f"candidate generation drifted ({len(out)} distinct structures, was 234) — "
         f"this module did not change it; re-measure before touching this assertion")
-    assert anchored == 155, f"anchor rate regressed: {anchored}/238 (was 155/238, 65.1%)"
-    assert clashed == 29, f"clash count changed: {clashed} (was 29)"
+    assert anchored == 96, f"anchor rate changed: {anchored}/234 (was 96/234, see anchor.py docstring)"
+    assert clashed == 0, f"clash count changed: {clashed} (was 0)"

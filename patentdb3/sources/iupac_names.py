@@ -69,6 +69,47 @@ a table of R-groups, the R-groups are often text (`Me`, `Et`, `3-CH3`) but the
 scaffold is an image, and no name can be composed without it. Those compounds
 are simply absent from this module's output, and that absence is visible rather
 than papered over.
+
+REAGENT LABEL AND MARKUSH FLAG — TWO FIELDS, NOT ONE, AND WHY
+---------------------------------------------------------------
+Every `NamedCompound` this function returns now carries two independent
+verdicts, wired in here rather than left for a caller to compute:
+
+- `.label` / `.reason` — `sources/reagents.py::classify(name, smiles)`, called
+  once per accepted structure. `.label` is one of that module's closed set
+  (`"compound"`, `"reagent"`, `"trace_fragment"`); `.reason` is its
+  machine-readable justification. This module never filters on the result —
+  `reagents.py` labels, it does not delete, and this function keeps that
+  contract: every structure OPSIN accepted still flows out, reagent or not.
+- `.markush` / `.markush_reason` — set HERE, not by `reagents.py`, when the
+  accepted name carries a relative-stereo descriptor (`R*`/`S*`/`E*`/`Z*`,
+  e.g. `(1R*,2S*)-...`). Such a name does not identify one molecule; it
+  states a relationship between two stereocentres ("opposite" or "same") with
+  absolute configuration left open, so the resolved SMILES/InChIKey stands in
+  for a SET of stereoisomers, not a single compound.
+
+**Why a fourth field instead of a fourth value of `label`:** "is this a
+reagent" and "is this structure generic" are orthogonal questions with
+independent evidence. `reagents.classify` answers the first from a name
+lexicon and a heavy-atom floor; the relative-stereo check here answers the
+second from a character pattern in the accepted name — neither test can see
+the other's answer, and a real name can be genuinely `("compound", markush)`
+(a generic scaffold that is not a lab reagent) just as easily as
+`("reagent", not markush)` (a single defined solvent molecule). Folding both
+into one `label` string would force a choice between them for any compound
+that is both, or invent a fifth combinatorial label for no reason grounded in
+either module's evidence. It would also reach into `reagents.LABELS`, a
+closed set owned by a module this task does not modify. Two independent
+booleans-plus-reason pairs, mirroring the `(label, reason)` shape `reagents`
+already uses, keep the two axes auditable separately and let a downstream
+consumer filter on either without the other's noise.
+
+`.markush` is `False` by default and only ever set `True` by the relative-
+stereo check above — it is not a general "this name is generic" detector
+(that would need Markush R-group table detection, which is out of scope; see
+"WHAT THIS IS NOT" above) and it is not conflated with `.cid_clash` (a
+proximity-anchoring ambiguity about WHICH compound number a name belongs to,
+orthogonal to whether the name itself denotes one structure or a set).
 """
 from __future__ import annotations
 
@@ -80,14 +121,36 @@ from dataclasses import dataclass
 from ..core import config
 from .anchor import anchor_text as _anchor_text
 from .anchor import find_cid as _find_cid
+from .reagents import classify as _classify_reagent
 from .uspto_xml import description_text
 
 logger = logging.getLogger(__name__)
 
 # Characters an IUPAC name is built from. Deliberately permissive — this only
 # has to bound a SEED; OPSIN decides whether the span is a name.
-_NAME_CHARS = r"A-Za-z0-9\[\]\(\)\{\}',\-\+\.′’"
+#
+# `*` is included so a relative-stereo descriptor — `(1R*,2S*)-2-{...}...` —
+# seeds at all. Without it the seed regex breaks the run AT the asterisk
+# (it is simply not a class member), splitting one name into fragments too
+# short to clear `IUPAC_MIN_SEED` on either side, or into a fragment missing
+# the stereo-descriptor prefix entirely — which still parses, but as the
+# same flat structure some other seed already found, so the relative-stereo
+# name itself was never extracted. OPSIN parses the correctly-bounded string
+# fine (verified independently); this was purely a character-class gap. See
+# "REAGENT LABEL AND MARKUSH FLAG" above for what happens to a name that
+# contains one once it IS extracted.
+_NAME_CHARS = r"A-Za-z0-9\[\]\(\)\{\}',\-\+\.′’*"
 _SEED = re.compile(rf"[{_NAME_CHARS}]{{{config.IUPAC_MIN_SEED},400}}")
+
+# A relative-stereo descriptor: an R/S/E/Z letter immediately followed by the
+# asterisk that means "this centre's configuration is defined only RELATIVE
+# to the others named, not absolutely" — `rel-(1R*,2S*)-...` reads "opposite
+# configuration at 1 and 2, which enantiomer is unstated." The only legitimate
+# role `*` plays in a string OPSIN accepts as a name is this descriptor, so
+# its presence on an ACCEPTED name is what flags `.markush` below — never
+# checked on rejected candidates or raw text, only on what OPSIN already
+# confirmed parses.
+_RELATIVE_STEREO = re.compile(r"[RSEZ]\*")
 
 # Words that legitimately continue a name after a space. A chemical name is
 # mostly one token, but not always: `…carboxylic acid`, `…hydrochloride salt`,
@@ -202,6 +265,24 @@ class NamedCompound:
     # closest-evidence first; see `anchor.AnchorResult` for the full detail
     # this is flattened from. Never a guess: a human or a later pass reads it.
     cid_clash: str | None = None
+    # `sources/reagents.py::classify(name, smiles)`, called once per structure
+    # in `extract_names` (see "REAGENT LABEL AND MARKUSH FLAG" in the module
+    # docstring). LABELS ONLY, NEVER FILTERS: every structure keeps flowing
+    # through regardless of what these two fields say — an intermediate or
+    # starting material next to the patent's real target is still useful with
+    # no assay value, and this module has no evidence to decide which of those
+    # a "reagent"-labeled row actually is. `label` defaults to `"compound"`,
+    # `classify`'s own default when neither of its tiers fires.
+    label: str = "compound"
+    reason: str = ""
+    # A DIFFERENT, ORTHOGONAL axis from `label`/`reason` — see the module
+    # docstring for why this is a separate field rather than a fourth `label`
+    # value. `True` when `name` carries a relative-stereo descriptor
+    # (`R*`/`S*`/`E*`/`Z*`), meaning the resolved structure stands in for a
+    # SET of stereoisomers rather than one molecule. Set in `extract_names`,
+    # never by `reagents.classify`.
+    markush: bool = False
+    markush_reason: str = ""
 
     @property
     def key(self) -> str:
@@ -301,8 +382,17 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
         if k in seen:
             continue
         seen.add(k)
-        out.append(NamedCompound(patent_id=patent_id, name=name, smiles=smi,
-                                 inchikey=ik, start=pos))
+        # Reagent/trace-fragment LABEL — never a filter, see the module
+        # docstring. Computed here, once per distinct structure, so every
+        # caller of this function gets it for free rather than re-deriving it.
+        verdict = _classify_reagent(name, smi)
+        # Relative-stereo MARKUSH flag — orthogonal to the label above.
+        stereo = _RELATIVE_STEREO.findall(name)
+        out.append(NamedCompound(
+            patent_id=patent_id, name=name, smiles=smi, inchikey=ik, start=pos,
+            label=verdict.label, reason=verdict.reason,
+            markush=bool(stereo),
+            markush_reason=("relative_stereo:" + ",".join(stereo)) if stereo else ""))
 
     # 5. anchor each structure to the patent's OWN compound number — see
     #    `anchor.py`'s module docstring for what was measured and why.
@@ -315,7 +405,12 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
                 nc.cid_clash = "|".join(c.cid for c in result.candidates)
     anchored = sum(1 for nc in out if nc.cid)
     clashed = sum(1 for nc in out if nc.cid_clash)
-    logger.info("iupac: %s — %d candidates parsed, %d distinct structures, "
+    reagents_n = sum(1 for nc in out if nc.label == "reagent")
+    trace_n = sum(1 for nc in out if nc.label == "trace_fragment")
+    markush_n = sum(1 for nc in out if nc.markush)
+    logger.info("iupac: %s — %d candidates parsed, %d distinct structures "
+                "(%d reagent, %d trace_fragment, %d markush), "
                 "%d anchored to a compound id, %d clashed",
-                patent_id, len(kept), len(out), anchored, clashed)
+                patent_id, len(kept), len(out), reagents_n, trace_n, markush_n,
+                anchored, clashed)
     return out

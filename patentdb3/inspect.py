@@ -56,7 +56,8 @@ from collections import defaultdict
 
 from .core import config
 from .repair.gap import raw_block
-from .sources.uspto_assays import extract_from_patent
+from .sources.uspto_assays import CID, build_columns, extract_from_patent
+from .sources.uspto_xml import parse_tables
 
 VALUE_FIELDS = ("value_numeric", "qualifier", "unit", "n_runs", "letter_grade",
                  "range_lo", "range_hi")
@@ -134,16 +135,65 @@ def _cell_text(fragment: str) -> str:
     return " ".join(html.unescape(fragment).split())
 
 
-def _rows_matching_cid(block: str, cid: str) -> list[str]:
-    """Raw `<row>...</row>` text for every row with a cell reading `cid`
-    verbatim — the same string comparison a human does by eye, nothing fancier.
+def _cid_column_index(xml: str, table_id: str) -> int | None:
+    """Which raw `<entry>` position holds the compound id in this table_id's
+    own tgroup(s) — the SAME classification `extract_from_patent` used to
+    decide which cell is the id when it produced the SHIPPED/CURRENT CODE
+    rows printed above this. `build_columns` indexes a parsed row by column
+    position, and for the plain (no-colspan) data rows this corpus is mostly
+    made of, that position coincides with raw `<entry>` ordinal position —
+    the same assumption `classify_column`/`_column_shapes` already make.
+
+    Returns None when no tgroup under this id classifies a CID column at all
+    (a headerless continuation whose header lives in an earlier, differently-
+    shaped tgroup) — callers fall back to a same-cell search and say so.
     """
-    hits = []
+    try:
+        tables = parse_tables(xml)
+    except Exception:
+        return None
+    for t in tables:
+        if t.table_id != table_id:
+            continue
+        try:
+            cols = build_columns(t)
+        except Exception:
+            continue
+        idx = next((c.index for c in cols if c.kind == CID), None)
+        if idx is not None:
+            return idx
+    return None
+
+
+def _rows_matching_cid(block: str, cid: str,
+                       cid_index: int | None = None) -> tuple[list[str], bool]:
+    """Raw `<row>...</row>` text for rows that are ABOUT this compound.
+
+    A bare integer cid collides with an ordinary integer VALUE printed in
+    another compound's row. US10004738 TABLE-US-00001 prints `11` three
+    times: compound 4's Ki, compound 11's own id, and compound 17's Ki — one
+    table, one string, three rows. Matching "cid appears in SOME cell" (the
+    original behaviour, kept below as `any_cell`) reports all three as if
+    they were about compound 11, when only the middle one is.
+
+    When `cid_index` is known (see `_cid_column_index`) only the cell AT THAT
+    POSITION is checked, which is unambiguous — that column is what
+    `extract_from_patent` itself reads the id from. The any-cell result is
+    still returned as a fallback (and the bool says which one the caller
+    should trust) for tables where the id column could not be determined, so
+    a human still sees something rather than nothing.
+    """
+    exact: list[str] = []
+    any_cell: list[str] = []
     for m in _ROW.finditer(block):
         cells = [_cell_text(e.group(1) or "") for e in _ENTRY.finditer(m.group(1))]
         if cid in cells:
-            hits.append(m.group(0).strip())
-    return hits
+            any_cell.append(m.group(0).strip())
+        if cid_index is not None and cid_index < len(cells) and cells[cid_index] == cid:
+            exact.append(m.group(0).strip())
+    if cid_index is not None and exact:
+        return exact, True
+    return any_cell, False
 
 
 def _xml_for(pid: str) -> str | None:
@@ -163,16 +213,28 @@ def _show_source(xml: str, table_ids: list[str], cid: str, full: bool) -> None:
         if full:
             print(block)
             continue
-        hits = _rows_matching_cid(block, cid)
+        cid_index = _cid_column_index(xml, table_id)
+        hits, exact = _rows_matching_cid(block, cid, cid_index)
         if not hits:
             print(f"  (no <row> found with a cell reading exactly {cid!r} — "
                   f"showing the block's first 1200 chars; use --full for all of it)")
             print(block[:1200])
             continue
+        if not exact:
+            if cid_index is not None:
+                print(f"  (id column is index {cid_index}, but no row has {cid!r} "
+                      f"there — falling back to ANY cell reading {cid!r} verbatim, "
+                      f"which may be another compound's VALUE by coincidence, not "
+                      f"its id)")
+            else:
+                print(f"  (id column not determined for this table — showing every "
+                      f"row with a cell reading {cid!r} verbatim; a bare integer cid "
+                      f"can collide with another compound's numeric VALUE)")
         for h in hits:
             print(f"  {h}")
         if len(hits) > 1:
-            print(f"  ({len(hits)} rows matched {cid!r} in this table)")
+            where = "its id column" if exact else "ANY cell (id column unknown/unmatched)"
+            print(f"  ({len(hits)} rows matched {cid!r} in {where} of this table)")
 
 
 # ── modes ─────────────────────────────────────────────────────────────────
