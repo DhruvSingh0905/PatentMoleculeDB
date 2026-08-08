@@ -148,6 +148,42 @@ COST_CEILING = 200                # USD, global
 COST_THRESHOLDS = [50, 100, 150, 200]
 
 
+# ── Identity extraction ──────────────────────────────────────────────────
+# Compound names read out of the patent's OWN description and resolved by
+# OPSIN. Free and offline — OPSIN is a java subprocess, no API, no network.
+#
+# On by default because it is the only identity route that is ours: the name
+# sits in the patent's own prose, so it carries the patent's own compound
+# numbering and needs no bridge. The alternative — Google Patents' embedded
+# SMILES — supplied 97.2% of v2's 17,459 compounds, of which 27.6% were still
+# keyed by GP's positional id and could never be joined to an assay row.
+IUPAC_NAMES = os.environ.get("IUPAC_NAMES", "1") == "1"
+
+# Shortest span worth asking OPSIN about. Below this the parser accepts
+# fragments (`ethyl`, `2-chloro`) that are substituents, not compounds.
+IUPAC_MIN_SEED = 12
+
+# Candidate spans generated per seed. The extractor is deliberately brute
+# force — trim left, extend right, balance brackets, let OPSIN reject — and
+# this bounds the fan-out. 63.8% of OPSIN's real-world failures on this corpus
+# were boundary errors (48.4% unbalanced brackets, 15.4% truncation), which is
+# what the variants exist to search.
+IUPAC_MAX_VARIANTS = 12
+
+
+# ── Google Patents ───────────────────────────────────────────────────────
+# OFF, and not yet ported. GP embeds SMILES/InChIKey pairs it derived by
+# running structure recognition over the patent's drawings — genuinely useful
+# where a compound is drawn but never named, and a liability as a foundation:
+# it is a third party's OCR of an image we also hold, and it numbers compounds
+# positionally so its output cannot be joined to our assay rows without the
+# 250-line bridge that left 27.6% of v2's compounds orphaned.
+#
+# The flag exists now so the decision is explicit rather than implied by an
+# absent file. Nothing reads it yet; when the module lands it must check this.
+GP_ENABLED = os.environ.get("GP_ENABLED", "0") == "1"
+
+
 # ── Rule tier ────────────────────────────────────────────────────────────
 # THE ONE SWITCH THAT SPENDS MONEY. With it on, every patent runs the repair
 # loop after the deterministic reader: find this patent's gaps, apply any rule
