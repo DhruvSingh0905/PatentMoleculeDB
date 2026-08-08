@@ -220,10 +220,18 @@ against the CSV once its own typos are excluded, measured directly against
 
 Those were 89 anchored of 238 structures when measured. Both figures have since
 moved and the RATIO is what carries over: `description_text` began including
-`<heading>`, so US8952177 now yields 308 structures with 165 anchored (53.6%).
+`<heading>`, so US8952177 then yielded 308 structures with 165 anchored (53.6%).
 Anchors nearly doubled without new errors, because a heading pair is exactly
 the `<id>` `<name>` adjacency this module accepts and exactly what a prose
 cross-reference is not.
+
+Moved again, once more without new errors: the dropped-open-paren repair (see
+`_DROPPED_OPEN_PAREN` below) takes US8952177 to 309 structures, 170 anchored
+(55.0%) — +1 structure, +5 anchors, clash count unchanged at 1. Every added
+anchor and the added structure were individually verified against this same
+CSV (`US8952177 Binding IUPAC Final (2).csv`) before/after; see that
+constant's comment for the full measurement, including the two of the seven
+repaired headings that still do not get their own anchor, and why.
 
 WHAT IS STILL UNANCHORED, AND WHY THAT IS CORRECT
 ----------------------------------------------------
@@ -383,6 +391,70 @@ def _clean_fragment(s: str) -> str:
     return " ".join(s.split())
 
 
+# ---------------------------------------------------------------------------
+# THE DROPPED-OPENING-PAREN DEFECT — a typesetting loss in the PATENT'S OWN
+# grant XML, not in our flattening. Confirmed by direct inspection of
+# US8952177's RAW XML (`html.unescape`d, tags stripped, never diagnosed from
+# a parsed view): 7 headings restate a title compound's name with the
+# ring-substituent parenthesis that should open immediately after a `[`
+# simply missing —
+#
+#     as filed:  ...-6-[5-methylpyridin-2-yl)methoxy]-...
+#     correct:   ...-6-[(5-methylpyridin-2-yl)methoxy]-...
+#                        ^ the "(" is gone; its matching ")" survives
+#
+# Hand-verified against the raw XML on Examples 25, 162, 163, 166, 171, 173,
+# 186 (7 occurrences — NOT 174, which an earlier description of this defect
+# named; that heading (`h-0413`, "Example 174") is well-formed on direct
+# inspection, and 166 was the one it omitted). Each is a real title-compound
+# heading whose OWN malformed text never matches the well-formed name OPSIN
+# accepts elsewhere in the document (a correctly-bracketed restatement of the
+# SAME structure — usually the very next stereoisomer's own heading, or an
+# embodiment list earlier in the SUMMARY) — so `find_cid`'s exact-string
+# re-scan finds the id-adjacent occurrence NOWHERE, because the name isn't
+# spelled that way at that position. One structure (Example 163's own
+# stereoisomer) has NO correctly-bracketed restatement anywhere in the
+# document at all, so before this fix it was not merely mis-anchored, it was
+# never extracted as a structure — repairing the text is what makes OPSIN see
+# a parseable name there for the first time.
+#
+# Fixed HERE, once, before either candidate generation
+# (`iupac_names.extract_names`'s seeding) or anchoring ever sees the text:
+# `extract_names` now builds its one working string via `anchor_text(xml)`
+# instead of calling `description_text` directly, so both consumers repair
+# and reuse the SAME string — preserving the "ONE STRING, not two
+# flattenings" invariant this module already relies on for offset sanity.
+#
+# SCOPE, DELIBERATELY NARROW: `[` immediately followed by a digit-led run
+# with NO nested bracket characters, ending `-yl)` — the exact shape of every
+# confirmed occurrence (a locant-prefixed ring/chain substituent name, which
+# this corpus's naming convention always wraps in its own parens before
+# nesting it inside `[...]`). Measured corpus-wide (all 137 cached XMLs,
+# this exact pattern, RAW text): 7 patents, 16 occurrences — general enough
+# to fix here rather than as a US8952177-only patch (US20250163061A1,
+# US9718790, US9745328 x2, US10035778, US10689373, US8846929 each carry it
+# too), narrow enough that it does NOT also "fix" two DIFFERENT, unconfirmed
+# corruptions found nearby in the SAME US8952177 document while measuring
+# this: "(" mistyped as the digit "1" (`[4-1-trifluoromethoxy)benzyl]`), and
+# a dropped "(" that is NOT the first character after `[`
+# (`[2-fluoro-4-trifluoromethoxy)benzyl]`, missing the paren several
+# characters in, before "trifluoromethoxy"). Both are real defects but
+# neither is THIS one, and inventing a bracket for an unconfirmed shape is
+# worse than leaving a name unanchored.
+#
+# Repairing INSERTS one character (the dropped `(`) per hit, so offsets past
+# a repair point are into the REPAIRED string, not the raw `description_text`
+# output — checked before relying on that: nothing outside `extract_names`
+# reads `NamedCompound.start` to re-index a different string (`grep -rn
+# '\.start\b' patentdb3/` — the only non-definition hits are `iupac_names.py`
+# using it for seeding/dedup order, both against this same repaired text).
+_DROPPED_OPEN_PAREN = re.compile(r"\[(\d[\w,'*-]{0,80}?-yl)\)")
+
+
+def _repair_dropped_open_paren(text: str) -> str:
+    return _DROPPED_OPEN_PAREN.sub(lambda m: "[(" + m.group(1) + ")", text)
+
+
 def anchor_text(xml: str) -> str:
     """The heading-inclusive flattening. DELEGATES — it does not reimplement.
 
@@ -394,10 +466,17 @@ def anchor_text(xml: str) -> str:
 
     Kept as a name because it says what the text is FOR, and because tests and
     `iupac_names` both read better for it.
+
+    One repair is applied on top of the delegated flattening — see
+    `_repair_dropped_open_paren` above — because the DEFECT lives in the
+    patent's own XML, not in how either flattening reads it; fixing it here
+    means every caller of `anchor_text` (this module's tests, and
+    `iupac_names.extract_names`, which now reuses this exact string for
+    candidate generation too) sees the same repaired text once.
     """
     from .uspto_xml import description_text
 
-    return description_text(xml, include_headings=True)
+    return _repair_dropped_open_paren(description_text(xml, include_headings=True))
 
 
 @dataclass(frozen=True)

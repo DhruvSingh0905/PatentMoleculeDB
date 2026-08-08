@@ -152,11 +152,14 @@ def test_reagent_label_distribution_matches_measured_baseline():
 def test_asterisk_fix_recovers_relative_stereo_names_as_markush():
     out = _extract()
     markush = [nc for nc in out if nc.markush]
-    # 16, was 11 before `<heading>` text entered candidate generation: five
+    # 30, was 16 before Markush entries stopped deduplicating against
+    # concrete ones — a relative-stereo name shares its InChIKey with its
+    # `racemic cis-` sibling, so half of them were being silently deleted.
+    # Was 11 before `<heading>` text entered candidate generation: five
     # more relative-stereo names are stated only in an Example heading and were
     # never seen by a `<p>`-only pass.
-    assert len(markush) == 16, (
-        f"markush count drifted ({len(markush)}, was 16) — re-measure before touching this")
+    assert len(markush) == 30, (
+        f"markush count drifted ({len(markush)}, was 30) — re-measure before touching this")
     for nc in markush:
         assert _RELATIVE_STEREO.search(nc.name), nc.name
         assert nc.markush_reason.startswith("relative_stereo:"), nc.markush_reason
@@ -177,3 +180,48 @@ def test_non_markush_structures_are_not_flagged():
         if not nc.markush:
             assert not _RELATIVE_STEREO.search(nc.name), nc.name
             assert nc.markush_reason == ""
+
+
+def test_markush_structures_never_carry_an_inchikey():
+    """A generic entity must not claim a single-structure identity.
+
+    `(1R*,2S*)-X` denotes a SET of stereoisomers. An InChIKey asserts one
+    molecule, which is false about it — and not harmlessly so: OPSIN resolves
+    `(1R*,2S*)-X` and `racemic cis-X` to the SAME key because they ARE the same
+    racemate, so a shared key made two DISTINCT patent examples collide in
+    dedup and one was silently deleted, with its compound number and its assay
+    values. The field stays empty until enumeration produces real molecules.
+
+    Capability test, not a count: it fails if any Markush entry ever acquires
+    a key, whatever the totals happen to be that day.
+    """
+    got = extract_names(_xml(), PID)
+    markush = [n for n in got if n.markush]
+    assert markush, "no Markush structures found — fixture drifted"
+    offenders = [n.name[:60] for n in markush if n.inchikey]
+    assert not offenders, f"Markush entries carrying an InChIKey: {offenders}"
+
+
+def test_markush_does_not_deduplicate_against_a_concrete_structure():
+    """Blanking the InChIKey alone would NOT have fixed the collision.
+
+    `NamedCompound.key` falls back to SMILES when there is no InChIKey, and a
+    relative-stereo name shares its SMILES with its concrete sibling too. So
+    the key is namespaced. This asserts the two kinds coexist rather than one
+    erasing the other — the actual mechanism, not its symptom.
+    """
+    got = extract_names(_xml(), PID)
+    by_smiles = {}
+    for n in got:
+        by_smiles.setdefault(n.smiles, []).append(n)
+    shared = {s: v for s, v in by_smiles.items()
+              if len(v) > 1 and any(n.markush for n in v) and any(not n.markush for n in v)}
+    assert shared, (
+        "no SMILES is shared between a Markush and a concrete structure on this "
+        "patent — the collision this guards against is not exercised, so the "
+        "test proves nothing. Re-check the fixture.")
+    for smi, group in shared.items():
+        assert {n.markush for n in group} == {True, False}
+        assert len({n.key for n in group}) == len(group), (
+            f"namespacing failed: {len(group)} structures share SMILES {smi[:40]} "
+            f"and collapse to {len({n.key for n in group})} key(s)")

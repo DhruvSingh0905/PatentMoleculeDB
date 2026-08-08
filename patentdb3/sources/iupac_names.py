@@ -122,7 +122,6 @@ from ..core import config
 from .anchor import anchor_text as _anchor_text
 from .anchor import find_cid as _find_cid
 from .reagents import classify as _classify_reagent
-from .uspto_xml import description_text
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +285,15 @@ class NamedCompound:
 
     @property
     def key(self) -> str:
+        """The identity this structure may be joined or deduplicated on.
+
+        A Markush entry is namespaced and never collides with a concrete one:
+        it has no InChIKey by construction (see `extract_names`), and its
+        SMILES is shared with its concrete siblings, so an un-namespaced key
+        would silently merge two distinct patent examples.
+        """
+        if self.markush:
+            return "markush::" + (self.smiles or self.name)
         return self.inchikey or self.smiles
 
 
@@ -353,7 +361,19 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
     # everything else: 532 fewer anchors and 41% slower. The reason is
     # positional: a heading-sourced name sits beside its own number, while the
     # same name restated mid-prose usually does not.
-    text = description_text(xml, include_headings=True)
+    #
+    # `_anchor_text(xml)`, NOT `description_text(xml, include_headings=True)`
+    # directly: same heading-inclusive flattening, plus one repair applied on
+    # top — `anchor.py`'s `_repair_dropped_open_paren`, for a confirmed
+    # typesetting defect in the patent's OWN grant XML where a ring-substituent
+    # `(` that should open right after a `[` is simply missing (see that
+    # module's docstring for the measurement — 7 US8952177 headings, 16
+    # occurrences across 7 of the 137 cached patents). Fixing it here, before
+    # seeding, means OPSIN gets a chance to accept the name AT the heading
+    # position, not only at some other correctly-typeset restatement of the
+    # same structure elsewhere in the document — which is what `find_cid`
+    # needs to anchor it to its own heading's id at all.
+    text = _anchor_text(xml)
     if not text:
         return []
 
@@ -392,7 +412,32 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
     seen: set[str] = set()
     for pos in sorted(best):
         name, smi, ik = best[pos]
-        k = ik or smi
+        # MARKUSH IS DECIDED BEFORE DEDUP, and that ordering is the point.
+        stereo = _RELATIVE_STEREO.findall(name)
+        is_markush = bool(stereo)
+
+        # A MARKUSH NAME GETS NO InChIKey. `(1R*,2S*)-X` denotes a SET of
+        # stereoisomers, so a single-structure identifier is a false claim
+        # about it — and it is not a harmless one. OPSIN resolves
+        # `(1R*,2S*)-X` and `racemic cis-X` to the SAME key, because they ARE
+        # the same racemate; the dedup below then kept whichever appeared
+        # first and silently dropped the other. That is how US8952177's
+        # Examples 163 and 166 vanished: two distinct patent examples, each
+        # with its own compound number and its own assay values, collapsed
+        # into one because they share a structure.
+        #
+        # An InChIKey returns once the set is ENUMERATED and each member is a
+        # real molecule. Until then the field is empty, deliberately, so that
+        # nothing downstream can join on it and assert an identity we have not
+        # established.
+        if is_markush:
+            ik = ""
+
+        # Namespaced dedup. Blanking the key alone would not have fixed the
+        # collision — `key` falls back to SMILES, and the two names share that
+        # too. A generic and a concrete structure are different KINDS of thing
+        # and must not deduplicate against one another; two generics still do.
+        k = ("markush::" if is_markush else "") + (ik or smi)
         if k in seen:
             continue
         seen.add(k)
@@ -400,23 +445,21 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
         # docstring. Computed here, once per distinct structure, so every
         # caller of this function gets it for free rather than re-deriving it.
         verdict = _classify_reagent(name, smi)
-        # Relative-stereo MARKUSH flag — orthogonal to the label above.
-        stereo = _RELATIVE_STEREO.findall(name)
         out.append(NamedCompound(
             patent_id=patent_id, name=name, smiles=smi, inchikey=ik, start=pos,
             label=verdict.label, reason=verdict.reason,
-            markush=bool(stereo),
+            markush=is_markush,
             markush_reason=("relative_stereo:" + ",".join(stereo)) if stereo else ""))
 
     # 5. anchor each structure to the patent's OWN compound number — see
     #    `anchor.py`'s module docstring for what was measured and why.
-    # THE SAME STRING `text` — not a second flattening. `anchor_text(xml)` is
-    # byte-identical to `description_text(xml, include_headings=True)` (verified
-    # on the corpus), so reusing `text` removes one full pass over every
-    # document AND makes the offset spaces identical by construction rather
-    # than by convention. The "offsets are not interchangeable" hazard that
-    # `anchor_text`'s docstring warns about cannot arise when there is one
-    # string.
+    # THE SAME STRING `text` — not a second flattening. `text` above IS the
+    # result of one `_anchor_text(xml)` call, so reusing it here removes a
+    # second full pass over every document AND makes the offset spaces
+    # identical by construction rather than by convention (both the dropped-
+    # paren repair and the heading-inclusive flattening happen exactly once).
+    # The "offsets are not interchangeable" hazard that `anchor_text`'s
+    # docstring warns about cannot arise when there is one string.
     anchor_src = text
     if anchor_src:
         for nc in out:

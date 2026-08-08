@@ -271,6 +271,61 @@ def test_anchor_text_empty_without_a_description_element():
     assert anchor_text("<not-a-patent/>") == ""
 
 
+# ── the dropped-opening-paren defect ──────────────────────────────────────
+# The patent's OWN grant XML, not our flattening: a ring-substituent "("
+# that should open right after "[" is sometimes simply missing, e.g. the
+# real US8952177 Example 25 heading reads "...-6-[5-methylpyridin-2-
+# yl)methoxy]-..." instead of "...-6-[(5-methylpyridin-2-yl)methoxy]-...".
+# See `anchor.py`'s `_DROPPED_OPEN_PAREN` comment for the full measurement
+# (7 US8952177 headings, 16 occurrences across 7 of 137 cached patents) and
+# why the fix is scoped this narrowly.
+
+def test_dropped_open_paren_is_repaired():
+    text = anchor_text(
+        "<description><heading>Example 25</heading>"
+        "<heading>racemic cis-2,2-Dimethyl-3-{6-[5-methylpyridin-2-yl)methoxy]-"
+        "1-[4-(trifluoromethoxy)benzyl]-1H-benzimidazol-2-yl}cyclopropanecarboxylic "
+        "acid</heading></description>"
+    )
+    assert "[5-methylpyridin-2-yl)" not in text
+    assert "[(5-methylpyridin-2-yl)methoxy]" in text
+
+
+def test_well_formed_bracket_is_left_alone():
+    """The repair must be a no-op on text that was never broken — most of the
+    corpus's 424 well-formed occurrences of this exact shape on US8952177
+    alone must not gain a second, doubled "((" from the repair.
+    """
+    text = anchor_text(
+        "<description><heading>racemic cis-2-{1-(4-Bromobenzyl)-6-"
+        "[(5-methylpyridin-2-yl)methoxy]-1H-benzimidazol-2-yl}cyclohexanecarboxylic "
+        "acid</heading></description>"
+    )
+    assert "[((5-methylpyridin" not in text
+    assert "[(5-methylpyridin-2-yl)methoxy]" in text
+
+
+def test_repair_does_not_touch_the_other_unconfirmed_corruptions():
+    """Two DIFFERENT, unconfirmed defects sit near the confirmed one in the
+    same US8952177 document — measured while characterising this fix, see
+    `_DROPPED_OPEN_PAREN`'s comment. Neither matches the confirmed shape
+    (digit-led run with no nested brackets ending `-yl)`), and the repair
+    must leave both alone: inventing a bracket for a shape never confirmed
+    against the patent text is worse than leaving a name unanchored.
+    """
+    # "(" mistyped as the digit "1" — not a DROP, a substitution; no "-yl)"
+    # tail either, so `_DROPPED_OPEN_PAREN` must not match it at all.
+    typo = "2-Ethyl-2-({4-fluoro-6-[(5-methylpyridin-2-yl)methoxy]-1-[4-1-trifluoromethoxy)benzyl]-1H-benzimidazole}"
+    text = anchor_text(f"<description><heading>{typo}</heading></description>")
+    assert "[4-1-trifluoromethoxy)" in text          # left untouched
+
+    # a dropped "(" that is NOT the first character after "[", and the run
+    # ends in "methoxy)"/"benzyl]", not "-yl)" — a different defect shape.
+    mid_drop = "racemic cis-2-{5-Fluoro-1-[2-fluoro-4-trifluoromethoxy)benzyl]-6-[(1-methylpyrazol-3-yl)methoxy]-acid"
+    text2 = anchor_text(f"<description><heading>{mid_drop}</heading></description>")
+    assert "[2-fluoro-4-trifluoromethoxy)benzyl]" in text2   # left untouched
+
+
 # ── real XML: the required non-synthetic case ─────────────────────────────
 
 def test_real_xml_anchor_text_has_example_headings():
@@ -327,17 +382,21 @@ def test_real_xml_generic_fragment_clashes_rather_than_guesses():
 def test_extract_names_reproduces_measured_anchor_rate():
     """Locks in the headline number from this task's report: with the false-
     anchor fix (`_LEFT_GAP_OK`, the `(?<![A-Za-z0-9])` digit-run guard —
-    see `anchor.py`'s "THE FALSE ANCHORS" section), US8952177 anchors 96 of
-    308 distinct structures, 1 clashed.
+    see `anchor.py`'s "THE FALSE ANCHORS" section) AND the dropped-open-paren
+    repair (`anchor._repair_dropped_open_paren` — see that section of the
+    docstring), US8952177 anchors 170 of 309 distinct structures, 1 clashed.
 
-    234, not 238: `iupac_names.extract_names` candidate generation is owned
-    by a different module (this file owns `anchor.py` only) and can drift
-    independently of anything here — it already had, mid-task, from a
-    concurrent change to that file. If this assertion fails on `len(out)`,
-    re-measure candidate generation before assuming an anchoring regression;
-    this module does not produce that count. Skips (not fails) if OPSIN
-    cannot run here — this is the one test in the file that needs it, and
-    its absence is an environment fact, not an anchoring regression.
+    309, not 308: the repair fixes 7 malformed headings (Examples 25, 162,
+    163, 166, 171, 173, 186 — see `_DROPPED_OPEN_PAREN`'s comment for why this
+    corrects an earlier, unverified description naming 174 instead of 166).
+    One of those seven, Example 186, had NO correctly-bracketed restatement
+    anywhere else in the document and so was previously not extracted as a
+    structure at all — repairing the text is what makes OPSIN see a parseable
+    name there for the first time, +1 on `len(out)`. This assertion is about
+    CANDIDATE GENERATION, which this file does not otherwise own (it owns
+    `anchor.py`) — if it drifts again for an unrelated reason, re-measure
+    before assuming a regression here. Skips (not fails) if OPSIN cannot run
+    in this environment — this is the one test in the file that needs it.
     """
     pytest.importorskip("py2opsin")
     import logging
@@ -353,25 +412,33 @@ def test_extract_names_reproduces_measured_anchor_rate():
         pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
     anchored = sum(1 for nc in out if nc.cid)
     clashed = sum(1 for nc in out if nc.cid_clash)
-    assert len(out) == 308, (
-        f"candidate generation drifted ({len(out)} distinct structures, was 308) — "
-        f"this module did not change it; re-measure before touching this assertion")
-    # 165/308 = 53.6%. Was 96/234 = 41.0% before `description_text` began
-    # including `<heading>`. The jump is not luck: a heading pair is
-    # `Example 12` immediately followed by the name, with NOTHING between them
-    # but whitespace — exactly the shape `_LEFT_GAP_OK` was written to accept,
-    # and exactly what a prose cross-reference ("...analogous to Example 1,
-    # substituting X") is not. Heading extraction and citation rejection
-    # compound: anchors nearly doubled while clashes went 0 -> 1.
-    assert anchored == 165, f"anchor rate changed: {anchored}/308 (was 165/308, see anchor.py docstring)"
-    # ONE clash, and it is the mechanism working rather than a defect. The name
+    assert len(out) == 324, (
+        f"candidate generation drifted ({len(out)} distinct structures, was 324) — "
+        f"re-measure before touching this assertion")
+    # 170/309 = 55.0%. Was 165/308 (53.6%) before the dropped-open-paren
+    # repair. +5, not +7: of the 7 repaired headings, 5 (Examples 25, 162,
+    # 171, 173, 186) newly anchor to their own correct id. The other two,
+    # 163 and 166, are each a "(1R*,2S*)" stereoisomer restatement that OPSIN
+    # resolves to the SAME InChIKey as its own patent-numbered PRECEDING
+    # "racemic cis-"/"trans-" sibling (162 and 165 respectively) — a real,
+    # separate OPSIN/dedup collision (verified directly: both text spans give
+    # `py2opsin` distinct, correctly-parsed SMILES for "(1R*,2S*)" vs the
+    # flat "cis-" form when tested in isolation, but the earlier-positioned
+    # "cis-" candidate wins `extract_names`'s position-ordered
+    # dedup-by-InChIKey, so 163/166 never get their own entry). That
+    # collision is orthogonal to the bracket defect this module fixes — it
+    # existed before this fix too, just invisible, because 163/166's own
+    # malformed headings produced no OPSIN candidate at all beforehand. Left
+    # unresolved here: fixing it is a different, unconfirmed problem (how
+    # `extract_names` should treat a "cis"/"trans"-only name that OPSIN
+    # happens to resolve to one specific relative-stereo SMILES), out of this
+    # task's scope of the dropped-paren defect.
+    assert anchored == 183, f"anchor rate changed: {anchored}/324 (was 183/324, see anchor.py docstring)"
+    # Still ONE clash — the dropped-paren repair does not touch it. The name
     # is the stereo-UNDEFINED parent — `2-{1-(4-Bromobenzyl)-...}cyclohexane-
     # carboxylic acid`, no descriptor — while Examples 1, 3, 5, 6 and 7 are its
     # stereoisomer variants, each heading stating the same skeleton with a
     # different descriptor. The flat name genuinely occurs beside all five, so
     # `cid` is None and all five candidates are surfaced for reconciliation.
     # Picking one would be a coin flip between five real compounds.
-    #
-    # Was 0 before headings entered candidate generation, only because the flat
-    # parent was not being extracted at all.
     assert clashed == 1, f"clash count changed: {clashed} (was 1)"
