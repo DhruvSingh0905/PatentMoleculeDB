@@ -179,9 +179,12 @@ COST_THRESHOLDS = [50, 100, 150, 200]
 #     signal available.
 #   - "names are not yet anchored to the patent's compound ids, so the
 #     structures artifact cannot join the assay rows" — `sources/anchor.py`
-#     anchors them. Measured on the current tree: US8952177 183 of 328
-#     structures carry a cid; the heading route contributes 1,176 corpus-wide
-#     of which 1,176 carry one.
+#     anchors them. Re-measured against `out/structures.tsv` at manifest
+#     2026-08-08T23:08:18 (137 patents, 64,465 rows): US8952177 183 of 328
+#     structures carry a cid; the heading route contributes 1,866 corpus-wide
+#     and ALL 1,866 carry one. (This read 1,176 until the numeric-entity,
+#     framing-stack and trailing-code fixes landed; a number in a comment is a
+#     claim about a version of the code and does not update itself.)
 #
 # So the artifact is no longer "unfiltered, unanchored structures in something
 # that looks finished," which was the honest reason to keep it off. What is

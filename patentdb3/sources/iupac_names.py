@@ -23,11 +23,11 @@ to be bridged afterwards. Measured by running THIS module, not by a probe:
 
     patent        distinct structures    names >=45 chars    with a cid
     US8952177             328                  270              183
-    US10214537          1,058                  920              789
-    US10544143            289                  232              179
+    US10214537          1,774                1,626              912
+    US10544143            290                  233              131
 
 For scale: US10544143's Google Patents path produced 237 compounds. Reading the
-patent's own text produces 289 of them, offline and at $0.
+patent's own text produces 290 of them, offline and at $0.
 
 (Two earlier versions of this paragraph were wrong, in the same way, and both
 were caught by re-running the code rather than by reading it. The first said

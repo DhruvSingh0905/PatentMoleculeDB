@@ -15,9 +15,9 @@ A character-count proxy (`>=45 chars`) was tried first and rejected as a
 proxy, not a rule:
 
     patent        all structures    >=45 chars
-    US8952177          238             180
-    US10214537       1,018             887
-    US10544143         222             165
+    US8952177          328             270
+    US10214537       1,774           1,626
+    US10544143         290             233
 
 Length correlates with "is a real target/intermediate" only because complex
 drug-like scaffolds tend to have long names — but simple, short building
@@ -73,13 +73,13 @@ MEASURED, on the 1,478 OPSIN-accepted structures from the three patents above
 NOT measured — see below):
 
     patent        structures   flagged reagent   of which >=45 chars
-    US8952177          238            5                  0
-    US10214537       1,018           37                  8
-    US10544143         222           12                  3
-    TOTAL            1,478           54                 11
+    US8952177          328            5                  0
+    US10214537       1,774           37                  8
+    US10544143         290           12                  3
+    TOTAL            2,392           54                 11
 
-54/1,478 (3.7%) are classified as reagent-or-fragment. Net effect versus the
-length proxy: 1,424 kept as compounds here vs. 1,232 kept by `>=45 chars` —
+54/2,392 (2.3%) are classified as reagent-or-fragment. Net effect versus the
+length proxy: 2,338 kept as compounds here vs. 2,129 kept by `>=45 chars` —
 this rule recovers 203 real building blocks the length cutoff discarded,
 while ALSO catching 11 spelled-out reagents the length cutoff would have kept.
 
