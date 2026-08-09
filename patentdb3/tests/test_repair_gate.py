@@ -410,6 +410,16 @@ def test_self_heal_flag_selects_the_pipeline(monkeypatch, tmp_path):
 
     monkeypatch.setattr(V, "DUMP_PATH", tmp_path / "d.tsv")
     monkeypatch.setattr(V, "MANIFEST_PATH", tmp_path / "m.json")
+    # STRUCT_PATH was missing here, and `dump()` opens all three. This test
+    # predates the structures artifact — when `STRUCT_PATH` was added to
+    # `dump()` the redirect was not — so every run of the suite overwrote the
+    # real `out/structures.tsv` with one patent's worth of rows while leaving
+    # `reader_dump.tsv` and `latest.json` correct. The manifest then described
+    # 64,465 rows across 137 patents next to a file holding 328 from one, with
+    # nothing raising. Found by an audit reading the artifact mid-suite, not by
+    # the suite. `conftest.py` now redirects all three session-wide; this line
+    # is belt-and-braces so the test is correct read on its own.
+    monkeypatch.setattr(V, "STRUCT_PATH", tmp_path / "s.tsv")
 
     V.dump([PID], heal=False)
     man = json.loads((tmp_path / "m.json").read_text())

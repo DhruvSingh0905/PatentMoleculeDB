@@ -88,7 +88,15 @@ def redirected(tmp_path, monkeypatch):
     monkeypatch.setattr(verify, "MANIFEST_PATH", tmp_path / "latest.json")
     losses.reset(tmp_path / "loss_log.jsonl")
     yield tmp_path
-    losses.reset(losses.LOSS_LOG)
+    # NOT `losses.reset(losses.LOSS_LOG)`. That re-pointed at the PRODUCTION
+    # log and truncated it — `reset` truncates whatever it is handed — so every
+    # run of this file emptied a corpus artifact. Found when an audit reading
+    # `out/loss_log.jsonl` watched it go to 0 bytes mid-read while
+    # `latest.json`, written only at the end of a dump, went on describing
+    # contents that no longer existed. `conftest.py` now makes the production
+    # path unreachable session-wide; this teardown just hands the session
+    # fixture's scratch path back.
+    losses.reset(tmp_path / "teardown_loss_log.jsonl")
 
 
 def _read_struct(path):
