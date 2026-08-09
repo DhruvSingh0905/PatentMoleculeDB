@@ -223,6 +223,7 @@ orthogonal to whether the name itself denotes one structure or a set).
 """
 from __future__ import annotations
 
+import html
 import logging
 import os
 import re
@@ -334,7 +335,31 @@ _FRAMING_TAIL = re.compile(
     r"peak|step|salt|free\s+base)\b[^()]*\)\s*$", re.I)
 
 _TAG = re.compile(r"<[^>]+>")
-_ENTITY = {"&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&apos;": "'"}
+# THE FIVE NAMED XML ENTITIES ARE NOT THE SET THAT APPEARS HERE. This was a
+# five-entry dict, and everything outside it — every NUMERIC character
+# reference — survived into the name and was handed to OPSIN verbatim:
+#
+#     [1,1&#x2032;-biphenyl]-3-carboxamide
+#         is unparsable ... The following was not parseable:
+#         &#x2032;-biphenyl]-3-carboxamide
+#
+# `&#x2032;` is PRIME, the character that distinguishes the 1' position of a
+# biphenyl. Measured over the cached corpus: **4,448 of 50,909 headings, in 99
+# of 137 patents**, carry at least one numeric reference. On US10155002 it is
+# the dominant cause of failure outright.
+#
+# This is OUR defect, not a corruption in the patent — the XML is correct and
+# the loss is in reading it. Recording it here because the name heal-loop's
+# first run diagnosed it correctly and proposed a rule to repair it, which is
+# precisely the outcome to avoid: buying a rule to work around our own
+# unescaping is the "never diagnose from the parsed view" failure one level up,
+# and it would have entered the library as a permanent, plausible-looking
+# pattern for a bug that should simply be fixed.
+#
+# `html.unescape` handles the named set, the decimal form (`&#8242;`) and the
+# hex form (`&#x2032;`) alike, and leaves an unrecognised `&...;` untouched.
+def _unescape(s: str) -> str:
+    return html.unescape(s) if "&" in s else s
 
 # Shortest residual worth asking about. A heading whose name text is shorter
 # than this is a section title, not a compound.
@@ -477,9 +502,7 @@ def _heading_texts(xml: str) -> list[tuple[str, str]]:
     """
     out: list[tuple[str, str]] = []
     for m in _HEADING_EL.finditer(xml):
-        txt = _TAG.sub("", m.group(1))
-        for ent, ch in _ENTITY.items():
-            txt = txt.replace(ent, ch)
+        txt = _unescape(_TAG.sub("", m.group(1)))
         txt = re.sub(r"\s+", " ", txt).strip()
         idm = _HEADING_ID.match(txt)
         if not idm:
