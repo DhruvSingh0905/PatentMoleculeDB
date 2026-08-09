@@ -397,12 +397,24 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
 
 def main(argv: list[str]) -> int:
     if "--dump" in argv:
-        pids = [a for a in argv[1:] if not a.startswith("-")] or ["US8952177"]
+        named = [a for a in argv[1:] if not a.startswith("-")]
+        # `--all --dump` USED TO DUMP ONE PATENT. This branch is checked first
+        # and did not look at `--all`, so with no positional id it fell through
+        # to the US8952177 default, printed "wrote 328 structures for 1
+        # patent(s)", exited 0, and left a corpus-shaped artifact holding one
+        # document. Grading anything off that reports a number that is true
+        # about something other than what it was quoted as — the exact failure
+        # this repo's CLAUDE.md is mostly about.
+        if "--all" in argv:
+            pids = sorted(p.split("/")[-1][:-4]
+                          for p in glob.glob(str(XML_DIR / "*.xml")))
+        else:
+            pids = named or ["US8952177"]
         # CLI beats the env var, which beats the default. `--no-heal` is how you
         # get the reader-only baseline any recovery claim must be stated against.
         heal = False if "--no-heal" in argv else (True if "--heal" in argv else None)
         for pid in pids:
-            one(pid, show=6)
+            one(pid, show=0 if len(pids) > 3 else 6)
         dump(pids, heal=heal)
         return 0
     if "--all" in argv:
