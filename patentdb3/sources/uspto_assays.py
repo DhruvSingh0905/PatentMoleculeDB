@@ -173,11 +173,45 @@ _CID_PAT = re.compile(rf"^\s*(?:{_CID_LABEL.pattern[2:]})?{_CID_CORE}\s*$", re.I
 _CID_SHAPE = re.compile(r"^([A-Za-z]{1,3}[-–]?)?0*(\d+)([-–]?[a-zA-Z])?$")
 
 
+# Longest string that can be a compound id. THE CORPUS PICKS THIS, not taste:
+# the distinct cids extracted over 137 patents are bimodal in length with an
+# EMPTY GAP between 29 and 70 characters —
+#
+#     10-19    8     `α-6-mPEG1-O-Codeine`  (19) — a real US9233167 label
+#     20-29   16
+#     30-69    0     <- nothing lives here
+#     70-349 404     full IUPAC names, e.g. `N-(3-((1R,5S,6R)-3- amino-5-...`
+#
+# so any threshold in that gap separates the two populations exactly. 40 sits
+# in the middle of it.
+#
+# WHY THIS IS A LENGTH BOUND AND NOT A SHAPE TEST. `_CID_SHAPE` below permits
+# one trailing letter, so 505 perfectly good ids — `100AA`, `101BA`, `10-1` —
+# already fail it. Rejecting on shape would delete them. Length is the only
+# property that separates a compound number from a compound NAME without
+# needing to enumerate every id convention a patent might use.
+_CID_MAX_LEN = 40
+
+
 def normalize_cid(text: str) -> str:
-    """`Example 007` / `Cpd. No. 7` / `7` → `7`.
+    """`Example 007` / `Cpd. No. 7` / `7` → `7`. `""` when it cannot be an id.
 
     One canonical form, so a value found in a table headed `Example N` lands on
     the same compound as one found in a table headed `Cpd. No. N`.
+
+    RETURNS EMPTY FOR A NON-ID, which is new and is the point. This function
+    used to return whatever it was handed when nothing matched, so when
+    `build_columns` mistook a `Name` column for the id column, the compound's
+    own IUPAC name became its cid: 410 assay rows across US9611261 and
+    US9018217, in two tables, each keyed by a 70-344 character "id" that can
+    never join to anything. Nothing downstream could tell that from a real id —
+    it is a non-empty string in the cid field, so every consumer treated it as
+    one.
+
+    The upstream defect (a name column scoring as the id column) is real and
+    lives in `build_columns`; this is the contract check that stops it becoming
+    silent data. A function that promises a canonical id has to be able to say
+    "this is not one".
     """
     s = (text or "").strip()
     s = _CID_LABEL.sub("", s).strip()
@@ -185,7 +219,7 @@ def normalize_cid(text: str) -> str:
     m = _CID_SHAPE.match(s)
     if m:
         return f"{m.group(1) or ''}{m.group(2)}{m.group(3) or ''}"
-    return s
+    return s if len(s) <= _CID_MAX_LEN else ""
 
 _HEADER_CID = re.compile(
     r"\b(compound|cpd|example|ex#|entry|structure\s*no|no\.?|number|id)\b", re.I)

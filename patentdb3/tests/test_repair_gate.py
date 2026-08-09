@@ -456,3 +456,36 @@ def test_config_default_is_heal_on(monkeypatch):
         assert fresh.SELF_HEAL is True
     finally:
         importlib.reload(config)      # restore whatever the caller's env says
+
+
+# ── normalize_cid's length bound ─────────────────────────────────────────
+
+def test_normalize_cid_refuses_a_compound_NAME_as_an_id():
+    """THE REGRESSION. `build_columns` can mistake a `Name` column for the id
+    column, and when it did, the compound's own IUPAC name became its cid —
+    410 assay rows across US9611261 and US9018217, each keyed by a 70-344
+    character "id" that can never join to anything.
+
+    Nothing downstream could tell that from a real id: it is a non-empty
+    string in the cid field, so every consumer treated it as one. The upstream
+    defect is real and lives in `build_columns`; this is the contract check
+    that stops it becoming silent data.
+    """
+    from patentdb3.sources.uspto_assays import normalize_cid
+    name = ("5,7-dimethyl-2((1-methyl-4-phenyl-1H-imidazol-2- ylthio)methyl)"
+            "imidazo[1,2-a]pyrimidine")
+    assert normalize_cid(name) == ""
+
+
+def test_normalize_cid_keeps_every_real_id_shape_in_this_corpus():
+    """The bound is a LENGTH, not a shape, because `_CID_SHAPE` permits only
+    one trailing letter and 505 perfectly good corpus ids already fail it.
+    `α-6-mPEG1-O-Codeine` (19 chars, US9233167) is the longest real one seen
+    and it must survive — the corpus is bimodal with an empty gap between 29
+    and 70 characters, which is where the bound sits.
+    """
+    from patentdb3.sources.uspto_assays import normalize_cid
+    for raw, want in [("7", "7"), ("Example 007", "7"), ("Cpd. No. 7", "7"),
+                      ("100AA", "100AA"), ("10-1", "10-1"), ("I-0020", "I-20"),
+                      ("α-6-mPEG1-O-Codeine", "α-6-mPEG1-O-Codeine")]:
+        assert normalize_cid(raw) == want, raw
