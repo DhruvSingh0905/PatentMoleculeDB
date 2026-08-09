@@ -96,12 +96,36 @@ def test_ground_rejects_a_rule_matching_none_of_the_batch():
     assert "matches none" in g.why
 
 
-def test_ground_rejects_an_over_long_replacement():
+def test_ground_rejects_a_large_edit():
     """A rule may repair typesetting; writing 20 characters of chemistry into
     a name is supplying DATA, which this tier does not buy."""
     g = ground(_p(site="a", replacement="x" * 20), ["abc"], [])
     assert not g.ok
-    assert "at most" in g.why
+    assert "distance" in g.why
+
+
+def test_ground_accepts_a_long_replacement_that_is_a_small_edit():
+    """THE THIRD REGRESSION, and it cost a whole sweep.
+
+    The bound was `len(replacement) <= 4`, which rejected `puridin` ->
+    `pyridin` — a ONE CHARACTER substitution in US10155002 that the model had
+    diagnosed correctly — because the natural spelling of the rule writes seven
+    characters. Five configurations adopted zero rules for this reason alone.
+    What the bound is for is "do not write chemistry into the name", and edit
+    distance says that directly.
+    """
+    g = ground(_p(site="puridin", replacement="pyridin"),
+               ["...dihydropuridin-3-yl..."], [])
+    assert g.ok, g.why
+
+
+def test_ground_rejects_deleting_a_substituent_suffix():
+    """`-2-yl` -> `` is distance 5. The amputation boundary falls out of the
+    edit bound independently of the coverage gate downstream."""
+    g = ground(_p(site="-2-yl$", replacement=""),
+               ["1-methylpiperidin-2-yl"], [])
+    assert not g.ok
+    assert "distance" in g.why
 
 
 def test_ground_rejects_an_uncompilable_regex():
@@ -119,16 +143,18 @@ def test_ground_rejects_a_rule_that_changes_nothing():
 def test_ground_rejects_collateral_damage_to_names_that_already_parse():
     """Invisible to the outcome gate — the damaged names are not in this gap
     and are never measured there. So it has to be blocked before the fact."""
+    # A SMALL edit that fires everywhere. The edit-size bound is checked first,
+    # so a fixture with a large edit would be rejected for that reason instead
+    # and this test would pass without ever reaching the collateral check.
     clean = [f"methyl-{i}-benzamide" for i in range(100)]
-    g = ground(_p(site="methyl", replacement=""), ["methyl-broken"], clean)
+    g = ground(_p(site="e", replacement="a"), ["methyl-brokene"], clean)
     assert not g.ok
     assert "ALREADY parse" in g.why
 
 
 def test_ground_tolerates_collateral_below_the_threshold():
-    clean = [f"compound-{i}" for i in range(100)] + ["rare-token-here"]
-    g = ground(_p(site="rare-token", replacement="x"),
-               ["rare-token-broken"], clean)
+    clean = [f"compound-{i}" for i in range(100)] + ["rare-qq-here"]
+    g = ground(_p(site="qq", replacement="q"), ["rare-qq-broken"], clean)
     assert g.ok, g.why
 
 

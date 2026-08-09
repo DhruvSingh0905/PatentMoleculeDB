@@ -210,13 +210,19 @@ def propose(gaps: list[NameGap], *, model: str = SYNTH_MODEL,
     attempts = attempts or []
     prompt = _render(gaps, digest, attempts)
 
-    # The attempt history is part of the QUESTION, so it is part of the key —
-    # without it every retry reads attempt one's answer back at $0 and the loop
-    # spins, which looks exactly like a model that will not change its mind.
-    # The gap set is keyed by CONTENT so two patents with identical failures
-    # share one purchase.
-    body = json.dumps([g.name_text for g in gaps], sort_keys=True)
-    key_src = body + json.dumps([a.get("why") for a in attempts], default=str)
+    # THE KEY IS THE PROMPT, because the prompt IS the question.
+    #
+    # This was keyed on the gap names plus the attempt history, which is a
+    # SUBSET of what goes into the call — `SHOW_CLEAN` and the OPSIN-error
+    # annotation change the prompt and did not change the key. The first
+    # harness sweep therefore reported $0.0000 for the `no-opsin-error` and
+    # `no-clean-contrast` arms: they were reading the baseline's cached answers
+    # and measuring nothing at all, while looking like a decisive result that
+    # the extra context is free.
+    #
+    # Hashing the rendered prompt makes every knob that changes the question
+    # change the key, by construction, with nothing to remember to add.
+    key_src = prompt
     cache_key = (f"namesynth::{PROMPT_VERSION}::{model}::"
                  f"{hashlib.sha256(key_src.encode()).hexdigest()[:16]}")
     cached = get_cached(model, cache_key)

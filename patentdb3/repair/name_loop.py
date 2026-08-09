@@ -136,7 +136,8 @@ def _journal(path: Path, entry: dict) -> None:
 def repair_names(xml: str, patent_id: str = "", *,
                  library: NameRuleLibrary | None = None,
                  journal: Path | None = None,
-                 max_calls: int = 6) -> NameRepairReport:
+                 max_calls: int = 6,
+                 with_opsin_errors: bool = True) -> NameRepairReport:
     """Find, apply, buy, escalate — for one patent.
 
     `library` and `journal` are injectable so the harness and the test suite
@@ -149,7 +150,12 @@ def repair_names(xml: str, patent_id: str = "", *,
     lib = library if library is not None else NameRuleLibrary()
     jpath = journal or NAME_JOURNAL
 
-    gaps = find_name_gaps(xml, patent_id)
+    # `with_opsin_errors` is threaded through rather than left to the default
+    # so the harness can actually ablate it. Its first version pre-computed
+    # gaps without the annotation and then called this function, which
+    # re-detected WITH it — so the "no-opsin-error" arm was not an ablation at
+    # all and reported a difference of zero because there was none to report.
+    gaps = find_name_gaps(xml, patent_id, with_opsin_errors=with_opsin_errors)
     report.gaps_found = len(gaps)
     if not gaps:
         return report

@@ -95,12 +95,53 @@ NAME_SYNTH_EPOCH = "n1"
 
 LIBRARY_PATH = config.PACKAGE_ROOT / "data" / "name_rules.json"
 
-# Longest replacement a synthesized rule may insert. One or two characters is a
-# typesetting repair — a dropped bracket, a substituted letter pair. Anything
-# longer is the model writing chemistry into the name, which is DATA, and this
-# tier does not buy data. `ch` (the longest hand-written fix in
-# `name_repair.PATTERNS`) is 2.
-_MAX_INSERT = 4
+# THE BOUND IS ON THE SIZE OF THE EDIT, NOT THE LENGTH OF THE REPLACEMENT.
+#
+# This was `len(replacement) <= 4`, and it was measuring the wrong thing. The
+# first real sweep produced ZERO adopted rules across five configurations, all
+# rejected identically:
+#
+#     puridin_to_pyridin: replacement 'pyridin' is 7 characters
+#
+# `puridin` -> `pyridin` is a ONE CHARACTER error (`u` for `y`) in US10155002,
+# and the model had diagnosed it correctly. It wrote the natural spelling
+# `s/puridin/pyridin/` rather than the tight `s/ur/yr/`, and the length rule
+# threw it away — then threw the retry away for the same reason, because
+# nothing about the feedback made a tighter spelling obviously available.
+#
+# What the bound is actually FOR is "do not let the model write chemistry into
+# the name": the difference between a typesetting repair and supplying data.
+# Levenshtein distance between the matched text and its replacement says that
+# directly, and says it about every shape at once:
+#
+#     puridin -> pyridin      1   substitution, kept
+#     ')' -> ''               1   stray bracket, kept
+#     '' -> '('               1   dropped bracket, kept
+#     '-2-yl' -> ''           5   AMPUTATION, refused
+#     ... -> 20 chars        20   writing chemistry, refused
+#
+# The amputation case failing out at 5 is not a coincidence to be tuned around
+# — it is the same boundary the coverage gate enforces downstream, reached
+# independently.
+_MAX_EDIT = 4
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Edit distance. Small enough to inline; no dependency for four lines."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1,
+                           prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
 
 # A site regex may not match more than this fraction of the document's own
 # ALREADY-PARSEABLE names. See the module docstring: a rule that damages many
@@ -227,12 +268,6 @@ def ground(p: NamePattern, names: list[str], clean_names: list[str]) -> Grounded
         return Grounded(False, "no site regex")
     if not names:
         return Grounded(False, "no names to ground against")
-    if len(p.replacement) > _MAX_INSERT:
-        return Grounded(
-            False,
-            f"replacement {p.replacement!r} is {len(p.replacement)} characters; "
-            f"a rule may insert at most {_MAX_INSERT}. Longer than that is "
-            f"writing chemistry into the name, which is data, not a rule")
     try:
         pat = _compile(p.site)
     except Exception as e:
@@ -247,6 +282,26 @@ def ground(p: NamePattern, names: list[str], clean_names: list[str]) -> Grounded
 
     if not any(apply_pattern(p, n, pat) for n in matched):
         return Grounded(False, "applying the rule leaves every name unchanged")
+
+    # THE EDIT-SIZE BOUND. Measured per SITE — between the text the regex
+    # matched and what replaces it — so a rule fixing the same one-character
+    # defect five times in one name is judged as five edits of size 1, not one
+    # edit of size 5. See `_MAX_EDIT` for what this replaced and why.
+    worst = 0
+    worst_pair = ("", "")
+    for n in matched:
+        for m in pat.finditer(n):
+            d = _levenshtein(m.group(0), p.replacement)
+            if d > worst:
+                worst, worst_pair = d, (m.group(0), p.replacement)
+    if worst > _MAX_EDIT:
+        return Grounded(
+            False,
+            f"replacing {worst_pair[0]!r} with {worst_pair[1]!r} is an edit of "
+            f"distance {worst}; a rule may change at most {_MAX_EDIT} "
+            f"characters at one site. A larger change is not a typesetting "
+            f"repair — it either writes chemistry into the name or removes a "
+            f"whole fragment of it")
 
     # Collateral: how many already-good names does this rule also rewrite?
     if clean_names:

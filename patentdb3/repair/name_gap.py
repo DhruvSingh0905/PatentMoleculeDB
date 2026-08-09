@@ -89,6 +89,34 @@ _CONJUNCTION = re.compile(
     r"\)\s+and\s+\(|\band its enantiomer|\band\s+\(\d"
     r"|^and\s+(?:\d|intermediate|example|compound|preparation)", re.I)
 
+# OPSIN'S OWN ERROR SAYING THE GRAMMAR IS MISSING, NOT THAT THE TEXT IS BROKEN.
+# Matched against `opsin_error`, never against the name — the point is to use
+# the parser's own account of why it failed rather than to guess from the
+# string, which is what every other classification attempt in this
+# investigation got wrong.
+#
+# The dominant case by a wide margin is the pseudo-asymmetric CIP descriptor:
+#
+#     Could not find atom that: <stereoChemistry locant="1" type="RorS"
+#     value="S" stereoGroup="Abs">1s</stereoChemistry> appeared to be
+#     referring to
+#
+# i.e. the lowercase `r`/`s` in `(1r,4R)-4-hydroxycyclohexyl`. Measured over
+# US10155002 / US10710980 / US11420968: **155 of 217 asserted-compound gaps
+# (71%)**, far more than every text corruption combined. No character rule can
+# add a grammar to the parser, so a loop pointed at these buys nothing and
+# escalates forever — and worse, a model handed one will try to make it parse
+# by rewriting the chemistry (`acetamido` -> `amino`, observed).
+#
+# THEY ARE NOT UNRECOVERABLE, they are just not repairable HERE: stripping the
+# descriptor makes 154 of the 155 parse. That loses the stereochemistry, so the
+# result stands for a SET of stereoisomers and must carry the same treatment a
+# Markush name does — flagged, and no InChIKey. That is a deliberate, separate
+# decision about what the artifact claims, not something this detector should
+# do behind it.
+_UNSUPPORTED_GRAMMAR = re.compile(
+    r"could not find atom that|<stereoChemistry", re.I)
+
 
 @dataclass
 class NameGap:
@@ -149,17 +177,48 @@ def _opsin_errors(names: list[str]) -> dict[str, str]:
         logger.info("name_gap: OPSIN diagnosis unavailable: %r", e)
         return {}
 
+    # POSITIONAL, WITH A CONTENT FALLBACK — and getting this wrong hid the
+    # single most useful piece of context from 85% of prompts.
+    #
+    # Two content-matching versions were tried first and both under-captured.
+    # A literal `name[:60] in line` test matched 32 of 217 real gaps, because
+    # OPSIN echoes the name back in ITS normalisation (`′` U+2032 becomes `'`).
+    # Matching on alphanumerics only got 49. The reason neither works is that
+    # OPSIN's error frequently does not contain the name AT ALL:
+    #
+    #     Could not find atom that: <stereoChemistry locant="1" type="RorS"
+    #     value="R" stereoGroup="Abs">1r</stereoChemistry> appeared to be
+    #     referring to
+    #
+    # Measured directly: OPSIN emits one stderr line per FAILURE (not per
+    # name), in input order — 77 lines for 77 failing names, and 2 lines for a
+    # 5-name batch containing 2 failures. Every name here is already known to
+    # have failed, so the lines correspond one-to-one and IN ORDER.
+    #
+    # The count check is the guard: a name that emits two lines (an error plus
+    # a locant warning) would shift every later pairing, and a silently shifted
+    # diagnosis is worse than none — it would attribute one compound's failure
+    # to another. When the counts disagree, fall back to content matching,
+    # which under-captures but cannot mis-attribute.
+    lines = [l.strip() for l in proc.stderr.splitlines()
+             if l.strip() and "info" not in l.lower()[:20]]
+    if len(lines) == len(names):
+        return {n: l[:300] for n, l in zip(names, lines)}
+
+    logger.info("name_gap: OPSIN emitted %d lines for %d names — falling back "
+                "to content matching rather than risk mis-pairing",
+                len(lines), len(names))
+
+    def _key(s: str) -> str:
+        return "".join(c for c in s if c.isalnum()).lower()
+
+    keyed = [(_key(n)[:40], n) for n in names]
     out: dict[str, str] = {}
-    for line in proc.stderr.splitlines():
-        low = line.lower()
-        if not line.strip() or "info" in low[:20]:
-            continue
-        for n in names:
-            if n in out:
-                continue
-            head = n[:60]
-            if head and head in line:
-                out[n] = line.strip()[:300]
+    for line in lines:
+        lk = _key(line)
+        for head, n in keyed:
+            if n not in out and head and head in lk:
+                out[n] = line[:300]
                 break
     return out
 
@@ -207,10 +266,26 @@ def find_name_gaps(xml: str, patent_id: str = "",
         return []
 
     doc = anchor_text(xml, patent_id)
-    errs = _opsin_errors([g.name_text for g in gaps]) if with_opsin_errors else {}
+    # Always run the diagnosis — it is needed to EXCLUDE the unsupported-
+    # grammar cases below, not only to enrich the prompt. `with_opsin_errors`
+    # controls whether it reaches the model, which is the thing the harness
+    # ablates; it must not also control whether the loop knows what it is
+    # looking at.
+    errs = _opsin_errors([g.name_text for g in gaps])
+    kept: list[NameGap] = []
+    dropped = 0
     for g in gaps:
+        err = errs.get(g.name_text, "")
+        if _UNSUPPORTED_GRAMMAR.search(err):
+            dropped += 1
+            continue
         g.doc_text = doc
-        g.opsin_error = errs.get(g.name_text, "")
+        g.opsin_error = err if with_opsin_errors else ""
+        kept.append(g)
+    if dropped:
+        logger.info("name_gap: %s — %d gap(s) excluded as unsupported OPSIN "
+                    "grammar, not corruption", patent_id, dropped)
+    gaps = kept
 
     logger.info("name_gap: %s — %d asserted compounds unresolved", patent_id, len(gaps))
     return gaps

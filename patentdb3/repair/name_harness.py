@@ -110,18 +110,11 @@ def _run_one(cfg: Config, patents: list[str], xmls: dict[str, str]) -> Result:
     spent0 = cost_tracker.total_cost
 
     for pid in patents:
-        if not cfg.opsin_errors:
-            # Strip the annotation rather than skipping detection, so the two
-            # arms see the IDENTICAL gap set and differ only in what the prompt
-            # carries. Re-detecting without it would also change which gaps
-            # exist if detection ever starts depending on the error text.
-            gaps = find_name_gaps(xmls[pid], pid, with_opsin_errors=False)
-            if not gaps:
-                continue
         try:
             r = repair_names(xmls[pid], pid, library=lib,
                              journal=tmp / "journal.jsonl",
-                             max_calls=cfg.max_calls)
+                             max_calls=cfg.max_calls,
+                             with_opsin_errors=cfg.opsin_errors)
         except Exception as e:
             logger.warning("harness: %s failed under %s: %r", pid, cfg.name, e)
             continue

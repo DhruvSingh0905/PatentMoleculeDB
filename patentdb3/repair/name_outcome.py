@@ -29,10 +29,12 @@ separates a repair from an amputation:
   1. **OPSIN parses it.** Necessary, nowhere near sufficient.
   2. **Coverage >= 0.9, with containment.** The accepted string must be a
      contiguous alphanumeric sub-piece of the heading's own name text, and
-     cover at least 90% of it. `iupac_names._coverage` is reused rather than
-     reimplemented — a second definition of coverage is how the first version
-     of this project's own before/after measurement came to compare two
-     different molecules and score 1.00.
+     retain at least 90% of it, measured by `_retention` below as normalised
+     edit distance. NOT `iupac_names._coverage`: that one requires the
+     accepted string to be CONTAINED in the original, which is correct for the
+     heading route (every candidate there is the heading text with characters
+     deleted) and impossible for a repair, which substitutes. See `_retention`
+     for the sweep that ran into exactly that.
   3. **Corroborated in the document.** The repaired fragment, whitespace
      removed, must appear VERBATIM somewhere else in the same patent. This is
      `name_repair`'s gate and it is mandatory here — `trusted` is never granted
@@ -56,14 +58,47 @@ import logging
 from dataclasses import dataclass, field
 
 from ..sources import name_repair as NR
-from ..sources.iupac_names import _coverage
 from ..sources.opsin import batch as opsin_batch
 from .name_gap import NameGap
-from .name_rules import NamePattern, apply_pattern
+from .name_rules import NamePattern, _levenshtein, apply_pattern
 
 logger = logging.getLogger(__name__)
 
 COVERAGE_MIN = 0.9
+
+
+def _retention(original: str, repaired: str) -> float:
+    """How much of the name the patent printed survives in the repair, 0-1.
+
+    NOT `iupac_names._coverage`, and the difference is the whole reason this
+    function exists. That one requires CONTAINMENT — the accepted string must
+    be a contiguous alphanumeric sub-piece of the heading text — and its own
+    docstring says why that is safe there: "every candidate it generates is
+    derived from the heading text by deleting characters."
+
+    A REPAIR SUBSTITUTES. `puridin` -> `pyridin` is a one-character fix and the
+    result is not a sub-piece of the original, so containment scores it 0.00.
+    That is exactly what happened: the first sweep to get a rule past
+    `ground()` then had it rejected at `coverage 0.00` for a correct
+    one-character repair of US10155002's `dihydropuridin`. Reusing the function
+    to avoid a second definition imported an assumption that does not hold
+    here.
+
+    Normalised edit distance keeps the property that actually matters — it
+    still refuses an amputation — while allowing substitution:
+
+        puridin -> pyridin  in a 100-char name        0.99  kept
+        `-2-yl` deleted from a 22-char substituent    0.77  refused
+        a terminal fragment after a comma split       0.13  refused
+
+    Alphanumerics only on both sides, so a de-wrap that deletes spaces is not
+    punished for doing its job — the same normalisation `_coverage` applies.
+    """
+    a = "".join(c for c in original if c.isalnum())
+    b = "".join(c for c in repaired if c.isalnum())
+    if not a:
+        return 0.0
+    return max(0.0, 1.0 - _levenshtein(a, b) / len(a))
 
 
 @dataclass
@@ -111,7 +146,7 @@ def measure(p: NamePattern, gap: NameGap, *, compiled=None) -> NameOutcome:
         if not smi:
             continue
         oc.parsed_any = True
-        cov = _coverage(repaired, gap.name_text)
+        cov = _retention(gap.name_text, repaired)
         if cov < COVERAGE_MIN:
             failed_cov.append(
                 f"{repaired[:60]!r} parses but covers only {cov:.2f} of the "
