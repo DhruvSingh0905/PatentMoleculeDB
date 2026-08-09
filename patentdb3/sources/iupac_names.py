@@ -276,6 +276,35 @@ _SEED_SCAN_ALL = re.compile(rf"[{_NAME_CHARS}]+")
 # confirmed parses.
 _RELATIVE_STEREO = re.compile(r"[RSEZ]\*")
 
+# A STEREO DESCRIPTOR OPSIN 2.9.0 CANNOT READ — the pseudo-asymmetric CIP
+# locant, lowercase `r`/`s`, as in `(1r,4R)-4-hydroxycyclohexyl`. Uppercase
+# `R`/`S` is fully supported and must NOT be touched, which is why the group
+# has to contain at least one lowercase `r` or `s` to match at all.
+#
+# This is not a corruption. OPSIN says so itself:
+#
+#     Could not find atom that: <stereoChemistry locant="1" type="RorS"
+#     value="S" stereoGroup="Abs">1s</stereoChemistry> appeared to be
+#     referring to
+#
+# Measured over US10155002 / US10710980 / US11420968: **155 of 217
+# asserted-compound losses (71%)** — more than every text corruption combined,
+# and the single largest identity blocker found in this corpus. Stripping the
+# descriptor makes 154 of the 155 parse.
+#
+# THE COST IS REAL AND IS DECLARED, NOT HIDDEN. `(1r,4r)-4-hydroxycyclohexyl`
+# is one specific diastereomer; without the descriptor the name denotes the
+# SET. That is precisely the situation a relative-stereo (`R*`/`S*`) name is
+# already in, so it gets the identical treatment this project already settled
+# on: `markush=True` and NO InChIKey, so nothing downstream can join on an
+# identity we did not establish. See `extract_names` for why blanking the key
+# alone is insufficient and the dedup key is namespaced.
+#
+# The character class is deliberately narrow — only what a stereo group can
+# contain — so it cannot eat a substituent that happens to sit in parentheses.
+_STEREO_UNSUPPORTED = re.compile(
+    r"\((?=[^()]*\d+[rs](?![A-Za-z]))[0-9RSrsEZaxieltn,\s′'-]{2,24}\)-?")
+
 # Words that legitimately continue a name after a space. A chemical name is
 # mostly one token, but not always: `…carboxylic acid`, `…hydrochloride salt`,
 # `…, trifluoroacetic acid salt`. Extending across arbitrary words would sweep
@@ -687,6 +716,12 @@ def heading_resolution(xml: str, patent_id: str = "") -> tuple[
                 continue
             for v in _variants(flat, m.start(), m.end(), patent_id):
                 plan.append((i, "dewrap_seeded", v))
+        # LAST, so it is only ever reached when nothing above resolved the
+        # heading — a stereo-stripped structure is a weaker claim than any of
+        # them and must never win over a name that parses intact.
+        bare = _STEREO_UNSUPPORTED.sub("", flat)
+        if bare != flat:
+            plan.append((i, "stereo_stripped", bare))
 
     smiles = _opsin([c for _, _, c in plan], "SMILES", patent_id)
 
@@ -694,8 +729,24 @@ def heading_resolution(xml: str, patent_id: str = "") -> tuple[
     for (i, kind, cand), smi in zip(plan, smiles):
         if not smi:
             continue
-        cov = _coverage(cand, heads[i][1])
-        if cov < _COVERAGE_MIN:
+        # `_coverage` IS NOT APPLICABLE TO `stereo_stripped`, and applying it
+        # would silently reject every one. It requires the accepted string to
+        # be a CONTIGUOUS alphanumeric sub-piece of the heading text, which
+        # holds for the three transformations above — they trim the ends or
+        # delete whitespace, and whitespace is not alphanumeric — but not for a
+        # deletion out of the MIDDLE: removing `1s,4s` leaves the remainder in
+        # two pieces, so containment fails and the score is 0.00 however
+        # correct the result.
+        #
+        # It is also not NEEDED here. The coverage gate exists to tell a repair
+        # from an amputation when the transformation is a SEARCH over spans and
+        # could have kept any fragment. `stereo_stripped` is not a search: it
+        # deletes exactly what `_STEREO_UNSUPPORTED` matches, which is a
+        # stereo-descriptor group and nothing else, so there is no fragment it
+        # could wrongly keep. What it costs is stated instead of measured — the
+        # structure is flagged markush and carries no InChIKey.
+        if kind != "stereo_stripped" and _coverage(cand, heads[i][1]) < _COVERAGE_MIN:
+            cov = _coverage(cand, heads[i][1])
             if _losses.ENABLED:
                 _losses.record("heading_coverage_too_low", patent_id,
                                 cid=heads[i][0], heading=heads[i][1],
@@ -741,7 +792,17 @@ def _heading_structures(xml: str, patent_id: str,
     for i, ik in zip(idxs, keys):
         kind, name, smi = best[i]
         stereo = _RELATIVE_STEREO.findall(name)
-        is_markush = bool(stereo)
+        # A STEREO-STRIPPED STRUCTURE IS GENERIC FOR THE SAME REASON AN `R*`
+        # ONE IS, so it gets the same treatment rather than a second mechanism.
+        # `(1r,4r)-4-hydroxycyclohexyl` names one diastereomer; with the
+        # descriptor removed the name denotes the SET, and the InChIKey OPSIN
+        # returns would be an identity claim about a member we never
+        # established. The reason string names the descriptor that was dropped,
+        # so a reader can always recover WHICH stereochemistry was lost —
+        # `stereo_stripped` alone would say a set exists without saying which.
+        dropped = (_STEREO_UNSUPPORTED.search(heads[i][1])
+                   if kind == "stereo_stripped" else None)
+        is_markush = bool(stereo) or kind == "stereo_stripped"
         # SAME RULE AS THE PROSE ROUTE, and for the same reason: a relative-
         # stereo name denotes a SET, so a single-structure identifier is a
         # false claim about it. See `extract_names`.
@@ -770,7 +831,10 @@ def _heading_structures(xml: str, patent_id: str,
             cid=_normalize_cid(heads[i][0]) or None,
             label=verdict.label, reason=verdict.reason,
             markush=is_markush,
-            markush_reason=("relative_stereo:" + ",".join(stereo)) if stereo else "",
+            markush_reason=(
+                ("relative_stereo:" + ",".join(stereo)) if stereo else
+                (f"stereo_stripped:{dropped.group(0).strip('-')}" if dropped else
+                 ("stereo_stripped" if kind == "stereo_stripped" else ""))),
             heading_transform=kind))
     logger.info("iupac: %s — %d compound-asserting heading(s), %d NEW structure(s)",
                 patent_id, len(heads), len(out))
