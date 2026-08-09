@@ -80,7 +80,14 @@ _PHANE = re.compile(r"phane|phan-\d|cyclo(?:non|dec|undec|dodec|tridec)a", re.I)
 # buys character fixes — a split rule would have to decide which half owns the
 # id, which is `anchor.py`'s question and was closed as won't-fix (11 real
 # recoverable anchors corpus-wide, measured).
-_CONJUNCTION = re.compile(r"\)\s+and\s+\(|\band its enantiomer|\band\s+\(\d", re.I)
+#
+# `^and \d+` is here because `_HEADING_ID` reads only the FIRST id token, by
+# design — that token is the compound number. `Examples 105 and 106. (S)-...`
+# therefore arrives as cid 105 with `and 106. (S)-...` still on the front, and
+# it is not a corrupted name at all: it is two compounds sharing one heading.
+_CONJUNCTION = re.compile(
+    r"\)\s+and\s+\(|\band its enantiomer|\band\s+\(\d"
+    r"|^and\s+(?:\d|intermediate|example|compound|preparation)", re.I)
 
 
 @dataclass
@@ -165,18 +172,29 @@ def find_name_gaps(xml: str, patent_id: str = "",
     nothing" has to mean the shipping code produced nothing, or the loop buys
     rules for failures that do not exist.
     """
+    # `heading_resolution` IS the parsing test, and asking it any other way is
+    # the bug this replaced. The first version of this function asked "does any
+    # structure carry this compound id", which is an ANCHORING test: it
+    # reported 2,746 gaps over 53 patents and the first 60 inspected ALL PARSED
+    # PERFECTLY WELL — the names were fine, they simply had not been anchored.
+    # A heal loop aimed at that population buys character-repair rules for
+    # names that were never broken, and every one of those rules would be
+    # gate-passing garbage in a permanent library.
     try:
-        resolved = IN.extract_names(xml, patent_id)
+        heads, resolved = IN.heading_resolution(xml, patent_id)
     except Exception as e:
-        logger.warning("name_gap: %s — extract_names failed: %r", patent_id, e)
+        logger.warning("name_gap: %s — heading_resolution failed: %r", patent_id, e)
+        return []
+    if not heads:
         return []
 
-    got_cids = {nc.cid for nc in resolved if nc.cid}
-    clean = [nc.name for nc in resolved][:400]
+    # The collateral-damage population for `name_rules.ground()`: this
+    # patent's own heading names that DID resolve.
+    clean = [resolved[i][1] for i in sorted(resolved)][:400]
 
     gaps: list[NameGap] = []
-    for cid, name_text in IN._heading_texts(xml):
-        if cid in got_cids:
+    for i, (cid, name_text) in enumerate(heads):
+        if i in resolved:
             continue
         if not _CHEM.search(name_text):
             continue                                  # a section header

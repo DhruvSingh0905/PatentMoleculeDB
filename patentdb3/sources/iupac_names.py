@@ -508,8 +508,21 @@ def _heading_texts(xml: str) -> list[tuple[str, str]]:
         if not idm:
             continue
         name = txt[idm.end():]
+        # FRAMING STACKS, AND A SECOND ID TOKEN IS FRAMING TOO. `_HEADING_ID`
+        # was applied exactly once, which is right for reading the compound
+        # NUMBER (the first token is the one that identifies the compound) and
+        # wrong for peeling the name: `Example 1: Synthesis of Compound 1:
+        # 5-(...)` leaves `Compound 1: 5-(...)` once the lead clause goes, and
+        # OPSIN is then handed a string this function introduced the defect
+        # into. Found by the name heal loop reporting it as a gap — i.e. the
+        # loop was about to buy a rule to repair our own framing.
+        #
+        # Both patterns are `^`-anchored and neither can match the start of a
+        # real chemical name, so looping them is safe: no IUPAC name begins
+        # `Compound 4` or `Step 2:`.
         while True:
-            stripped = _FRAMING_LEAD.sub("", name, count=1)
+            stripped = _HEADING_ID.sub("", _FRAMING_LEAD.sub("", name, count=1),
+                                       count=1)
             if stripped == name:
                 break
             name = stripped
@@ -637,6 +650,64 @@ def _opsin(names: list[str], fmt: str, patent_id: str = "") -> list[str]:
 
 
 
+def heading_resolution(xml: str, patent_id: str = "") -> tuple[
+        list[tuple[str, str]], dict[int, tuple[str, str, str]]]:
+    """`(headings, resolved)` — the ONE definition of "did this heading resolve".
+
+    `headings` is `_heading_texts`'s output; `resolved` maps a heading's index
+    to the `(transformation, accepted name, smiles)` that won for it. A heading
+    ABSENT from `resolved` produced no structure at all.
+
+    Split out of `_heading_structures` because `repair/name_gap.py` has to ask
+    exactly this question and asking it a second way is how two definitions of
+    the same thing drift apart. The first version of that module asked a
+    DIFFERENT one — "does any structure carry this compound id" — which is an
+    ANCHORING test, not a parsing test, and it reported 2,746 gaps across 53
+    patents of which the first 60 inspected all parsed perfectly well. A heal
+    loop pointed at that population buys character-repair rules for names that
+    were never broken.
+
+    Note the resolution test deliberately runs BEFORE `_heading_structures`'s
+    `seen` dedup: a heading whose structure the prose route already found is
+    resolved, even though it contributes no new row.
+    """
+    heads = _heading_texts(xml)
+    if not heads:
+        return [], {}
+
+    plan: list[tuple[int, str, str]] = []      # (heading idx, transformation, candidate)
+    for i, (_, name) in enumerate(heads):
+        plan.append((i, "as_is_whole", name))
+        flat = _dewrap_targeted(name)
+        if flat != name:
+            plan.append((i, "dewrap_whole", flat))
+        for m in _SEED.finditer(flat):
+            g = m.group(0)
+            if not (re.search(r"[a-z]{3}", g) and re.search(r"[\d\[\(\-]", g)):
+                continue
+            for v in _variants(flat, m.start(), m.end(), patent_id):
+                plan.append((i, "dewrap_seeded", v))
+
+    smiles = _opsin([c for _, _, c in plan], "SMILES", patent_id)
+
+    best: dict[int, tuple[str, str, str]] = {}     # i -> (kind, name, smiles)
+    for (i, kind, cand), smi in zip(plan, smiles):
+        if not smi:
+            continue
+        cov = _coverage(cand, heads[i][1])
+        if cov < _COVERAGE_MIN:
+            if _losses.ENABLED:
+                _losses.record("heading_coverage_too_low", patent_id,
+                                cid=heads[i][0], heading=heads[i][1],
+                                candidate=cand, transformation=kind,
+                                coverage=round(cov, 3), floor=_COVERAGE_MIN)
+            continue
+        cur = best.get(i)
+        if cur is None or (cur[0] == kind and len(cand) > len(cur[1])):
+            best[i] = (kind, cand, smi)
+    return heads, best
+
+
 def _heading_structures(xml: str, patent_id: str,
                         seen: set[str]) -> list[NamedCompound]:
     """Structures read from headings, whole, skipping anything already found.
@@ -659,44 +730,7 @@ def _heading_structures(xml: str, patent_id: str,
     Two OPSIN batches for the whole document, the same two-stage pattern the
     prose route uses.
     """
-    heads = _heading_texts(xml)
-    if not heads:
-        return []
-
-    plan: list[tuple[int, str, str]] = []      # (heading idx, transformation, candidate)
-    for i, (_, name) in enumerate(heads):
-        plan.append((i, "as_is_whole", name))
-        flat = _dewrap_targeted(name)
-        if flat != name:
-            plan.append((i, "dewrap_whole", flat))
-        for m in _SEED.finditer(flat):
-            g = m.group(0)
-            if not (re.search(r"[a-z]{3}", g) and re.search(r"[\d\[\(\-]", g)):
-                continue
-            for v in _variants(flat, m.start(), m.end(), patent_id):
-                plan.append((i, "dewrap_seeded", v))
-
-    smiles = _opsin([c for _, _, c in plan], "SMILES", patent_id)
-
-    # First transformation that BOTH parses and covers the heading's own name
-    # text. Ordering is positional (the plan is built least-invasive first),
-    # and within `dewrap_seeded` the longest covering span wins — the same
-    # tie-break the prose route applies per seed position.
-    best: dict[int, tuple[str, str, str]] = {}     # i -> (kind, name, smiles)
-    for (i, kind, cand), smi in zip(plan, smiles):
-        if not smi:
-            continue
-        cov = _coverage(cand, heads[i][1])
-        if cov < _COVERAGE_MIN:
-            if _losses.ENABLED:
-                _losses.record("heading_coverage_too_low", patent_id,
-                                cid=heads[i][0], heading=heads[i][1],
-                                candidate=cand, transformation=kind,
-                                coverage=round(cov, 3), floor=_COVERAGE_MIN)
-            continue
-        cur = best.get(i)
-        if cur is None or (cur[0] == kind and len(cand) > len(cur[1])):
-            best[i] = (kind, cand, smi)
+    heads, best = heading_resolution(xml, patent_id)
     if not best:
         return []
 
