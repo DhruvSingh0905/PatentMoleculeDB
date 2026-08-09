@@ -329,6 +329,8 @@ from __future__ import annotations
 
 import html
 import re
+
+from ..core import config
 from dataclasses import dataclass, field
 
 from . import losses as _losses
@@ -440,6 +442,40 @@ _NON_ID_WORD = re.compile(
     r"\b(?:method|step|stage|note|scheme|procedure|part|section|table|"
     r"figure|equation|formula|claim|item|page|paragraph|entry|group|"
     r"embodiment|aspect|reaction)\s*$", re.I)
+# `intermediate` is deliberately NOT in that list. It was added, measured,
+# and removed: refusing to anchor an `Intermediate N:` heading is the
+# anchor-side half of dropping intermediates, and the corpus run showed that
+# decision deletes correct structures while leaving the corrupted prose
+# duplicates behind (US10071079 T-1: the right `tert-butyl 4-(...)` row went,
+# the Boc-stripped one stayed). The requirement to ship only finished
+# molecules is real and belongs downstream as a filter on a labelled row.
+# See `iupac_names._DROP_INTERMEDIATES` for the other half and the numbers.
+
+# THE GUARD NEEDS A WIDER VIEW THAN THE PROXIMITY RULE DOES.
+#
+# `_ANCHOR_BOUND` answers "is this number close enough to be this name's id",
+# and 25 characters is the measured answer to that. It was ALSO, accidentally,
+# how much text the blacklist got to look at — and the blacklist is asking a
+# different question, about the word sitting in front of the number, which can
+# easily start further back than 25 characters:
+#
+#     real left context : '…[M+H]+.\nStep 2: Synthesis of ethyl '
+#     the 25-char view  : 'ep 2: Synthesis of ethyl '
+#
+# `Step` is clipped to `ep`, `\bstep\b` cannot match, and the step number is
+# taken as a compound id. Measured on US10030020 this produces cids 2, 3 and 4
+# from Steps 2, 3 and 4; corpus-wide it is 218 of the 1,499 conflicting cids.
+#
+# So the guard now reads its own, wider slice. The proximity bound is
+# untouched — a number still has to be within `_ANCHOR_BOUND` to anchor at
+# all — this only changes how much context is available to REFUSE one.
+_GUARD_BOUND = 90
+
+# An id that names a synthesis waypoint rather than a claimed compound. Gated
+# on `config.FINISHED_ONLY`; kept OUT of `_NON_ID_WORD` so that list keeps
+# meaning "never a compound id in any configuration", which `intermediate` is
+# not — it is a real id, for a thing we have decided not to ship.
+_NOT_FINISHED = re.compile(r"\b(?:intermediate|step)\s*$", re.I)
 
 # What is allowed to sit BETWEEN a LEFT id-match and the name it anchors.
 # ROOT CAUSE (measured on US8952177, see the module docstring's "FALSE
@@ -727,16 +763,25 @@ def find_cid(text: str, name: str, *, bound: int = _ANCHOR_BOUND,
         start = pos + 1
         end = pos + len(name)
         window = text[max(0, pos - bound):pos]
+        # The blacklist reads further back than the proximity rule does — see
+        # `_GUARD_BOUND`. `offset` maps a position in `window` onto the same
+        # character in `guard`, so the two stay in step whatever `bound` is.
+        guard = text[max(0, pos - max(bound, _GUARD_BOUND)):pos]
+        offset = len(guard) - len(window)
 
         m = None
         for m in _CID_LEFT_PLAIN.finditer(window):
             pass                                # last match = closest to `pos`
-        if m is not None and _LEFT_GAP_OK.match(window[m.end():]):
+        if (m is not None and _LEFT_GAP_OK.match(window[m.end():])
+                and not _NON_ID_WORD.search(guard[:offset + m.start(1)])):
             _consider(best_by_id, m.group(1), len(window) - m.start(1), "left", window)
 
         m = None
         for cand in _CID_LEFT_SEP.finditer(window):
-            if _NON_ID_WORD.search(window[:cand.start(1)]):
+            if (config.FINISHED_ONLY
+                    and _NOT_FINISHED.search(guard[:offset + cand.start(1)])):
+                continue                         # "Intermediate 10:", "Step 2:"
+            if _NON_ID_WORD.search(guard[:offset + cand.start(1)]):
                 continue                         # "Method 1:", "Step 2:", ...
             m = cand
         if m is not None:

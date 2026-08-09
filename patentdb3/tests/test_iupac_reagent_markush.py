@@ -259,11 +259,15 @@ def test_heading_framing_is_stripped_to_the_name_the_patent_stated():
     ])
     got = dict(_heading_texts(xml))
     assert got["43"] == "4-(hydroxymethyl)-3-(2-morpholinopyridin-4-yl)benzamide"
-    assert got["991F"] == "tert-butyl 4-(4-fluoro-1H-indol-5-yl)carboxylate"
     assert got["44"] == "N-((4,6-dimethyl-2-oxopyridin-3-yl)methyl)amine"
     assert got["5"] == "2-amino-4-chloro-N-phenylbenzamide"
     assert got["I-20"] == "5-bromo-3-isopropyl-1H-pyrrolo[3,2-b]pyridine"
-    assert len(got) == 5, sorted(got)
+    # `Intermediate 991F` is DROPPED, not mis-parsed: `config.FINISHED_ONLY`
+    # refuses a heading whose label names a synthesis waypoint. The framing
+    # stripper still handles it correctly — this asserts the scope decision,
+    # not a parsing limit.
+    assert "991F" not in got, "an intermediate must not reach the output"
+    assert len(got) == 4, sorted(got)
 
 
 def test_coverage_rejects_the_comma_split_amputation():
@@ -299,9 +303,18 @@ def test_heading_route_only_adds_never_replaces():
     it CANNOT cost the prose route a structure. Asserted on real XML rather
     than argued from the code, because "additive by construction" is exactly
     the kind of claim that survives a refactor in the comment and not in the
-    behaviour."""
+    behaviour.
+
+    THE PATENT CHANGED FROM US10544143, and not because the assertion got
+    inconvenient. Under `config.FINISHED_ONLY` that patent's heading route
+    correctly yields nothing: its only `Example` heading is the bare
+    `Example 438` with no name after it (so it fails `_HEADING_MIN`), and every
+    name-bearing heading it has is an `Intermediate`. US10155002 contributes 59
+    heading-route structures under the same rule, so the additive property is
+    still exercised on real XML rather than asserted against an empty set.
+    """
     from patentdb3.sources import iupac_names as mod
-    pid = "US10544143"
+    pid = "US10155002"
     xml = _xml(pid)
     pytest.importorskip("py2opsin")
     logging.disable(logging.CRITICAL)

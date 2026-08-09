@@ -61,9 +61,27 @@ def test_far_away_digit_is_not_anchored():
 # ── left, alphanumeric + colon/semicolon — the "Intermediate 1D:" shape ─
 
 def test_left_colon_alnum_anchors():
-    text = "Intermediate 1D: tert-butyl 5-(3-azetidinyl)pyrrolopyridine-1-carboxylate\n"
+    """The colon shape anchors an alphanumeric id — on a CLAIMED compound."""
+    text = "Example 1D: tert-butyl 5-(3-azetidinyl)pyrrolopyridine-1-carboxylate\n"
     r = find_cid(text, "5-(3-azetidinyl)pyrrolopyridine-1-carboxylate")
     assert r.cid == "1D"
+    assert not r.clashed
+
+
+def test_an_intermediate_id_is_refused_under_finished_only():
+    """The same shape, labelled `Intermediate`, must NOT anchor.
+
+    This test used to assert `cid == "1D"` on exactly this string — it was
+    written before the deliverable's scope was settled. An intermediate is a
+    real id for a real thing; it is simply not a molecule we ship, so
+    `config.FINISHED_ONLY` refuses it. Measured cost of the whole rule over a
+    fixed 20-patent sample: 6 joined compounds out of 2,705, against 159 fewer
+    conflicting cids — intermediates are rarely assayed, so they were never
+    going to join.
+    """
+    text = "Intermediate 1D: tert-butyl 5-(3-azetidinyl)pyrrolopyridine-1-carboxylate\n"
+    r = find_cid(text, "5-(3-azetidinyl)pyrrolopyridine-1-carboxylate")
+    assert r.cid is None
     assert not r.clashed
 
 
@@ -258,7 +276,7 @@ def test_disagreeing_occurrences_surface_as_a_clash_not_a_silent_none():
     bare None indistinguishable from "nothing nearby at all".
     """
     text = (
-        "Intermediate 402B: 4-(3-Bromophenyl)morpholine-3-carboxamide\n"
+        "Example 402B: 4-(3-Bromophenyl)morpholine-3-carboxamide\n"
         "A mixture of 4-(3-bromophenyl)phenyl) morpholine-3-carboxamide (402) "
         "was concentrated to give the title compound.\n"
     )

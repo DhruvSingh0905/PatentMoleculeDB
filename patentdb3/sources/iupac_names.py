@@ -342,9 +342,55 @@ _HEADING_EL = re.compile(r"<heading\b[^>]*>(.*?)</heading>", re.S)
 # it would key the structure to a compound that exists but is a different one.
 _HEADING_ID = re.compile(
     r"^(?:reference\s+|comparative\s+)?"
-    r"(?:examples?|intermediates?|compounds?|preparations?)\s*"
-    r"(?:no\.?\s*)?([A-Za-z]{0,3}[-–.]?\d[\w.\-–]*?)\s*[:.)\-–—]?\s+",
+    r"(?P<label>examples?|intermediates?|compounds?|preparations?|steps?)\s*"
+    r"(?:no\.?\s*)?(?P<cid>[A-Za-z]{0,3}[-–.]?\d[\w.\-–]*?)\s*[:.)\-–—]?\s+",
     re.I)
+
+# LABELS THAT DO NOT NAME A FINISHED MOLECULE.
+#
+# `Intermediate 10:` and `Step 2:` are both real headings that state an id and
+# a name, so the heading route happily mints a cid from them — and neither is a
+# compound the patent is claiming. They are waypoints in someone else's
+# synthesis. The deliverable wants finished molecules, so a structure whose
+# only id comes from one of these is dropped rather than shipped under a number
+# that means something else.
+#
+# `steps?` was added to `_HEADING_ID` above SO THAT IT CAN BE REFUSED HERE — it
+# was previously unmatched, which meant a `Step 2:` heading fell through to the
+# framing stripper and its name was extracted with no id at all. Matching it and
+# then dropping it is the difference between "we know what this is and do not
+# want it" and "we did not recognise it".
+#
+# This is a deliberate loss of coverage. Intermediates are numerous — they
+# outnumber examples in several patents — and dropping them is the point.
+_NOT_A_FINISHED_COMPOUND = {"intermediate", "intermediates", "step", "steps",
+                            "preparation", "preparations"}
+# `preparation` is in that set on evidence, not by analogy. Its headings read
+# the same way an intermediate's do — lettered sub-steps building toward
+# something else, and simple building blocks rather than drug-like targets:
+#
+#     Preparation 1A: 2,5,6-trichloropyrimidin-4-ol
+#     Preparation 1B: 2,5,6-trichloro-3-methyl-3-hydropyrimidin-4-...
+#     Preparation 1C: N-[1-(5,6-dichloro-3-methyl-4-oxo(3-hydropyr...
+#
+# ID SHAPE WAS TESTED AS AN ALTERNATIVE DISCRIMINATOR AND REJECTED. The
+# hypothesis was that intermediates carry sub-counts (`T-1`, `2a`) while
+# claimed examples carry plain integers. It fails in BOTH directions, verified
+# against the cached corpus:
+#
+#   - `Example 1A` / `2A` / `3A` / `4A`      US20240010684A1  (suffixed EXAMPLES)
+#   - `Intermediates 94 and 95`              745 corpus-wide  (plain INTERMEDIATES)
+#
+# and decisively by a single heading that carries both labels at once:
+#
+#     Example 1a. Intermediate 1. tert-Butyl 3-fluoro-5-methyl-4-(...)carbamate
+#
+# So the LABEL WORD is the discriminator and the id is not. That is also the
+# lucky answer: no bare-id headings (a lone `43` with no label) were found in
+# either sample, so keying on the word does not leave an obvious blind spot.
+
+# Gated by `config.FINISHED_ONLY` — see that flag for the measurement.
+
 
 # Leading framing clauses, each observed on a real heading in this corpus.
 # Applied repeatedly because they stack ("Alternative Preparation of Step 2").
@@ -557,6 +603,11 @@ def _heading_texts(xml: str) -> list[tuple[str, str]]:
         idm = _HEADING_ID.match(txt)
         if not idm:
             continue
+        # Drop `Intermediate N:` / `Step N:` outright — see
+        # `_NOT_A_FINISHED_COMPOUND`. The id is real and so is the name; it
+        # simply is not a molecule the patent is claiming.
+        if config.FINISHED_ONLY and (idm.group("label") or "").lower() in _NOT_A_FINISHED_COMPOUND:
+            continue
         name = txt[idm.end():]
         # FRAMING STACKS, AND A SECOND ID TOKEN IS FRAMING TOO. `_HEADING_ID`
         # was applied exactly once, which is right for reading the compound
@@ -580,7 +631,7 @@ def _heading_texts(xml: str) -> list[tuple[str, str]]:
         name = _FRAMING_TAIL_CODE.sub("", name).strip().strip(":;,. ")
         if len(name) < _HEADING_MIN:
             continue
-        out.append((idm.group(1), name))
+        out.append((idm.group("cid"), name))
     return out
 
 

@@ -210,6 +210,29 @@ IUPAC_MIN_SEED = 12
 IUPAC_MAX_VARIANTS = 12
 
 
+# ── What counts as a deliverable compound ────────────────────────────────
+# ON. A patent numbers three different kinds of thing and only one of them is
+# a product: `Example 43` is a compound the patent claims, while
+# `Intermediate T-1` and `Step 2` are waypoints in somebody's synthesis. Both
+# of the latter state an id and a name in a heading, so both mint a cid, and
+# neither is a molecule anyone wants shipped.
+#
+# The cost is real and was measured before this was turned on: dropping them
+# removes ~1,100 joined compounds corpus-wide, and it leaves behind the
+# corrupted prose duplicate of the same compound (US10071079 T-1 keeps its
+# Boc-stripped description row while the correct heading row goes). Neither is
+# a reason to keep intermediates — the deliverable wants finished molecules and
+# a smaller set of them is worth more than a larger set that mixes in
+# synthesis waypoints — but the leftover duplicate is a SEPARATE defect this
+# flag exposes rather than causes, and it still needs fixing.
+#
+# Read by `sources/iupac_names._heading_texts` (which drops the heading, so the
+# name is never minted with that id) and by `sources/anchor.find_cid` (which
+# refuses to anchor a prose name to a nearby `Intermediate N`). Both are needed:
+# the two routes obtain a cid independently.
+FINISHED_ONLY = os.environ.get("FINISHED_ONLY", "1") == "1"
+
+
 # ── Google Patents ───────────────────────────────────────────────────────
 # OFF, and not yet ported. GP embeds SMILES/InChIKey pairs it derived by
 # running structure recognition over the patent's drawings — genuinely useful
