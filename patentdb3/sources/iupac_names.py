@@ -363,6 +363,27 @@ _FRAMING_TAIL = re.compile(
     r"\s*\((?:compound|example|intermediate|isomer|enantiomer|diastereomer|"
     r"peak|step|salt|free\s+base)\b[^()]*\)\s*$", re.I)
 
+# A trailing parenthetical that is a BARE NUMBER or a house code — the patent
+# cross-referencing its own numbering with the label word left out:
+#
+#     ...isoxazole-3-carboxamide (38)
+#     ...-N-(3-phenylpropyl)acetamide (CAP01678)
+#
+# `_FRAMING_TAIL` above requires a label word (`Compound`, `Example`, ...) and
+# so misses both. Measured over the corpus: **460 unresolved headings end this
+# way and 425 of them parse once it is stripped, across 7 patents** — five of
+# which were sitting at 0% asserted-compound coverage entirely because of it,
+# US10919885 at 0 of 137.
+#
+# THE NO-LOWERCASE GUARD IS WHAT MAKES THIS SAFE. A real chemical fragment in
+# trailing parentheses contains lowercase (`(2H)` is not a name ending;
+# `(trifluoromethyl)` is, and has plenty). Requiring the whole group to be
+# digits, uppercase and separators means it cannot match a substituent, while
+# still catching a bare number, a Roman numeral and an all-caps internal code.
+# OPSIN remains the gate either way: if stripping this broke the name, the
+# stripped form simply fails to parse and nothing is kept.
+_FRAMING_TAIL_CODE = re.compile(r"\s*\([0-9IVXA-Z][0-9IVXA-Z\-\s.]{0,10}\)\s*$")
+
 _TAG = re.compile(r"<[^>]+>")
 # THE FIVE NAMED XML ENTITIES ARE NOT THE SET THAT APPEARS HERE. This was a
 # five-entry dict, and everything outside it — every NUMERIC character
@@ -555,7 +576,8 @@ def _heading_texts(xml: str) -> list[tuple[str, str]]:
             if stripped == name:
                 break
             name = stripped
-        name = _FRAMING_TAIL.sub("", name).strip().strip(":;,. ")
+        name = _FRAMING_TAIL.sub("", name)
+        name = _FRAMING_TAIL_CODE.sub("", name).strip().strip(":;,. ")
         if len(name) < _HEADING_MIN:
             continue
         out.append((idm.group(1), name))
