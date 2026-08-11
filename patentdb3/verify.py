@@ -80,6 +80,7 @@ from .core.cost_tracker import cost_tracker
 from .repair.loop import repair_patent
 from .repair.rules import RuleLibrary
 from .sources import losses
+from .sources.cid_first import extract_by_cid
 from .sources.iupac_names import NamedCompound, extract_names
 from .sources.table_names import TableName, extract_table_names
 from .sources.uspto_assays import extract_from_patent
@@ -252,10 +253,14 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
             # try/except so a resolution failure costs nothing already written
             # above: the assay dump must not be able to fail because of it.
             if config.IUPAC_NAMES:
+                # WHICH ROUTE — see `config.IDENTITY_ROUTE` for the
+                # measurement that retired the prose one.
+                _route = (extract_by_cid if config.IDENTITY_ROUTE == "cid_first"
+                          else extract_names)
                 try:
-                    names = extract_names(xml, pid)
+                    names = _route(xml, pid)
                 except Exception as e:
-                    print(f"  {pid}: iupac_names failed ({e})")
+                    print(f"  {pid}: {config.IDENTITY_ROUTE} route failed ({e})")
                     # A crash here loses EVERY structure `extract_names` would
                     # have found for this patent, silently — `names = []`
                     # below makes the rest of the loop behave exactly as
@@ -285,7 +290,23 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                     print(f"  {pid}: table_names failed ({e})")
                     losses.record("extract_table_names_exception", pid, error=repr(e))
                     tnames = []
-                for nc in [*names, *tnames]:
+                # TABLE FIRST, THEN FILL THE GAPS. A table row states the
+                # id and the name in the same row of the same table — the
+                # patent's own pairing, with nothing inferred — so where both
+                # routes resolve one cid, the table's answer is the one kept.
+                #
+                # This REPLACES an earlier deliberate non-dedup ("two
+                # independent pieces of evidence"). That was right when the
+                # second route was prose-proximity and its provenance was
+                # worth keeping visible; it is wrong now that the second route
+                # is id-anchored and the two would simply duplicate the same
+                # compound under the same cid. The union is what raises
+                # coverage 46.8% -> 60.2%; the precedence is what stops it
+                # double-counting.
+                _table_cids = {t.cid for t in tnames if getattr(t, "cid", None)}
+                _filled = [nc for nc in names
+                           if not (getattr(nc, "cid", None) in _table_cids)]
+                for nc in [*tnames, *_filled]:
                     vals = [str(getattr(nc, f, "") if getattr(nc, f, None) is not None else "")
                             .replace("\t", " ").replace("\n", " ") for f in STRUCT_FIELDS]
                     sfh.write("\t".join(vals) + "\n")

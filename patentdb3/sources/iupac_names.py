@@ -343,7 +343,14 @@ _HEADING_EL = re.compile(r"<heading\b[^>]*>(.*?)</heading>", re.S)
 _HEADING_ID = re.compile(
     r"^(?:reference\s+|comparative\s+)?"
     r"(?P<label>examples?|intermediates?|compounds?|preparations?|steps?)\s*"
-    r"(?:no\.?\s*)?(?P<cid>[A-Za-z]{0,3}[-–.]?\d[\w.\-–]*?)\s*[:.)\-–—]?\s+",
+    r"(?:no\.?\s*)?(?P<cid>[A-Za-z]{0,3}[-–.]?\d[\w.\-–]*?)\s*[:.)\-–—]?(?:\s+|$)",
+    # `(?:\s+|$)`, NOT `\s+`. The trailing-whitespace requirement meant this
+    # pattern could not match a heading that is ONLY an id — `Example 14` with
+    # nothing after it returned None, so a patent that puts the id and the name
+    # in two separate <heading> elements was invisible: US20240010684A1 yielded
+    # 0 pairs from 211 headings, losing 85 of its 89 assay compounds. The
+    # alternation costs nothing on a heading that does carry its name inline,
+    # because `\s+` is tried first.
     re.I)
 
 # LABELS THAT DO NOT NAME A FINISHED MOLECULE.
@@ -596,10 +603,10 @@ def _heading_texts(xml: str) -> list[tuple[str, str]]:
     OPSIN a string this code introduced the defect into, and any recovery
     measured against it credits the wrong mechanism.
     """
+    texts = [re.sub(r"\s+", " ", _unescape(_TAG.sub("", m.group(1)))).strip()
+             for m in _HEADING_EL.finditer(xml)]
     out: list[tuple[str, str]] = []
-    for m in _HEADING_EL.finditer(xml):
-        txt = _unescape(_TAG.sub("", m.group(1)))
-        txt = re.sub(r"\s+", " ", txt).strip()
+    for i, txt in enumerate(texts):
         idm = _HEADING_ID.match(txt)
         if not idm:
             continue
@@ -609,6 +616,26 @@ def _heading_texts(xml: str) -> list[tuple[str, str]]:
         if config.FINISHED_ONLY and (idm.group("label") or "").lower() in _NOT_A_FINISHED_COMPOUND:
             continue
         name = txt[idm.end():]
+        # THE ID AND THE NAME CAN BE TWO SEPARATE `<heading>` ELEMENTS.
+        #
+        #     <heading id="h-0005" level="1">Example 14</heading>
+        #     <heading id="h-0006" level="1">[(6S,9S,12S,...)]acetic acid</heading>
+        #
+        # This function read one element at a time and required the id AND
+        # enough residual name text in the SAME one, so a patent written this
+        # way yielded NOTHING: measured on US20240010684A1, `_heading_texts`
+        # returned 0 pairs for all 211 of its headings while 89 id-only
+        # headings sat immediately before a name-only heading. That is 85 of
+        # its 89 assay compounds, and the failure looked exactly like "this
+        # patent does not name its compounds".
+        #
+        # Only borrowed when THIS heading has no usable name of its own and
+        # the next one is not itself an id heading — so a run of
+        # `Example 1` / `Example 2` headings can never donate to each other.
+        if len(name.strip(":;,. ")) < _HEADING_MIN and i + 1 < len(texts):
+            nxt = texts[i + 1]
+            if not _HEADING_ID.match(nxt) and len(nxt) >= _HEADING_MIN:
+                name = nxt
         # FRAMING STACKS, AND A SECOND ID TOKEN IS FRAMING TOO. `_HEADING_ID`
         # was applied exactly once, which is right for reading the compound
         # NUMBER (the first token is the one that identifies the compound) and
@@ -698,6 +725,29 @@ class NamedCompound:
     # never by `reagents.classify`.
     markush: bool = False
     markush_reason: str = ""
+    # A POINTER TO THE PICTURE, when the patent DREW this compound instead of
+    # naming it. Set only by `sources/cid_first.py`, only for a cid whose own
+    # table `<row>` carries a `<chemistry>`/`<img>` and for which no name was
+    # found anywhere. `name`/`smiles`/`inchikey` stay EMPTY — this row asserts
+    # no structure, it records where the structure is and that it is not text.
+    #
+    # Measured over 8 patents: 2,088 of 2,783 unresolved assay compounds have
+    # one of these, and they are unreachable by any text route. Emitting the
+    # marker is what stops that being indistinguishable from "we failed" — the
+    # two need different work (image recognition vs. a parser fix) and were
+    # previously the same blank.
+    drawn_ref: str = ""
+    # The same picture, as something openable. `drawn_ref` is a `<chemistry>`
+    # id, which means nothing outside the XML; this is Google Patents' rendered
+    # PNG for the identical image file, joined on the filename our own `<img>`
+    # element already states. Empty whenever `config.GP_ENABLED` is off, the
+    # fetch failed, or GP has no page — see `sources/gp_images.py`, which also
+    # records why GP's *structures* are deliberately not read.
+    #
+    # A URL IS NOT A STRUCTURE. This field resolves nothing; it makes a drawn
+    # compound reviewable by a human and addressable by a recognition step
+    # that does not exist in this tree yet.
+    drawn_url: str = ""
     # `sources/name_repair.py`'s pattern id when this structure exists only
     # because a CONFIRMED text repair was applied to a span OPSIN rejected;
     # "" (the overwhelming majority) when the patent's own text parsed as

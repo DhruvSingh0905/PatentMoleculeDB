@@ -124,6 +124,31 @@ MODEL_HAIKU = "claude-haiku-4-5-20251001"
 # nobody reads is the constant this file keeps accumulating.
 SYNTH_MODEL = MODEL_HAIKU
 
+# THE CODE-AUTHORING TIER RUNS ON SONNET, and the choice is measured. Run
+# head-to-head on the two escalated bracket classes, identical tools, turns,
+# prompt and gap population:
+#
+#     class                        Haiku          Sonnet
+#     unmatched_closing_bracket     3 of 71       25 of 71
+#     unmatched_opening_bracket     1 of 107       7 of 107
+#
+# Haiku plateaued at 3 across all ten turns with no upward trajectory; Sonnet
+# found its 25 on turn 2. Per compound recovered Sonnet is also CHEAPER
+# ($0.011 vs $0.031 on the closing class) — the raw bill is larger, the unit
+# cost is not, and a rule bought once here is applied corpus-wide.
+#
+# This tier fires only on classes the $0 library and the Haiku regex tier have
+# both already failed on, so it is rare by construction. `SYNTH_MODEL` stays
+# Haiku, which is demonstrably sufficient there: 17 rules and 71 repairs
+# across 30 patents for $0.46.
+#
+# MUST be a key of `PRICING`. The A/B that produced the numbers above was run
+# with a hardcoded `claude-sonnet-4-5-20250929`, which is not in the table, so
+# every Sonnet call was billed at the Opus row and the tier looked ~5x more
+# expensive than it is — exactly the failure the PRICING comment below warns
+# about, reproduced within a day of reading it.
+CAPABILITY_MODEL = MODEL_SONNET
+
 # USD per million tokens. A model MISSING from this table is billed at the Opus
 # row by `cost_tracker.compute_cost`, which silently overstated the repair
 # loop's cost by 15x until Haiku was added. Add every new model here.
@@ -210,6 +235,31 @@ IUPAC_MIN_SEED = 12
 IUPAC_MAX_VARIANTS = 12
 
 
+# ── Which identity route runs ────────────────────────────────────────────
+# SEPARATE FROM `IUPAC_NAMES`, which says WHETHER identity runs at all. Two
+# orthogonal questions need two switches: collapsing them means a route cannot
+# be turned off without turning off the feature.
+#
+#   "cid_first"  the compound ids the assay tables define are the search KEY.
+#                For each, find where the patent ASSERTS that id and read the
+#                name beside it. The anchor is structural.
+#   "prose"      the retired route: find every name in the description, then
+#                guess which compound number each belongs to by proximity.
+#
+# MEASURED over the fixed 20-patent sample, distinct assay cids resolved:
+#
+#     prose + heading + table   3,424 / 7,322   46.8%
+#     cid_first alone           3,668 / 7,322   50.1%
+#     table + cid_first         4,409 / 7,322   60.2%
+#
+# and on the 98 cids where the two disagree, 88 are the prose route shipping a
+# STRICT SUBSTRING of the right answer — `1,3,4-oxadiazole` filed as compound
+# 458 of US10478424, a bare heterocycle with a valid InChIKey and no way for
+# anything downstream to tell it from a real result. That is what the proximity
+# guess costs, and it is why "prose" is retired rather than kept as a fallback.
+IDENTITY_ROUTE = os.environ.get("IDENTITY_ROUTE", "cid_first")
+
+
 # ── What counts as a deliverable compound ────────────────────────────────
 # ON. A patent numbers three different kinds of thing and only one of them is
 # a product: `Example 43` is a compound the patent claims, while
@@ -234,16 +284,40 @@ FINISHED_ONLY = os.environ.get("FINISHED_ONLY", "1") == "1"
 
 
 # ── Google Patents ───────────────────────────────────────────────────────
-# OFF, and not yet ported. GP embeds SMILES/InChIKey pairs it derived by
-# running structure recognition over the patent's drawings — genuinely useful
-# where a compound is drawn but never named, and a liability as a foundation:
-# it is a third party's OCR of an image we also hold, and it numbers compounds
-# positionally so its output cannot be joined to our assay rows without the
-# 250-line bridge that left 27.6% of v2's compounds orphaned.
+# WHAT GP ACTUALLY PUBLISHES, measured off the live HTML rather than assumed.
+# The previous version of this comment said GP "embeds SMILES/InChIKey pairs
+# it derived by running structure recognition over the patent's drawings" and
+# "numbers compounds positionally". Both are wrong, and acting on either would
+# have built the wrong bridge:
 #
-# The flag exists now so the decision is explicit rather than implied by an
-# absent file. Nothing reads it yet; when the module lands it must check this.
+#   - Each compound block carries ELEVEN microdata fields — name, id, count,
+#     smiles, inchi_key, domain, sections, match, similarity, svg_small,
+#     svg_large — and `domain` reads "Chemical class". The names include bare
+#     scaffolds (`1h-pyrrolo[3,2-b]pyridine`) and the literal string
+#     `compounds`. This is ENTITY ANNOTATION over the text, the same model
+#     SureChEMBL uses, not per-drawing recognition: US10214537 carries 2,078
+#     annotated compounds against 1,342 images.
+#   - `id` is the InChIKey itself, or a numeric entity id (`150000001875`).
+#     Not positional. `sections` is document-section granularity
+#     (description / claims / abstract), which cannot locate a compound row.
+#
+# So GP is NOT a structure source for this pipeline — it cannot join to a
+# patent's own compound number, which is the only key our assay rows have.
+#
+# It IS an exact IMAGE source. `figure_image_urls` matches our XML's
+# `<img file="...">` list one-for-one (.TIF -> .png), and the chain
+# cid -> <chemistry> -> image filename -> GP png URL joined 100% on every
+# patent tested (US10730877 1,065/1,065, US10870641 480/480, US10214537
+# 843/843). Our XML only REFERENCES image files we do not hold; GP hosts them
+# rendered, at a URL whose directory component is a content hash we cannot
+# construct — which is the whole reason a fetch and a cache are needed at all.
 GP_ENABLED = os.environ.get("GP_ENABLED", "0") == "1"
+
+# Per-patent {image filename stem -> https URL}. Small JSON, one per patent —
+# NOT the 3.7MB HTML it was extracted from, and NOT v2's `gpatents_cache`,
+# which v3 never reads (see CLAUDE.md: the only artifact that legitimately
+# crosses the v2/v3 boundary is the grant XML).
+GP_IMAGE_DIR = OUTPUT_DIR / "gp_images"
 
 
 # ── Rule tier ────────────────────────────────────────────────────────────

@@ -82,6 +82,20 @@ split name — zero genuine cross-entry name wraps were found. So
 `join_wrapped_cells`'s cross-`<entry>` join is not needed here and is
 deliberately NOT ported; what v3's cells need is a rejoin WITHIN one cell.
 
+**THAT SCAN LOOKED SIDEWAYS ONLY, AND A SECOND WRAP RUNS DOWNWARD.** Every
+pair it tested was `<entry>` beside `<entry>` — two columns of the same row.
+It never compared a cell with the cell BELOW it, so it could not have found
+the other shape, and the other shape is real and common: the same column
+index on consecutive `<row>` elements, one compound spread down six rows
+(US9763922 TABLE-US-00002). Read one row at a time, as this module did until
+`_records` was added, every fragment is rejected by OPSIN and the compound is
+lost — or worse, a fragment parses ALONE and a piece of a name is shipped as
+the compound's structure. That is not hypothetical: US9763922 cid 124 carried
+SMILES `O1CCCCC1` — tetrahydropyran, one substituent of an 11-row name —
+until the rejoin replaced it. The refusal above still stands for the
+horizontal case; see `_records` for the vertical one, and note that its
+record boundary is NOT "the id cell is non-empty", because the id wraps too.
+
 `join_candidates` (v2) is also not ported, for a reason specific to what it
 solves: it exists because a hyphen AT a v2 break point is ambiguous — the
 break might have landed on a real nomenclature hyphen or might not have, so
@@ -336,6 +350,118 @@ def _name_columns(table: Table) -> tuple[set[int], set[int], int | None]:
 # cell is one field with one value) but not on description prose.
 
 
+# ── cross-<row> continuation ─────────────────────────────────────────────
+#
+# A SECOND, VERTICAL WRAP — NOT the cross-`<entry>` join this module's
+# docstring refuses. That refusal is about HORIZONTAL adjacency (`<entry>`
+# beside `<entry>`, two different columns), and it stands: 477 candidate
+# pairs, all of them stacked header labels. This is the orthogonal case —
+# the SAME column index on CONSECUTIVE `<row>` elements, which that scan
+# never looked at. US9763922 TABLE-US-00002, read verbatim off the assembled
+# block:
+#
+#     [0] col0='Example 7'  col1='1-[3-[6-(1-ethylpyrazol-'
+#     [1] col0=''           col1='4-yl)-3,4-dihydro-2H-'
+#     [2] col0=''           col1='quinolin-1-yl]-1-(oxetan-'
+#     ...
+#     [5] col0=''           col1='5-yl]ethanone'
+#
+# Six rows, one compound. Offered to OPSIN one row at a time — which is what
+# this module did before — every fragment is rejected and the compound is
+# lost, even though the name is complete and correct once the column is read
+# down instead of across.
+#
+# THE RECORD BOUNDARY IS NOT "THE ID CELL IS NON-EMPTY". When the id column
+# is narrow the source wraps the id ITSELF, putting the label on one row and
+# its number on the next (TABLE-US-00014: `Example` / `107`, with the name
+# starting on the `Example` row). A boundary test of "id cell non-empty"
+# splits that record in two and produces two fragments instead of one name —
+# measured, not supposed: that exact test scored 0/7 on TABLE-US-00014 and
+# 0/3 on TABLE-US-00016 while scoring 20/20 on TABLE-US-00002, and the
+# difference between those tables is nothing but where the id wrapped.
+#
+# So the boundary is the id becoming COMPLETE: a bare label word with no
+# number of its own cannot end a record, and the next non-empty id cell
+# joins it rather than starting a new one.
+_LABEL_ONLY = re.compile(
+    r"^(?:examples?|compounds?|cpds?|ex|entry|entries|nos?\.?|#)[\s.:#]*$", re.I)
+
+# AN ID-LESS ROW IS NOT AUTOMATICALLY A CONTINUATION, and assuming it was
+# broke a guard this module documents at length. Signal A's own note says a
+# stereoisomer continuation row "legitimately carries no id of its own" — such
+# a row holds a COMPLETE name, and gluing it onto the record above both
+# destroys it and corrupts that record. Two tests state the case directly
+# (`test_extract_resolves_signal_b_only_with_a_row_id`, where a fourth id-less
+# row named `...-1-butylpiperidine` must be dropped rather than absorbed, and
+# `test_us10172859_rescues_exactly_the_measured_cell`).
+#
+# So a row continues the record above ONLY when that record is visibly
+# UNFINISHED — its text so far ends on one of the wrap characters
+# `dewrap.WRAP_ADJACENT` was measured for. `...(1-ethylpyrazol-` is unfinished;
+# `...-1-propylpiperidine` is not, and the row beneath it starts fresh.
+_UNFINISHED_TAIL = re.compile(r"[-‐‑‒–—(\[{,]$")
+
+# Rejoined fragments are glued with ONE SPACE, then handed to the SAME
+# `dewrap_candidates` every other cell already goes through — no new
+# machinery, and no second guess about which glue is right. TARGETED removes
+# a space whose neighbour is `-()[]{},` (`...-6-(1-` + `methylpyrazol...`),
+# and leaves a genuine word break alone (`...carboxylic` + `acid`); OPSIN,
+# not this rule, decides which reading survives.
+_REJOIN_GLUE = " "
+
+
+def _records(table: Table, cid_idx: int | None,
+             name_cols: set[int]) -> list[tuple[int, str, dict[int, str], int]]:
+    """Body rows grouped into records: (row_index, cid_text, {col: text}, n_rows).
+
+    With no id column there is no boundary signal at all, so every row is its
+    own record and this is exactly the previous behaviour — the rejoin can
+    only ever fire where the table states ids.
+    """
+    if cid_idx is None:
+        return [(ri, "", {ci: row[ci].text.strip()
+                          for ci in name_cols if ci < len(row)}, 1)
+                for ri, row in enumerate(table.body_rows)]
+
+    out: list[tuple[int, str, dict[int, str], int]] = []
+    cur_id = ""
+    cur_cols: dict[int, list[str]] = {}
+    cur_row = -1
+    n_rows = 0
+
+    def flush() -> None:
+        if cur_row >= 0:
+            out.append((cur_row, cur_id,
+                        {ci: _REJOIN_GLUE.join(p).strip()
+                         for ci, p in cur_cols.items()}, n_rows))
+
+    def unfinished() -> bool:
+        """Does the open record end mid-name in EVERY name column it fills?"""
+        if cur_row < 0:
+            return False
+        parts = [p for p in cur_cols.values() if p]
+        return bool(parts) and all(_UNFINISHED_TAIL.search(p[-1]) for p in parts)
+
+    for ri, row in enumerate(table.body_rows):
+        id_text = (row[cid_idx].text.strip()
+                   if cid_idx < len(row) else "")
+        if id_text and cur_row >= 0 and _LABEL_ONLY.match(cur_id):
+            # the open record's id is still just a label word — this cell is
+            # the rest of THAT id, not the start of a new record
+            cur_id = f"{cur_id} {id_text}".strip()
+        elif id_text or not unfinished():
+            # a new id, or an id-less row the record above has no claim on
+            flush()
+            cur_id, cur_cols, cur_row, n_rows = id_text, {}, ri, 0
+        n_rows += 1
+        for ci in name_cols:
+            frag = row[ci].text.strip() if ci < len(row) else ""
+            if frag:
+                cur_cols.setdefault(ci, []).append(frag)
+    flush()
+    return out
+
+
 # ── OPSIN ───────────────────────────────────────────────────────────────
 
 def _opsin_batch(names: list[str], fmt: str, patent_id: str = "") -> list[str]:
@@ -383,6 +509,11 @@ class TableName:
     # that did not, which is what the stage's yield is measured on — see
     # "THE CORRUPTION FAMILY" in the module docstring.
     repair: str = ""
+    # How many `<row>` elements this name was read from. 1 is the ordinary
+    # case; >1 means the cross-`<row>` rejoin fired (see `_records`). Kept as
+    # a count rather than a flag so the rejoin's yield can be measured off the
+    # artifact alone, without re-deriving it from the XML.
+    rows_joined: int = 1
 
     @property
     def key(self) -> str:
@@ -406,27 +537,41 @@ class TableName:
 
 # ── extraction ──────────────────────────────────────────────────────────
 
-def extract_table_names(xml: str, patent_id: str = "") -> list[TableName]:
-    """Every OPSIN-parseable compound name stated in this patent's tables.
+def cell_resolution(xml: str, patent_id: str = "") -> tuple[
+        list[tuple[str, int, int, str, str | None, str, int]],
+        dict[int, tuple[str, str, str, str]]]:
+    """`(cells, resolved)` — the ONE definition of "did this table cell resolve".
 
-    One entry per (table, row, name-column) cell that resolves — NOT deduped
-    by structure, because the point of reading these is the row's own
-    compound number, and two different cids naming the same structure is a
-    fact worth keeping, not a duplicate to collapse. See the module
-    docstring for what counts as a name column, how a wrapped cell is
-    repaired, and what is deliberately out of scope.
+    `cells` is every candidate a name column offered; `resolved` maps a cell's
+    index to the `(dewrap, accepted name, smiles, repair)` that won for it. A
+    cell ABSENT from `resolved` produced no structure at all.
+
+    Split out for `repair/name_gap.py`, and `extract_table_names` is built on
+    top of it rather than beside it — the same discipline
+    `iupac_names.heading_resolution` carries, and for the same reason. A
+    `cid | Name` row is the patent asserting in its own voice that a compound
+    with that number is named here, exactly as a heading does; the heal loop
+    could not see any of them because the gap detector only ever read
+    headings. On US10376513 that is the difference between 9 gaps and 155:
+    its Name columns are detected correctly and every cell fails OPSIN on a
+    `<sup>` footnote digit fused to the tail (`...propan-2-ol2`).
+
+    Asking this question a second way would be the specific bug
+    `heading_resolution` documents — a re-implementation drifts from the
+    shipping extractor, and the loop then buys rules for failures that do not
+    exist.
     """
     try:
         blocks = assemble_blocks(parse_tables(xml))
     except Exception as e:
         logger.warning("table_names: %s — parse_tables/assemble_blocks failed: %r",
                         patent_id, e)
-        return []
+        return [], {}
 
     # 1. Collect every candidate cell (table_id, row, column, cid, raw text)
     #    before touching OPSIN at all.
-    Candidate = tuple  # (table_id, row_idx, col_idx, signal, cid, raw_text)
-    candidates: list[tuple[str, int, int, str, str | None, str]] = []
+    # (table_id, row_idx, col_idx, signal, cid, raw, n_rows)
+    candidates: list[tuple[str, int, int, str, str | None, str, int]] = []
 
     for t in blocks:
         try:
@@ -437,14 +582,10 @@ def extract_table_names(xml: str, patent_id: str = "") -> list[TableName]:
             continue
         if not sig_a and not sig_b:
             continue
-        for ri, row in enumerate(t.body_rows):
-            cid_text = (row[cid_idx].text.strip()
-                        if cid_idx is not None and cid_idx < len(row) else "")
+        name_cols = sig_a | sig_b
+        for ri, cid_text, cells, n_rows in _records(t, cid_idx, name_cols):
             cid = normalize_cid(cid_text) if cid_text else None
-            for ci in sig_a | sig_b:
-                if ci >= len(row):
-                    continue
-                raw = row[ci].text.strip()
+            for ci, raw in cells.items():
                 if len(raw) < MIN_CELL_LEN:
                     continue
                 if _PROSE_LIKE.search(raw):
@@ -455,15 +596,35 @@ def extract_table_names(xml: str, patent_id: str = "") -> list[TableName]:
                 # docstring — this is what keeps wrapped legend prose out).
                 if signal == "unlabeled" and not cid:
                     continue
-                candidates.append((t.table_id, ri, ci, signal, cid, raw))
+                candidates.append((t.table_id, ri, ci, signal, cid, raw, n_rows))
 
     if not candidates:
-        return []
+        return [], {}
+
+    def _variants(c) -> list[tuple[str, str]]:
+        """Dewrap variants for one candidate, least-invasive first — EXCEPT on
+        a rejoined record, where "least-invasive" would mean keeping a space
+        this module injected itself.
+
+        `_REJOIN_GLUE` puts a space at every fragment boundary, and OPSIN
+        tolerates most of them, so `none` wins and the stored name carries
+        artefacts of our own joining (`pyrazolo[4,3- c]pyridin-5- yl`).
+        TARGETED removes exactly the punctuation-adjacent spaces — which is
+        what every glue space is — and leaves a genuine word break alone, so
+        it is tried first here. Verified before adopting: on all 701 rejoined
+        names in the 20-patent sample that parsed as-is with a glue space,
+        TARGETED yields the IDENTICAL SMILES (0 different, 0 unparseable), so
+        this reorders spellings and cannot reorder answers.
+        """
+        variants = dewrap_candidates(c[5])
+        if c[6] > 1:
+            variants = sorted(variants, key=lambda v: v[0] != "targeted")
+        return variants
 
     # 2. Fan every candidate cell out into its dewrap variants, batch SMILES.
     flat: list[tuple[int, str, str]] = []       # (candidate idx, dewrap label, text)
     for idx, c in enumerate(candidates):
-        for label, cand_text in dewrap_candidates(c[5]):
+        for label, cand_text in _variants(c):
             flat.append((idx, label, cand_text))
 
     smiles = _opsin_batch([f[2] for f in flat], "SMILES", patent_id)
@@ -494,7 +655,7 @@ def extract_table_names(xml: str, patent_id: str = "") -> list[TableName]:
         probes: list[tuple[int, str]] = []          # (candidate idx, dewrap label)
         strings: list[str] = []
         for i in unresolved:
-            for label, cand_text in dewrap_candidates(candidates[i][5]):
+            for label, cand_text in _variants(candidates[i]):
                 probes.append((i, label))
                 strings.append(cand_text)
         for (i, label), res in zip(probes, _repair_names(strings, doc, patent_id)):
@@ -506,6 +667,24 @@ def extract_table_names(xml: str, patent_id: str = "") -> list[TableName]:
                     "%d rescued by name_repair", patent_id, len(unresolved),
                     n_rescued)
 
+    return candidates, best
+
+
+def extract_table_names(xml: str, patent_id: str = "") -> list[TableName]:
+    """Every OPSIN-parseable compound name stated in this patent's tables.
+
+    One entry per (table, row, name-column) cell that resolves — NOT deduped
+    by structure, because the point of reading these is the row's own
+    compound number, and two different cids naming the same structure is a
+    fact worth keeping, not a duplicate to collapse. See the module
+    docstring for what counts as a name column, how a wrapped cell is
+    repaired, and what is deliberately out of scope.
+
+    The candidate collection and the OPSIN verdict live in `cell_resolution`,
+    which `repair/name_gap.py` also calls; this function only turns the cells
+    that WON into rows. One definition, two readers.
+    """
+    candidates, best = cell_resolution(xml, patent_id)
     if not best:
         return []
 
@@ -516,7 +695,7 @@ def extract_table_names(xml: str, patent_id: str = "") -> list[TableName]:
 
     out: list[TableName] = []
     for i, ik in zip(idxs, keys):
-        table_id, row_idx, col_idx, signal, cid, raw = candidates[i]
+        table_id, row_idx, col_idx, signal, cid, raw, n_rows = candidates[i]
         dewrap, name, smi, repair = best[i]
         verdict = _classify_reagent(name, smi)
         stereo = _RELATIVE_STEREO.findall(name)
@@ -538,14 +717,16 @@ def extract_table_names(xml: str, patent_id: str = "") -> list[TableName]:
             label=verdict.label, reason=verdict.reason,
             markush=is_markush,
             markush_reason=("relative_stereo:" + ",".join(stereo)) if stereo else "",
-            repair=repair,
+            repair=repair, rows_joined=n_rows,
         ))
 
     n_with_cid = sum(1 for tn in out if tn.cid)
     n_dewrapped = sum(1 for tn in out if tn.dewrap != "none")
     n_repaired = sum(1 for tn in out if tn.repair)
+    n_rejoined = sum(1 for tn in out if tn.rows_joined > 1)
     logger.info(
         "table_names: %s — %d candidate cells, %d resolved (%d dewrapped, "
-        "%d repaired, %d carry a row id)",
-        patent_id, len(candidates), len(out), n_dewrapped, n_repaired, n_with_cid)
+        "%d repaired, %d rejoined across rows, %d carry a row id)",
+        patent_id, len(candidates), len(out), n_dewrapped, n_repaired,
+        n_rejoined, n_with_cid)
     return out

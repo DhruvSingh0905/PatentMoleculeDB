@@ -449,10 +449,74 @@ def _fix_dropped_close(window: str) -> list[str]:
     return [window[:i] + ")" + window[i:] for i in range(len(window) + 1)]
 
 
+# A `<sup>` footnote marker fused onto the end of a name. `uspto_xml._text`
+# keeps a superscript's CONTENT when tags are stripped, so a table cell reading
+# `propan-2-ol` with a footnote 2 arrives as `propan-2-ol2`.
+#
+# THE LOOKBEHIND IS TWO LETTERS, AND EVERY PART OF THAT IS MEASURED. Over the
+# 229 asserted-name gaps ending in a digit across the 30-patent sample plus
+# US10376513, counting how many parse once the trailing digits are removed:
+#
+#     prev char   n     strips and parses
+#     'e'        118    116     propanenitrile4, amine3, acetamide3
+#     'l'         19     17     propan-2-ol2
+#     'd'          3      2     ...-5,5,6,6-d4      <- DEUTERIUM, see below
+#     ' '         69      0     ...carbonitrile Example 3
+#     ')'         18      0     ...benzonitrile(from peak 1)5
+#     '-'          2      0     truncated names
+#
+# The unqualified `[0-9]$` a model proposed fires on all 229 and can only ever
+# help 135 of them. Requiring a letter fixes the space/paren/hyphen cases —
+# but a single letter is still wrong, and the counter-example is the dangerous
+# kind: `...piperazin-2-one-5,5,6,6-d4` is a DEUTERATED analogue, and 2 of
+# those 3 parse after the `4` is stripped. They pass OPSIN, they pass the
+# coverage floor (one character out of ~50), and they silently destroy the
+# isotope labelling — a false repair that looks exactly like a success.
+#
+# Two letters admits every real footnote (`le`, `ol`, `ne`) and excludes `-d4`
+# by construction rather than by a special case.
+_FOOTNOTE_TAIL = re.compile(r"(?<=[a-z]{2})\d+$")
+
+
+def _footnote_site(name: str) -> list[tuple[int, int]]:
+    m = _FOOTNOTE_TAIL.search(name.rstrip())
+    return [(m.start(), m.end())] if m else []
+
+
 # Real corpus citations for every pattern below are reproduced, verbatim
 # positions and all, in `test_name_repair.py` — nothing here is a
 # constructed example.
 PATTERNS: tuple[CorruptionPattern, ...] = (
+    CorruptionPattern(
+        id="footnote_digit_tail",
+        description=(
+            "a <sup> footnote marker fused onto the end of a name, e.g. "
+            "US10376513 TABLE-US-00001 cid 69's "
+            "'...azetidin-1-yl)propan-2-ol2' for '...propan-2-ol'. "
+            "OPSIN names the culprit itself: 'unparsable due to the "
+            "following being uninterpretable: 2'."
+        ),
+        site=_footnote_site,
+        fix=lambda _: [""],
+        # TRUSTED, AND CORROBORATION IS NOT AVAILABLE HERE EVEN IN PRINCIPLE.
+        # This shipped as `trusted=False` first and recovered exactly 0 of 642
+        # gaps: the gate asks that the corrected spelling occur elsewhere in
+        # the patent as published, and the whole shape of this defect is that
+        # the footnote is fused onto the name in the ONE table cell where the
+        # compound is named. Measured on US10376513, `corrected spelling occurs
+        # verbatim in doc` was False for every case, including ones whose
+        # stripped name parses perfectly.
+        #
+        # So OPSIN acceptance is the only gate, and it is enough here BECAUSE
+        # THE SITE CANNOT REACH A GOOD NAME: over 2,304 names that already
+        # parse across 14 patents, this site fires on ZERO of them (0.000%) —
+        # the collateral question `name_rules.ground()` asks of a bought rule,
+        # asked of this one before trusting it. The `$` anchor means it can
+        # only ever delete trailing digits, and the two-letter lookbehind
+        # already excludes the deuterium case that OPSIN alone would wave
+        # through.
+        trusted=True,
+    ),
     CorruptionPattern(
         id="dropped_open_paren",
         description=(
