@@ -39,6 +39,7 @@ from pathlib import Path
 
 from ..core import config
 from ..sources import name_repair as NR
+from .name_rules import NAME_SYNTH_EPOCH, name_fingerprint, name_signature
 from .name_gap import NameGap, find_name_gaps
 from .name_outcome import NameOutcome, measure, summarise
 from .name_rules import NameRuleLibrary, NamePattern, ground
@@ -77,6 +78,10 @@ class NameRepairReport:
     rules_adopted: list[str] = field(default_factory=list)
     rejected: list[str] = field(default_factory=list)
     escalated: int = 0
+    # Subset of `escalated` set aside WITHOUT a call, because their
+    # failure class was already escalated at this epoch. The whole
+    # point of the fingerprint: this number is money not spent.
+    skipped_escalated: int = 0
     usd_spent: float = 0.0
     repaired: list[Repaired] = field(default_factory=list)
 
@@ -165,6 +170,33 @@ def repair_names(xml: str, patent_id: str = "", *,
     if remaining:
         lib.save()                       # persist the confirms counters
 
+    # ALREADY-FAILED CLASSES ARE NOT RE-BOUGHT. Each gap carries the
+    # fingerprint of its FAILURE (see `name_rules.name_signature` — OPSIN's own
+    # diagnosis, not the name's shape), and a class we could not solve under
+    # this prompt epoch is set aside before any call is made. Without it a
+    # second run over US10376513 bought nothing new and still spent $0.0764
+    # re-attempting the identical 34 gaps the first run had given up on.
+    #
+    # An ADOPTED pattern never expires; an escalation expires the moment
+    # `NAME_SYNTH_EPOCH` is bumped. That asymmetry is `rules.RuleLibrary.get`'s
+    # and it exists because an escalation is a record of our capability on a
+    # given day, not a fact about the document.
+    if remaining:
+        fresh: list[NameGap] = []
+        for g in remaining:
+            g.fingerprint = name_fingerprint(g.opsin_error, g.name_text)
+            g.signature = name_signature(g.opsin_error, g.name_text)
+            if lib.is_escalated(g.fingerprint):
+                report.escalated += 1
+                report.skipped_escalated += 1
+            else:
+                fresh.append(g)
+        if report.skipped_escalated:
+            logger.info("name_loop: %s — %d gap(s) skipped, their failure class "
+                        "already escalated at epoch %s", patent_id,
+                        report.skipped_escalated, NAME_SYNTH_EPOCH)
+        remaining = fresh
+
     calls = 0
     while remaining and calls < max_calls:
         batch = remaining[: SYN.BATCH]
@@ -207,8 +239,17 @@ def repair_names(xml: str, patent_id: str = "", *,
             # on — recorded, never re-bought within this run.
             report.escalated += len(batch)
             for g in batch:
+                # REMEMBER THE CLASS, not the compound. The next patent with
+                # the same OPSIN diagnosis is skipped before a call is made.
+                fp = getattr(g, "fingerprint", "") or name_fingerprint(
+                    g.opsin_error, g.name_text)
+                lib.escalate(fp, getattr(g, "signature", "") or name_signature(
+                    g.opsin_error, g.name_text),
+                    note=(attempts[-1].get("why", "") if attempts else ""))
                 _journal(jpath, {"event": "escalate", "patent": g.patent_id,
                                  "cid": g.cid, "name": g.name_text,
+                                 "fingerprint": fp,
+                                 "signature": getattr(g, "signature", ""),
                                  "attempts": attempts,
                                  "epoch": SYN.PROMPT_VERSION})
             remaining = remaining[len(batch):]
@@ -223,6 +264,16 @@ def repair_names(xml: str, patent_id: str = "", *,
             if oc.positive:
                 adopted.confirms += 1
                 report.fixed_by_new_rule += 1
+                # TAG THE CLASSES IT ACTUALLY SOLVED, not the batch it was
+                # bought for. Tagging the batch recorded a false association —
+                # `trailing_digit_footnote_variants` came out claiming to solve
+                # `unmatched_closing_bracket|-|-`, a class it never touched —
+                # and `solved_signatures` shows exactly these to a model, so a
+                # wrong one is worse than none.
+                sig = getattr(g, "signature", "") or name_signature(
+                    g.opsin_error, g.name_text)
+                if sig and sig not in adopted.signatures:
+                    adopted.signatures.append(sig)
                 report.repaired.append(Repaired(
                     patent_id=g.patent_id, cid=g.cid, original=g.name_text,
                     repaired=oc.repaired, smiles=oc.smiles,
@@ -237,7 +288,7 @@ def repair_names(xml: str, patent_id: str = "", *,
             else:
                 still.append(g)
 
-        lib.add(adopted)
+        lib.add(adopted)          # `NameRuleLibrary.add` persists; see its body
         report.rules_adopted.append(adopted.id)
         logger.info("name_loop: %s adopted %s — fixed %d of %d remaining",
                     patent_id, adopted.id, adopted.confirms, len(remaining))

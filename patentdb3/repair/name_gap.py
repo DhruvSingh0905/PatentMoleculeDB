@@ -58,7 +58,9 @@ from dataclasses import dataclass, field
 
 from ..core import config
 from ..sources import iupac_names as IN
+from ..sources import table_names as TN
 from ..sources.anchor import anchor_text
+from ..sources.dewrap import targeted as _dewrap_targeted
 
 logger = logging.getLogger(__name__)
 
@@ -123,14 +125,24 @@ class NameGap:
     """One compound the patent named that we could not resolve."""
     patent_id: str
     cid: str
-    name_text: str                 # the heading's own name text, framing peeled
+    name_text: str                 # the assertion's own name text, framing peeled
     opsin_error: str = ""          # OPSIN's own diagnosis, verbatim
+    # WHERE THE PATENT MADE THE ASSERTION: `heading` or `table`. Not consumed
+    # by `name_outcome.measure`, which reads only `name_text` and `doc_text` and
+    # is source-agnostic by construction — this exists so the journal can say
+    # which population a bought rule came from, and so a zero on either side is
+    # visible rather than assumed.
+    source: str = "heading"
     # Names from THIS patent that already parse. Two uses, both load-bearing:
     # `name_rules.ground()` measures collateral damage against them, and the
     # prompt shows a couple so the model can see what an intact name here looks
     # like.
     clean_names: list[str] = field(default_factory=list)
     doc_text: str = ""             # flattened patent text, for corroboration
+    # Set by `name_loop` from OPSIN's diagnosis — the FAILURE class, not the
+    # name. See `name_rules.name_signature`.
+    fingerprint: str = ""
+    signature: str = ""
 
     @property
     def key(self) -> str:
@@ -247,20 +259,69 @@ def find_name_gaps(xml: str, patent_id: str = "",
     if not heads:
         return []
 
+    # THE SECOND ASSERTION SITE, and it was missing. A table row reading
+    # `cid | Name` states, in the patent's own voice, that a compound with that
+    # number is named here — the identical claim a heading makes, and the
+    # trigger this module is built on. Only headings were ever read, so an
+    # entire population was invisible: on US10376513 the loop saw 9 gaps while
+    # 155 measured compounds sat in a correctly-detected `Name` column, every
+    # one failing OPSIN on a `<sup>` footnote digit fused to the tail
+    # (`...propan-2-ol2`). That defect is precisely what this tier exists to
+    # buy a rule for, and it could not see it.
+    #
+    # `cell_resolution` is the table route's OWN verdict, not a second
+    # implementation of it — same contract as `heading_resolution` above and
+    # for the same reason.
+    try:
+        cells, cell_ok = TN.cell_resolution(xml, patent_id)
+    except Exception as e:
+        logger.warning("name_gap: %s — cell_resolution failed: %r", patent_id, e)
+        cells, cell_ok = [], {}
+
     # The collateral-damage population for `name_rules.ground()`: this
-    # patent's own heading names that DID resolve.
-    clean = [resolved[i][1] for i in sorted(resolved)][:400]
+    # patent's own names that DID resolve, from BOTH assertion sites. A rule
+    # bought for a table cell must not be allowed to break a heading name.
+    clean = [resolved[i][1] for i in sorted(resolved)]
+    clean += [cell_ok[i][1] for i in sorted(cell_ok)]
+    clean = clean[:400]
+
+    asserted: list[tuple[str, str, str]] = []          # (cid, name_text, source)
+    for i, (cid, name_text) in enumerate(heads):
+        if i not in resolved:
+            asserted.append((cid, name_text, "heading"))
+    for i, c in enumerate(cells):
+        if i in cell_ok:
+            continue
+        cid, raw = c[4], c[5]
+        # An unnamed row asserts nothing about WHICH compound this is, so it
+        # cannot become a gap — the loop would have no id to report a recovery
+        # against. Signal B already refuses these; signal A admits them.
+        if not cid:
+            continue
+        # THE GAP IS THE RESIDUE AFTER TRANSFORMATIONS WE ALREADY OWN, not the
+        # raw cell. A table cell carries typesetting wrap spaces
+        # (`4-Amino-3- methyl`) that `dewrap.targeted` removes and the
+        # extractor has ALREADY applied and still failed on. Handing the model
+        # the raw string makes those spaces the most conspicuous thing in it,
+        # and it spends its attempt there: the first run of this against
+        # US10376513 proposed `space_in_methyl` three times, each rejected with
+        # "applying the rule leaves every name unchanged", and escalated 164
+        # gaps for $0.027 — buying nothing, because the defect it described was
+        # one the pipeline fixes before OPSIN ever sees the string.
+        #
+        # Dewrapped, the only thing left unexplained is the real defect, and
+        # OPSIN's own error then names it (`uninterpretable: 2` for the
+        # `<sup>` footnote digit fused to `...propan-2-ol2`).
+        asserted.append((cid, _dewrap_targeted(raw), "table"))
 
     gaps: list[NameGap] = []
-    for i, (cid, name_text) in enumerate(heads):
-        if i in resolved:
-            continue
+    for cid, name_text, src in asserted:
         if not _CHEM.search(name_text):
             continue                                  # a section header
         if _PHANE.search(name_text) or _CONJUNCTION.search(name_text):
             continue                                  # not repairable here
         gaps.append(NameGap(patent_id=patent_id, cid=cid, name_text=name_text,
-                            clean_names=clean))
+                            clean_names=clean, source=src))
 
     if not gaps:
         return []
@@ -287,5 +348,8 @@ def find_name_gaps(xml: str, patent_id: str = "",
                     "grammar, not corruption", patent_id, dropped)
     gaps = kept
 
-    logger.info("name_gap: %s — %d asserted compounds unresolved", patent_id, len(gaps))
+    n_tbl = sum(1 for g in gaps if g.source == "table")
+    logger.info("name_gap: %s — %d asserted compounds unresolved "
+                "(%d heading, %d table)", patent_id, len(gaps),
+                len(gaps) - n_tbl, n_tbl)
     return gaps

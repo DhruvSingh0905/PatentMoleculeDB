@@ -69,6 +69,7 @@ It has no opinion about whether a rule is a GOOD idea — that is
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -92,6 +93,14 @@ except ImportError:                         # pragma: no cover
 # that previously could not be solved, while an ADOPTED rule never expires.
 # Forgetting to bump it replays a stale answer as if nothing had changed.
 NAME_SYNTH_EPOCH = "n1"
+
+# Failed attempts at ONE failure class before it is written off for this
+# epoch. Mirrors `loop.MAX_ATTEMPTS`, which bounds paid attempts at one LAYOUT
+# before that layout is escalated — the bound this tier was missing when the
+# memory was lifted to corpus scale. Lives here rather than in config.py for
+# the same reason `MAX_ATTEMPTS` lives in loop.py: it bounds the loop, not the
+# corpus.
+ESCALATE_AFTER = 3
 
 LIBRARY_PATH = config.PACKAGE_ROOT / "data" / "name_rules.json"
 
@@ -150,6 +159,131 @@ def _levenshtein(a: str, b: str) -> int:
 _MAX_COLLATERAL = 0.02
 
 
+# ── the failure fingerprint ──────────────────────────────────────────────
+#
+# THE ASSAY TIER'S DESIGN, ON THE ONE AXIS THAT TRANSFERS. `gap.layout_signature`
+# hashes a table's SHAPE and deliberately excludes its content, "otherwise every
+# table is unique and nothing is ever reused". The equivalent move for names is
+# NOT to hash the name: `name_gap`'s docstring records that shape clustering was
+# measured and failed, because a name's shape is dominated by what kind of
+# chemistry it is while a defect is a small local perturbation — the largest
+# clusters came out as `1-methylpiperidin-4-yl` (1,048) and
+# `1,1,1,3,3,3-Hexafluoropropan-2-yl` (735), which are clusters of chemistry.
+#
+# What IS content-independent is OPSIN's own account of the failure — the same
+# source `_UNSUPPORTED_GRAMMAR` already trusts, and for the same stated reason:
+# use the parser's diagnosis rather than guess from the string. Measured over
+# the asserted-name gaps of 5 patents, 96 distinct raw error strings collapse
+# to a handful of families once the offending token is replaced by its CLASS:
+#
+#     uninterpretable: 3 / : 2 / : 4 / : 5          133   one defect, four digits
+#     uninterpretable: (frompeak1)5 / (peak2)3       16   annotation + footnote
+#     Invalid fusion / Lambda convention / hydrogen   24   OPSIN grammar limits
+#     Unmatched opening bracket found in :<name>      12   bracket faults
+#
+# Those 133 are a single family — confirmed independently, since ONE rule
+# (`[0-9]$` -> ``) took 113 of them. A fingerprint that kept the digit would
+# have split them four ways and bought four rules.
+_ERR_KIND = [
+    (re.compile(r"unmatched (opening|closing) bracket", re.I),
+     lambda m: f"unmatched_{m.group(1).lower()}_bracket"),
+    (re.compile(r"invalid fusion descriptor", re.I), lambda m: "invalid_fusion"),
+    (re.compile(r"lambda convention", re.I), lambda m: "lambda_convention"),
+    (re.compile(r"hydrogen addition at locant", re.I), lambda m: "hydrogen_addition"),
+    (re.compile(r"could not find atom that|<stereoChemistry", re.I),
+     lambda m: "stereo_unsupported"),
+    (re.compile(r"unsure of the meaning of the words", re.I),
+     lambda m: "substituent_only"),
+    (re.compile(r"uninterpretable:\s*(.*?)(?:\s+The following|$)", re.I | re.S),
+     lambda m: "uninterpretable"),
+]
+
+# The offending token, reduced to its class. `3` and `5` are the same defect;
+# `(from peak 1)5` is a different one; `yloro` is a third.
+_TOK_CLASSES = [
+    (re.compile(r"^\d+$"), "digit"),
+    (re.compile(r"^\([^)]*\)\d+$"), "paren+digit"),
+    (re.compile(r"^[;,]"), "trailing_annotation"),
+    (re.compile(r"^[A-Za-z]+$"), "word"),
+]
+
+
+def name_signature(opsin_error: str, name_text: str = "") -> str:
+    """The fingerprint's PREIMAGE — the failure, before it is hashed.
+
+    `kind|token class|position`, short and readable. Split from the hash for
+    exactly the reason `gap.layout_signature` is: whatever goes into the hash
+    has to be the same thing similarity is measured on, and a human or a model
+    needs a form it can actually compare.
+
+    The name itself never enters. OPSIN echoes the whole input into several of
+    its messages (`Unmatched opening bracket found in :N-((4,6-dimethyl...`),
+    which would make every failure unique — the precise trap the layout
+    signature's content exclusion exists to avoid.
+    """
+    err = (opsin_error or "").strip()
+    if not err:
+        return "no_error|-|-"
+
+    kind, tok = "other", ""
+    for pat, name in _ERR_KIND:
+        m = pat.search(err)
+        if m:
+            kind = name(m)
+            if kind == "uninterpretable":
+                tok = re.sub(r"\s+", "", m.group(1) or "")[:24]
+            break
+
+    tok_class = "-"
+    if tok:
+        tok_class = "text"
+        for pat, cls in _TOK_CLASSES:
+            if pat.match(tok):
+                tok_class = cls
+                break
+        # `text` IS A CATCH-ALL AND HAD TO BE SPLIT. It held 258 of 604 gaps
+        # (42.7%) in a single class — worse than the real catch-all, which is
+        # only 4.8% — so one write-off discarded 258 unrelated compounds.
+        # Reading the actual tokens shows why they cannot share a class:
+        # `#` (27), `cyclohex-1-ol` (14), `Example49`, `Step1:2-bromo-4-...`,
+        # `(racemic)`, `(MixtureofIsomers)`, a J. Med. Chem. citation, and
+        # genuine chemistry like `5-methoxpyrimidine-2-carboxamide`.
+        #
+        # 290 of those 344 tokens are DISTINCT, so keying on the token itself
+        # gives ~1 gap per class and no reuse at all. The skeleton below —
+        # character classes, runs collapsed, plus a length bucket — was
+        # measured to give 77 buckets over the same 344, ~4.5 gaps each, which
+        # is the granularity the layout tier runs at (306 fingerprints across
+        # 63 patents). It describes the DEFECT's shape, not the compound's:
+        # `name_gap`'s docstring records that clustering whole NAMES fails
+        # because chemistry dominates their shape, and the offending token is
+        # a few characters rather than a molecule.
+        if tok_class == "text":
+            sk = re.sub(r"[a-z]+", "a", tok)
+            sk = re.sub(r"[A-Z]+", "A", sk)
+            sk = re.sub(r"\d+", "9", sk)
+            tok_class = f"text:{min(len(tok), 9)}:{sk[:12]}"
+
+    # Where the defect sits. A trailing footnote and a mid-name corruption need
+    # different rules even when OPSIN reports them the same way.
+    pos = "-"
+    if tok and name_text:
+        flat = re.sub(r"\s+", "", name_text)
+        pos = ("end" if flat.endswith(tok) else
+               "start" if flat.startswith(tok) else "mid")
+    return f"{kind}|{tok_class}|{pos}"
+
+
+def name_fingerprint(opsin_error: str, name_text: str = "") -> str:
+    """Stable id for a FAILURE CLASS, independent of the compound involved.
+
+    Two gaps share a fingerprint when a rule written for one should work on the
+    other. Same contract as `gap.layout_fingerprint`, same 16 hex characters.
+    """
+    return hashlib.sha256(
+        name_signature(opsin_error, name_text).encode()).hexdigest()[:16]
+
+
 @dataclass
 class NamePattern:
     """One model-proposed corruption form. Regex in, replacement out."""
@@ -166,11 +300,17 @@ class NamePattern:
     # Bookkeeping, written by the loop after the gate passes.
     bought_for: str = ""          # patent id that paid for it
     confirms: int = 0             # repairs it has confirmed, lifetime
+    # Failure-class SIGNATURES this pattern has actually resolved (readable
+    # preimages, not hashes — they are what `solved_signatures` shows a model).
+    # A pattern is still tried against every gap; this records what it is known
+    # to be FOR, which is what makes the library legible as it grows.
+    signatures: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {"id": self.id, "site": self.site, "replacement": self.replacement,
                 "note": self.note, "model": self.model, "epoch": self.epoch,
-                "bought_for": self.bought_for, "confirms": self.confirms}
+                "bought_for": self.bought_for, "confirms": self.confirms,
+                "signatures": self.signatures}
 
     @staticmethod
     def from_dict(d: dict) -> "NamePattern":
@@ -178,7 +318,10 @@ class NamePattern:
             id=d["id"], site=d["site"], replacement=d.get("replacement", ""),
             note=d.get("note", ""), model=d.get("model", ""),
             epoch=d.get("epoch", ""), bought_for=d.get("bought_for", ""),
-            confirms=int(d.get("confirms", 0)))
+            confirms=int(d.get("confirms", 0)),
+            # Enumerated rather than `**d` so an unknown key in a future schema
+            # cannot crash the load; a schema-1 file simply has no signatures.
+            signatures=list(d.get("signatures", []) or []))
 
 
 @dataclass
@@ -322,6 +465,8 @@ class NameRuleLibrary:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or LIBRARY_PATH
         self.patterns: list[NamePattern] = []
+        # fingerprint -> {"epoch", "signature", "note"}. See `is_escalated`.
+        self.escalations: dict[str, dict] = {}
         self._load()
 
     def _load(self) -> None:
@@ -334,15 +479,103 @@ class NameRuleLibrary:
                 self.patterns.append(NamePattern.from_dict(d))
             except (KeyError, TypeError):
                 logger.warning("name_rules: skipping malformed entry %r", d)
+        esc = raw.get("escalations", {})
+        if isinstance(esc, dict):
+            self.escalations = {k: v for k, v in esc.items() if isinstance(v, dict)}
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(
-            {"schema": 1, "patterns": [p.to_dict() for p in self.patterns]},
-            indent=1))
+        # Atomic, like `rules.RuleLibrary.save` — a truncated library read back
+        # as "no rules" would silently re-buy the entire corpus.
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(
+            {"schema": 2,
+             "patterns": [p.to_dict() for p in self.patterns],
+             "escalations": self.escalations}, indent=1))
+        tmp.replace(self.path)
+
+    # ── escalation memory ────────────────────────────────────────────────
+    #
+    # THE ASYMMETRY IS THE WHOLE POINT, and it is `rules.RuleLibrary.get`'s:
+    # an adopted pattern is EVIDENCE — it was run against real names and it
+    # held, so it stays true regardless of what changes here. An escalation is
+    # not an answer; it is a record that our capability ran out on this failure
+    # class, on a particular day, with a particular prompt. Treating the two
+    # alike is what froze eight US10172859 layout gaps at a stale verdict while
+    # the fixes that would have resolved them landed one after another.
+    #
+    # Without this the name tier had no memory of failure at all: measured, a
+    # second run over US10376513 fixed 132 gaps from the library, bought
+    # nothing new, and still spent $0.0764 re-attempting the same 34 gaps the
+    # first run had already given up on.
+
+    def is_escalated(self, fingerprint: str) -> bool:
+        """Have we given up on this failure class, under THIS prompt?"""
+        rec = self.escalations.get(fingerprint)
+        return (bool(rec) and rec.get("epoch") == NAME_SYNTH_EPOCH
+                and rec.get("failures", 0) >= ESCALATE_AFTER)
+
+    def escalate(self, fingerprint: str, signature: str, note: str = "") -> None:
+        """Record ONE failure against this class; give up only at
+        `ESCALATE_AFTER`.
+
+        THE FIRST VERSION GAVE UP AFTER A SINGLE FAILED BATCH, AND IT WAS A
+        NET LOSS. Measured over 30 patents: 604 gaps, 537 of them SKIPPED
+        without ever being attempted, 17 fixed, 2 rules bought. Whole patents
+        went untouched — US20250163061A1 162 gaps / 162 skipped, US9133148
+        135 / 135 — because a class had been closed by one failed batch on an
+        earlier patent, in one case a patent with a single gap in it.
+        `repair/loop.py` escalates a layout after `MAX_ATTEMPTS` PAID ATTEMPTS
+        AT THAT LAYOUT; lifting the memory to corpus scale without lifting the
+        attempt budget with it is what produced the veto.
+
+        Counting is per class and per epoch, so a class gets `ESCALATE_AFTER`
+        genuine attempts spread across whatever patents raise it, and bumping
+        `NAME_SYNTH_EPOCH` resets the count as well as the verdict.
+        """
+        rec = self.escalations.get(fingerprint)
+        if not rec or rec.get("epoch") != NAME_SYNTH_EPOCH:
+            rec = {"epoch": NAME_SYNTH_EPOCH, "signature": signature,
+                   "failures": 0, "note": ""}
+        rec["failures"] = int(rec.get("failures", 0)) + 1
+        rec["note"] = note[:200] or rec.get("note", "")
+        self.escalations[fingerprint] = rec
+        self.save()
+
+    def solved_signatures(self, limit: int = 6) -> list[tuple[str, NamePattern]]:
+        """`(signature, pattern)` for classes already solved.
+
+        The other half of the assay tier's design: a model asked about a new
+        failure is otherwise shown nothing about what has been learned, so it
+        re-derives from scratch and cannot notice that a near-identical class
+        was solved three patents ago. Cheap to send — a signature is ~20
+        characters, not the 165 KB the library would be.
+        """
+        out: list[tuple[str, NamePattern]] = []
+        for p in self.patterns:
+            for sig in p.signatures:
+                out.append((sig, p))
+                if len(out) >= limit:
+                    return out
+        return out
 
     def add(self, p: NamePattern) -> None:
         self.patterns = [x for x in self.patterns if x.id != p.id] + [p]
+        # A RULE OUTRANKS AN ESCALATION FOR THE SAME CLASS. When a batch fails
+        # every gap in it is escalated, so one heterogeneous failed batch marks
+        # classes that a later purchase then solves — observed directly:
+        # `uninterpretable|digit|end` was recorded as escalated in the same run
+        # where two rules resolved 118 of its members. Leaving both would let a
+        # stale failure suppress a class we demonstrably handle.
+        #
+        # This is `rules.RuleLibrary.get`'s asymmetry applied at write time: the
+        # rule is EVIDENCE (it ran against real names and held); the escalation
+        # was only a record of where we stopped that day.
+        solved = set(p.signatures)
+        if solved:
+            for fp, rec in list(self.escalations.items()):
+                if rec.get("signature") in solved:
+                    del self.escalations[fp]
         self.save()
 
     def has(self, pattern_id: str) -> bool:
