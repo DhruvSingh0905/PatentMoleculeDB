@@ -382,22 +382,39 @@ def test_extract_markush_cell_carries_no_inchikey():
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_us10376513_measured_residue():
-    """The exact patent this task was assigned around. Measured directly
-    (see task report): 189 candidate Name-column cells, of which exactly
-    ONE — cid 291 — clears OPSIN. The illustrative cid=69 cell quoted in
-    this task's brief is NOT that one: it carries a `chloro` -> `eyloro`
-    character substitution (confirmed directly against py2opsin — the
-    dewrapped, still-corrupted string fails to parse), the out-of-scope
-    corruption defect this module deliberately does not repair. Locked in
-    as a regression: this number must not silently change because this
-    module's dewrap grew (or lost) reach, and it must not be "fixed" by
-    reaching into the corruption family that belongs to `name_repair`.
+    """This patent's Name columns, and why the number moved from 1 to 133.
+
+    It used to assert `cids == {"291"}`: 189 candidate cells, exactly one
+    clearing OPSIN, because every other cell carries a `<sup>` footnote digit
+    fused onto its tail (`...propan-2-ol2`) which nothing repaired. That
+    assertion also said the fix "must not be reached by going into the
+    corruption family that belongs to `name_repair`" — and it still must not
+    be. It was not: `name_repair` gained a SIXTH confirmed form,
+    `footnote_digit_tail`, and this module reaches it only through the rescue
+    stage it has always called. The repair lives on the far side of that
+    boundary, exactly where the old docstring said it belonged.
+
+    All 133 rows are attributed to that one pattern, and 131 of them join to
+    a compound the patent actually measured.
+
+    NOTE ON cid 291, because it is the one row whose PATH changed rather than
+    its answer. It used to parse with no repair at all. The cross-`<row>`
+    rejoin now merges its superscript continuation row into the name, so the
+    cell arrives as `...azetidine-1-carboxylate3` and is resolved by the
+    footnote pattern instead. Same accepted name, same InChIKey, one more
+    stage. Measured, so the rejoin cannot be blamed for the family as a whole:
+    118 of the 133 are `rows_joined == 1` — genuine source footnotes — and
+    with the rejoin disabled this patent still yields 125 rows, 124 of them
+    via the same pattern.
     """
     out = _extract(_xml("US10376513"), "US10376513")
     if not out:
         pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
-    cids = {o.cid for o in out}
-    assert cids == {"291"}, sorted(c for c in cids if c)
+    assert len(out) == 133, len(out)
+    assert {o.repair for o in out} == {"footnote_digit_tail"}
+    assert "291" in {o.cid for o in out}
+    # the defect is the SOURCE's, not the rejoin's
+    assert sum(1 for o in out if o.rows_joined == 1) == 118
 
 
 # ── the rescue stage: `name_repair` on what dewrapping could not save ─────

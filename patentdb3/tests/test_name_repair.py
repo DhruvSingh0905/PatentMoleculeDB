@@ -80,15 +80,24 @@ def _xml(pid: str = PID) -> str:
 # 1. Pattern registry / candidate generation — pure, no OPSIN.
 # ---------------------------------------------------------------------------
 
-def test_pattern_ids_are_exactly_the_five_confirmed_forms():
-    """FIVE confirmed corruption forms, SIX registry entries: Form C'
+def test_pattern_ids_are_exactly_the_confirmed_forms():
+    """SIX confirmed corruption forms, SEVEN registry entries: Form C'
     (`stray_opening_bracket`) and Form D (`dropped_close_bracket`) share one
     detector and are two entries for one form — see the module docstring's
     "C' AND D SHARE ONE SITE". Form E ("]" -> "}") is confirmed but
     deliberately has NO entry — see `test_bracket_type_substitution_is_
     never_repaired` below.
+
+    `footnote_digit_tail` is the sixth form and the newest. It is listed FIRST
+    because it is the cheapest site to test and the most common defect
+    measured: 229 asserted-name gaps end in a digit across the 30-patent
+    sample, and it takes US10376513's table route from 0 resolved rows to 133.
+    This assertion is a deliberate lock — it exists so a pattern cannot enter
+    the registry without someone stating, here, what it is and why. It caught
+    exactly that when this form was added.
     """
     assert PATTERN_IDS == (
+        "footnote_digit_tail",
         "dropped_open_paren", "digit_for_paren", "ch_as_ey",
         "stray_closing_bracket", "stray_opening_bracket", "dropped_close_bracket",
     )

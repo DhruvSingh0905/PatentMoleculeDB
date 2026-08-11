@@ -116,12 +116,16 @@ def test_dump_writes_both_routes_into_the_one_structures_file(redirected, monkey
     if not rows:
         pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
     sources = {r["source"] for r in rows}
-    # `heading` is `extract_names`'s own second producer (whole-heading names)
-    # and rides in on the description route; `table` is the separate
-    # extractor. Both of the two ROUTES must be present.
-    assert {"description", "table"} <= sources, (
+    # THE TWO ROUTES, and the names changed when the prose one was retired.
+    # `cid_first` searches from the compound ids the assay tables define;
+    # `table` reads the table cells `description_text` deletes. The retired
+    # `description`/`heading` producers guessed a cid from a name by proximity
+    # — measured at 46.8% against cid_first's 50.1%, and on the 98 cids where
+    # they disagreed, 88 were the prose route shipping a strict substring of
+    # the right answer (`1,3,4-oxadiazole` as US10478424 compound 458).
+    assert {"cid_first", "table"} <= sources, (
         f"one of the two identity routes did not reach the artifact: {sources}")
-    assert sources <= {"description", "heading", "table"}, sources
+    assert sources <= {"cid_first", "table"}, sources
 
     manifest = json.loads((redirected / "latest.json").read_text())
     assert manifest["iupac_names"] is True
@@ -149,7 +153,7 @@ def test_a_table_row_carries_table_provenance_a_description_row_does_not(
         pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
 
     tbl = [r for r in rows if r["source"] == "table"]
-    desc = [r for r in rows if r["source"] == "description"]
+    desc = [r for r in rows if r["source"] == "cid_first"]
     assert tbl and desc
     assert all(r["table_id"] and r["raw_cell"] for r in tbl)
     assert all(not r["table_id"] and not r["raw_cell"] for r in desc)
@@ -183,9 +187,15 @@ def test_disabled_route_still_writes_the_file_and_says_so(redirected, monkeypatc
 
 
 def test_a_crashing_table_route_costs_neither_other_artifact(redirected, monkeypatch):
-    """`extract_table_names` is the newest thing in this path. Its failure
-    must not be able to cost the assay dump OR the description route their
-    rows — the same guarantee `extract_names` already has."""
+    """`extract_table_names`'s failure must not be able to cost the assay dump
+    OR the other identity route their rows.
+
+    STUBS `extract_by_cid`, not `extract_names`. `dump` dispatches on
+    `config.IDENTITY_ROUTE`, so stubbing the retired route left the stub inert
+    and the real route running — the assertion then saw hundreds of genuine
+    rows instead of the one the fixture supplies. A stub aimed at a function
+    the code no longer calls fails open, which is the quiet direction.
+    """
     _have_xml()
     monkeypatch.setattr(config, "IUPAC_NAMES", True)
 
@@ -193,14 +203,15 @@ def test_a_crashing_table_route_costs_neither_other_artifact(redirected, monkeyp
         raise RuntimeError("table route exploded")
 
     monkeypatch.setattr(verify, "extract_table_names", boom)
-    monkeypatch.setattr(verify, "extract_names",
+    monkeypatch.setattr(verify, "extract_by_cid",
                         lambda xml, pid="": [NamedCompound(
                             patent_id=pid, name="benzene", smiles="c1ccccc1",
-                            inchikey="UHOVQNZJYSORNB-UHFFFAOYSA-N", start=0)])
+                            inchikey="UHOVQNZJYSORNB-UHFFFAOYSA-N", start=0,
+                            source="cid_first")])
     verify.dump([PID], heal=False)
 
     _, rows = _read_struct(redirected / "structures.tsv")
-    assert [r["source"] for r in rows] == ["description"]
+    assert [r["source"] for r in rows] == ["cid_first"]
     assert (redirected / "reader_dump.tsv").read_text().count("\n") > 1
     manifest = json.loads((redirected / "latest.json").read_text())
     assert manifest["loss_counts"].get("extract_table_names_exception") == 1
