@@ -160,6 +160,47 @@ Change these only with a measurement.
 - **Corroboration fails for table-cell defects.** The cell is the only place
   the compound is named. Use the collateral measurement instead.
 
+## CORE TENET: find the root cause, then decide who owns it
+
+Do not fix a symptom. Dig until you can name the line that is wrong. Then
+decide which of two things you are looking at. There are only two.
+
+**It is STRUCTURAL if, and only if:**
+
+- **(a) we feed the loop bad information.** The heal loop can only reason
+  about what the reader hands it. A truncated column name, a dropped header
+  row, a duplicated record — the loop cannot see past any of these.
+- **(b) our parsing logic has a logical error.** The code does not do what its
+  own docstring says, or it asserts something the data contradicts.
+
+**Everything else belongs to the heal loop.** A patent with an odd legend, a
+new corruption shape, a layout nobody has seen — that is what the loop is for.
+Do not hand-write a rule for it.
+
+**Bolting on a fix is not our job.** A new verdict, a widened threshold, a
+special case for one patent — each hides the defect and makes the next one
+harder to find.
+
+Worked examples from one session, all four found by digging rather than
+patching:
+
+| symptom | wrong fix | root cause | owner |
+|---|---|---|---|
+| 219 compounds "disagree" with BindingDB | add a GREY verdict | the patent reports letter grades; the loop was never run | neither — run the loop |
+| half of every graded table unresolved | raise `min_yield` above 0.5 | `repair_patent` returned baseline + repaired with no dedup, so every improved record shipped twice and pinned the yield at exactly 0.500 | (a) bad information |
+| `IC50 DNA-` will not bind a bin scale | special-case the name | `_is_namelike` rejected a header row because `hERG]` closes a bracket opened one row above | (b) logical error |
+| 43 data rows read as header | restore the fixed cap of 5 | `_opens_with_id` used `fullmatch`, so `1.` was not an id; and `_is_namelike` never asked whether the cells were VALUES | (b) logical error |
+
+Two lessons the table does not show:
+
+**A threshold that hides a defect is the worst fix.** `min_yield = 0.5` and the
+5-row header cap both looked like tuning knobs. Both were load-bearing only
+because they limited the damage from a misclassification underneath.
+
+**Fix the cause, then re-measure everything.** Removing the header cap exposed
+two latent misclassifications that the cap had been masking for the whole life
+of the code. That is the fix working, not the fix failing.
+
 ## Discipline
 
 **Backtrace every result.** A number is not a result until you name the
