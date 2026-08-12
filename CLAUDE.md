@@ -35,8 +35,12 @@ Command: `verify --dump --no-heal` over `sample30`. Graded from
 | marked drawn (`<chemistry>` in the compound's own row) | 2,897 | **35.1** |
 | neither | 490 | **5.9** |
 
-The text track can reach 64.9% at most. The image track can reach 94.1%.
-Images are the next work. Text is near its limit.
+The text track can reach 64.9% at most. Text is near its limit.
+
+**The image track can reach 93.7%.** 2,866 of the 2,897 drawn compounds
+(98.9%) hold a whole-compound image in their own row. This is a full census,
+2026-08-12. See wiki 45. Use `cid_first._markush_cids` to test a row. Do not
+invent a second rule — an ad-hoc one scored 79.2% against the truth of 98.9%.
 
 Quote no coverage number without its date and its population. Re-run the dump
 if the tree changed.
