@@ -27,10 +27,14 @@ would lose real structures.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from patentdb3.core import config
 from patentdb3.sources.cid_first import _markush_cids, _resolve
+from patentdb3.sources.uspto_assays import build_columns, extract_from_patent
+from patentdb3.sources.uspto_xml import assemble_blocks, parse_tables
 
 PID = "US9718825"          # 593 substituent-table compounds
 NAMED = "US10376513"       # substituent tables WITH a Name column
@@ -53,8 +57,48 @@ def test_substituent_table_cids_are_identified():
 def test_a_table_with_a_name_column_is_not_treated_as_markush():
     """`cid | Name | R2 | R4` was already enumerated BY THE PATENT. Suppressing
     those would throw away structures `table_names` reads today — the guard
-    that keeps this fix from costing more than it saves."""
-    assert _markush_cids(_xml(NAMED)) == {}
+    that keeps this fix from costing more than it saves.
+
+    THIS ASSERTED `== {}` AND THE PREMISE WAS STALE. US10376513 holds Name-column
+    substituent tables AND a crystallography table (TABLE-US-00007: `x | y | z |
+    U (eq)` over `H(21A) | 11662 | 5142 | 2184 | 33`), which has no Name column
+    and which `build_columns` reads as a compound id with two substituent
+    columns. So `_markush_cids` returns 28 atom labels from it.
+
+    That surfaced only when the header assembly was fixed: those coordinate
+    rows used to be promoted INTO the header, and the resulting garbage stopped
+    the column classifier cold. A correct header exposed a misclassification
+    that had always been there.
+
+    What must hold is not "this function returns nothing" — it is the two
+    things the marker actually depends on: no NAME-COLUMN table is claimed,
+    and nothing the assay reader measured is wrongly marked. Both are asserted
+    below. The over-reach is recorded in `_markush_cids`' own docstring and
+    belongs to `build_columns`.
+    """
+    xml = _xml(NAMED)
+    mk = _markush_cids(xml)
+
+    # 1. no cid from a Name-column table may appear
+    named_tables = set()
+    for t in assemble_blocks(parse_tables(xml)):
+        try:
+            cols = build_columns(t)
+        except Exception:
+            continue
+        if any(re.search(r"\bname\b", c.header or "", re.I) for c in cols):
+            named_tables.add(t.table_id)
+    assert named_tables, "fixture no longer has a Name-column table"
+    assert not (set(mk.values()) & named_tables), (
+        f"a Name-column table was claimed as markush: "
+        f"{set(mk.values()) & named_tables}")
+
+    # 2. THE ONE THAT REACHES THE ARTIFACT: nothing measured is marked
+    measured = {r.cid for r in extract_from_patent(xml) if r.cid}
+    assert not (set(mk) & measured), (
+        f"{len(set(mk) & measured)} measured compound(s) wrongly marked markush")
+    _, st = _resolve(xml, NAMED)
+    assert st.markush_marked == 0
 
 
 def test_a_markush_compound_never_claims_a_drawing():

@@ -403,6 +403,15 @@ _PROSE_CELL = re.compile(
 # A compound-identifier cell: "1", "12a", "A-7", "Ex. 203". Deliberately tight —
 # it is used to tell a data row from an interleaved annotation row, so admitting
 # prose would defeat the purpose.
+# A cell holding a MEASUREMENT rather than a label: a number with optional
+# qualifier and units, a potency grade (`***`, `+++`, `A`-`E` alone), or an
+# em-dash standing for "not tested". Used to tell a data row from a header row
+# in `_is_namelike` — see the note there for the row that motivated it.
+_VALUE_CELL = re.compile(
+    r"(?:[<>=~≤≥]?\s*[\d,]+(?:\.\d+)?(?:\s*[a-zA-Z%/]+)?"
+    r"|[*+]{1,5}|[A-E]|[—–-]+|n/?[ad]|ND|NT)",
+    re.I)
+
 _ID_CELL = re.compile(r"(?:(?:Ex(?:ample)?\.?|Cpd|Compound)\s*)?[A-Za-z]{0,3}[-–]?\d{1,5}[-–]?[a-z]?", re.I)
 
 # Two chemical-name-substring lists, each used by a different caller below to
@@ -469,6 +478,17 @@ def _opens_with_id(cells: list["Cell"]) -> bool:
     # double quotation marks), e.g. \u201cC1\u201d. Without stripping these the
     # id pattern never matches and every data row is treated as annotation.
     first = texts[0].strip('\u201c\u201d\u2018\u2019\u00ab\u00bb\u201e\u201f')
+    # A NUMBERED-LIST ID CARRIES A TRAILING PERIOD, and `fullmatch` refused it.
+    # `_ID_CELL` matches `1.` but does not FULL-match it, so a table numbering
+    # its compounds `1.` `2.` `3.` had every data row read as "not a data row".
+    #
+    # US20230365584A1 TABLE-US-00013 is the case: rows read
+    # `['', '1.', 'A']`, and with the id unrecognised the header promotion
+    # walked straight through 43 of them, producing a column name reading
+    # `Cmpd. No. 1. 2. 3. ... 43.` and costing 40 usable records. The old
+    # fixed cap of 5 hid it by stopping the damage at three rows rather than
+    # forty \u2014 the misclassification was always there.
+    first = first.rstrip(".")
     if _ID_CELL.fullmatch(first):
         return True
     # Name-as-id: long chemical name in col 0, with or without a value in col 1.
@@ -497,7 +517,24 @@ def _row_filled(row: list["Cell"]) -> bool:
     return any(c.text.strip() for c in row)
 
 
-def _is_namelike(cells: list["Cell"], *, declared: bool = False) -> bool:
+def _open_debt(rows: list[list["Cell"]]) -> dict:
+    """Brackets the header rows collected so far leave OPEN.
+
+    A multi-row header wraps a label across rows, so a later row legitimately
+    closes what an earlier one opened. Only the rows already accepted for THIS
+    header count — see `_is_namelike`.
+    """
+    debt = {"(": 0, "[": 0}
+    for r in rows:
+        for c in r:
+            t = c.text.strip()
+            for op, cl in (("(", ")"), ("[", "]")):
+                debt[op] = max(0, debt[op] + t.count(op) - t.count(cl))
+    return debt
+
+
+def _is_namelike(cells: list["Cell"], *, declared: bool = False,
+                 open_debt: dict | None = None) -> bool:
     """Does this row look like column names rather than data or prose?
 
     `declared` means the row came out of a `<thead>`: the patent has already
@@ -523,6 +560,25 @@ def _is_namelike(cells: list["Cell"], *, declared: bool = False) -> bool:
         return False
     if any(_PROSE_CELL.search(t) or len(t) > 60 for t in texts):
         return False
+
+    # A ROW OF MEASUREMENTS IS DATA, WHATEVER ITS FIRST CELL SAYS. Every test
+    # here asked whether the cells look like prose, or are too long, or have
+    # unbalanced brackets — none asked the simplest question, whether they are
+    # VALUES. A header row holds labels; a data row holds numbers and grades.
+    #
+    # US9133148 TABLE-US-00006 row `['A', '***', '4700', '**', '>95', '***']`
+    # is compound A's measurements. It passed every check: short cells, no NMR
+    # keywords, balanced brackets. `_opens_with_id` did not stop it either,
+    # because `A` is a bare letter and `_ID_CELL` requires a digit. So the
+    # promotion swallowed a data row, and the columns it labelled were named
+    # after that compound's own results.
+    #
+    # Judged on the cells AFTER the first, because the first is the id — `A`,
+    # `1a`, a compound name — and is not a measurement in either kind of row.
+    if len(texts) >= 3:
+        rest = texts[1:]
+        if all(_VALUE_CELL.fullmatch(t) for t in rest):
+            return False
     # A fragment torn out of running prose — "diethylamine)", "4H)." — is short
     # and free of NMR keywords, so the checks above pass it. Harvesting headers
     # across every fragment width let these into the column names, and a header
@@ -535,11 +591,41 @@ def _is_namelike(cells: list["Cell"], *, declared: bool = False) -> bool:
     # above — and rejecting it cost the names of columns 0 and 3 outright. So
     # this only polices rows we are PROMOTING out of a body; a row the source
     # marked as header is taken at its word.
+    # A CONTINUATION ROW CLOSES A BRACKET AN EARLIER HEADER ROW OPENED, and
+    # `declared` cannot see that when the header lives in `<tbody>`.
+    #
+    # US10172859 TABLE-US-00004 publishes its header as three tbody rows:
+    #
+    #     IC50   IC50    Ki
+    #     DNA-   pDNA-   [Kv1.11        <- opens '['
+    #     No.  Structural formula  Name  PK  PK  hERG]      <- closes it
+    #
+    # Read together they are `IC50 DNA-PK`, `IC50 pDNA-PK`, `Ki [Kv1.11 hERG]`.
+    # Read alone, the third row has one `]` and no `[`, so this guard called it
+    # a prose fragment and rejected it. Its tgroup is header-only, so the row
+    # then entered NEITHER the header nor the body — it left the table.
+    #
+    # The cost was silent and specific: the assay column read `IC50 DNA-`
+    # instead of `IC50 DNA-PK`, and `repair/loop._bins_for` then REFUSED to
+    # bind a bin scale, because `DNA-` is a substring of `pDNA-` and the two
+    # scales are nM and uM — a 166x error if it guessed. 171 records across
+    # three tables stayed unusable, and no rule kind could fix it: the repair
+    # tier maps letters to ranges, it does not re-read a header the assembler
+    # discarded.
+    #
+    # So the debt is carried. `open_debt` is the count of brackets the rows
+    # already collected for THIS header left open; a row may close that many.
+    # A genuine prose fragment ("diethylamine)", "4H).") still has nothing
+    # above it holding the bracket open, so it is still refused.
     if not declared:
+        debt = dict(open_debt or {})
         for t in texts:
             for op, cl in (("(", ")"), ("[", "]")):
-                if t.count(cl) > t.count(op):
-                    return False
+                excess = t.count(cl) - t.count(op)
+                if excess > 0:
+                    if debt.get(op, 0) < excess:
+                        return False
+                    debt[op] -= excess
     # Reject cells that are long runs of space-separated bare integers — these
     # are malformed headers where example numbers were concatenated into one
     # cell (e.g. "Ex. No. 1 2 3 4 5 ... 35"). Such a row is not a usable
@@ -715,7 +801,8 @@ def assemble_block(tables: list["Table"], table_id: str) -> "Table | None":
             # those rows still face the full heuristic
             rows += [(r, False) for r in t.body_rows]
         for r, declared in rows:
-            if not _is_namelike(r, declared=declared):
+            if not _is_namelike(r, declared=declared,
+                                open_debt=_open_debt(header_rows)):
                 continue
             if remap and len(r) == len(remap):
                 r = [Cell(c.text,
@@ -761,9 +848,37 @@ def assemble_block(tables: list["Table"], table_id: str) -> "Table | None":
     # Stop at the first compound id. Without that guard a graded row like
     # ["1", "D"] reads as name-like — two short non-numeric cells — and the
     # promotion eats real data off the top of the table.
-    while (len(header_rows) < 5 and body and _is_namelike(body[0])
+    # NO FIXED COUNT. This was `len(header_rows) < 5`, and the corpus shows the
+    # cap biting rather than a real distribution: 46 blocks with a 4-row header,
+    # then 129 at exactly 5, then 2 at six. Header depth tapers; a spike at the
+    # bound is the bound, not the data. 129 blocks were clipped, each losing
+    # whatever its last header rows said — the same loss that turned
+    # `IC50 DNA-PK` into `IC50 DNA-` and cost 171 records their bin scale.
+    #
+    # The real stopping conditions were always the two beside it: a row that is
+    # not name-like, or a row that opens with a compound id. What the count was
+    # standing in for is the failure the comment above names — the header
+    # OUTGROWING the body — so bound it by that directly. A header may never
+    # claim more rows than it leaves behind, which is adaptive by construction
+    # and states the thing the magic number only approximated.
+    # BOUND THE PROMOTION, not the header. `len(header_rows) < len(body)` was
+    # the first attempt and it is wrong: `header_rows` already holds whatever
+    # the harvest loop above collected, so the two sides count different
+    # populations and drift apart as `body` is consumed. Measured, it let
+    # US10189840 TABLE-US-00005 reach 47 header rows over 5 body rows — the
+    # promotion eating the table, which is the exact failure this bound exists
+    # to prevent, and 30 blocks ended with more header than data.
+    #
+    # What must be bounded is how much of the BODY this loop may claim. Half of
+    # the body it started with: adaptive to table size, and a header can never
+    # outgrow the data it describes.
+    promotable = len(body) // 2
+    promoted = 0
+    while (body and promoted < promotable
+           and _is_namelike(body[0], open_debt=_open_debt(header_rows))
            and not _opens_with_id(body[0])):
         header_rows.append(body.pop(0))
+        promoted += 1
 
     first = kin[0]
     return Table(

@@ -206,7 +206,7 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
     lib = RuleLibrary() if heal else None
     n = n_struct = n_repaired = 0
     done: list[str] = []
-    recovered_total = adopted_total = gaps_total = 0
+    recovered_total = adopted_total = gaps_total = superseded_total = 0
     struct_sources: Counter = Counter()
     spend_before = cost_tracker.total_cost
     with DUMP_PATH.open("w") as fh, STRUCT_PATH.open("w") as sfh:
@@ -231,6 +231,7 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                     gaps_total += rep.gaps_found
                     adopted_total += rep.adopted
                     recovered_total += rep.rows_recovered
+                    superseded_total += rep.superseded
                     if rep.gaps_found or rep.rows_recovered:
                         print(f"  {pid}: {rep.gaps_found} gap(s), "
                               f"{rep.already_known} known, {rep.adopted} adopted, "
@@ -360,6 +361,10 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
         "gaps_found": gaps_total if heal else None,
         "rules_adopted": adopted_total if heal else None,
         "rows_recovered": recovered_total if heal else None,
+        # Unusable records dropped because a repaired twin of the same
+        # (cid, assay, table) exists. Recorded so `rows` shrinking against a
+        # naive baseline+recovered sum is explained by the artifact itself.
+        "superseded": superseded_total if heal else None,
         "usd_spent": round(spent, 4) if heal else 0.0,
         # STRUCTURES — the second artifact. `iupac_names` says whether the
         # route was even ENABLED this run; `structures_rows` says how many it

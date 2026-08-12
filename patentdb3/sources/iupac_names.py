@@ -748,6 +748,17 @@ class NamedCompound:
     # compound reviewable by a human and addressable by a recognition step
     # that does not exist in this tree yet.
     drawn_url: str = ""
+    # The IMAGE FILE the patent names for that drawing, e.g.
+    # `US10730877-20200804-C00315.TIF`. This is the ground-truth key: the XML
+    # states it, the Red Book weekly TAR is keyed by it, and Google Patents
+    # serves the same stem as `.png`. `drawn_ref` identifies the element;
+    # this identifies the FILE, and only this survives outside the XML.
+    drawn_file: str = ""
+    # For a markush row, WHERE THE PARTS ARE, so enumeration can run later
+    # without re-deriving them. `scaffold=<chemistry id>;fragment=<chemistry id>`
+    # — the scaffold sits in the table header, the fragment in the row. The
+    # table itself is named in `markush_reason`.
+    markush_parts: str = ""
     # `sources/name_repair.py`'s pattern id when this structure exists only
     # because a CONFIRMED text repair was applied to a span OPSIN rejected;
     # "" (the overwhelming majority) when the patent's own text parsed as

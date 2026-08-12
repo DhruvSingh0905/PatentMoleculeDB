@@ -313,6 +313,28 @@ FINISHED_ONLY = os.environ.get("FINISHED_ONLY", "1") == "1"
 # construct — which is the whole reason a fetch and a cache are needed at all.
 GP_ENABLED = os.environ.get("GP_ENABLED", "0") == "1"
 
+# WHERE THE IMAGE PIXELS COME FROM. The XML is ground truth for WHICH image
+# belongs to a compound — it states the file name — but it does not hold the
+# image. Two sources serve that file:
+#
+#   gpatents  one HTTP GET per image, ~3 KB each. Measured coverage of the
+#             files the XML names: 99.7% (5,834 of 5,849 across 15 patents,
+#             including patents never cached before).
+#   uspto     ground truth. The Red Book product PTGRDT ships the TIFs with
+#             the XML, but ONLY as weekly TAR files of ~3.7 GB — 1,642 of
+#             them, and there is no per-patent split (`PTGRDT-SPLT` 404s).
+#             Our 137 patents span ~130 grant weeks, so this is ~480 GB.
+#
+# DEFAULT IS GOOGLE PATENTS, so a laptop fetches kilobytes instead of
+# gigabytes. Set IMAGE_SOURCE=uspto on a machine that can hold the TARs.
+# Neither source is trusted blindly: the file name the XML states is the key,
+# so a fetched image is checked against the name before it is used.
+IMAGE_SOURCE = os.environ.get("IMAGE_SOURCE", "gpatents")
+
+# Where fetched images land. `DECIMER.predict_SMILES` takes a FILE PATH, not
+# an array, so images must exist on disk before recognition runs.
+IMAGE_DIR = OUTPUT_DIR / "images"
+
 # Per-patent {image filename stem -> https URL}. Small JSON, one per patent —
 # NOT the 3.7MB HTML it was extracted from, and NOT v2's `gpatents_cache`,
 # which v3 never reads (see CLAUDE.md: the only artifact that legitimately

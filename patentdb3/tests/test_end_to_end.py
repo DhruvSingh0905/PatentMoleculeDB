@@ -88,6 +88,7 @@ The LLM-backed name-repair tier is a SEPARATE module (`repair/name_loop.py` +
 """
 from __future__ import annotations
 
+import csv
 import json
 import shutil
 
@@ -442,7 +443,35 @@ def test_self_heal_recovers_real_rows_from_the_shipped_library_at_zero_cost(
     assert manifest["rows"] == dump_rows, "the manifest must match the file it describes"
     assert manifest["rows"] > baseline_count, (
         "healing must have added rows the bare reader did not produce")
-    assert manifest["rows_recovered"] == manifest["rows"] - baseline_count
+
+    # `rows_recovered == rows - baseline` HELD ONLY WHILE THE UNION DUPLICATED.
+    # `repair_patent` used to return `baseline + recovered` with no dedup, so
+    # the total was exactly the sum and this assertion passed. It was encoding
+    # a defect: where the loop IMPROVED a record, the reader's unusable copy
+    # shipped beside the repaired one. Measured on US10172859, 1,123 of 1,290
+    # keys were duplicated (87.1%), 1,121 of them one usable copy beside one
+    # unusable copy of the same fact — and every affected table then scored a
+    # yield of exactly 0.500 against `find_gaps(min_yield=0.5)`, so the
+    # repair's own output pinned the detector at its threshold.
+    #
+    # A repaired record now supersedes its unusable twin, so the total is no
+    # longer a sum and must not be asserted as one. What must hold instead:
+    # no key may carry a usable and an unusable record at once.
+    assert manifest["rows_recovered"] >= 1
+    assert manifest.get("superseded", 0) >= 0
+    rows = list(csv.DictReader(
+        (redirected / "reader_dump.tsv").open(), delimiter="\t"))
+    seen: dict[tuple, set] = {}
+    for r in rows:
+        key = (r["patent_id"], r.get("cid"), r.get("assay_name"),
+               r.get("table_id"))
+        seen.setdefault(key, set()).add(bool(r.get("value_numeric")
+                                             or r.get("range_lo")
+                                             or r.get("range_hi")))
+    both = [k for k, v in seen.items() if v == {True, False}]
+    assert not both, (
+        f"{len(both)} key(s) carry a valued AND an unvalued record — the "
+        f"repaired row must supersede its unusable twin, e.g. {both[:3]}")
 
     # the $0 baseline claim this whole test is stated against
     verify.dump([HEAL_PID], heal=False)

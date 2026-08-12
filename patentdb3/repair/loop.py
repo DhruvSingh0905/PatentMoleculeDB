@@ -68,6 +68,11 @@ class RepairReport:
     rejected: int = 0
     escalated: int = 0
     rows_recovered: int = 0
+    # Unusable records dropped because a repaired twin of the SAME
+    # (cid, assay, table) exists. Not a loss — see the supersession note in
+    # `repair_patent`. Reported so the count is visible rather than implied by
+    # a row total that quietly shrank.
+    superseded: int = 0
     escalations: list[dict] = field(default_factory=list)
     rejections: list[dict] = field(default_factory=list)
     # Gaps where a rule was available and produced NOTHING. Not a bad rule —
@@ -796,12 +801,52 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
     # distribution `{'<none>': 27868, 'letter_bin': 8020}` — not one row from
     # the source CLAUDE.md records at 99.9% exact-match against BindingDB.
     #
-    # NO DEDUP, deliberately. A key including assay_name matches 0.3% of rows
-    # because the two tiers name the same column differently, and a value-only
-    # key would assert that an IC50 of 5 nM and a Ki of 5 nM are the same fact.
-    # Both rows ship, each carrying its own `source`; consumers are duplicate-
-    # safe.
-    return list(baseline) + list(recovered), report
+    # SUPERSESSION ONLY — the narrowest dedup the evidence supports.
+    #
+    # This was NO DEDUP AT ALL, on a stated measurement: "a key including
+    # assay_name matches 0.3% of rows". That is still true of an ordinary
+    # patent — US11053244 measures 0.2% — and both of the risks the old note
+    # names are real and are still avoided here: the key keeps `assay_name`,
+    # so an IC50 of 5 nM is never merged with a Ki of 5 nM, and rows the two
+    # tiers name differently do not match and both ship.
+    #
+    # It breaks where the repair loop IMPROVES a record. US10172859 publishes
+    # every assay as a letter grade; the loop binds the patent's own key
+    # (`B: 3 nM <= IC50 < 7 nM`) and produces a ranged copy — but the reader's
+    # unranged copy survived beside it. Measured: 1,123 of 1,290 keys
+    # duplicated (87.1%), of which 1,121 are one usable copy beside one
+    # unusable copy of the SAME fact.
+    #
+    # Two things followed, and the second is why this is not cosmetic:
+    #   - the dump asserted two measurements where the patent states one, and
+    #     "consumers are duplicate-safe" was simply not true of anything that
+    #     counts rows;
+    #   - every affected table scored a yield of EXACTLY 0.500 against
+    #     `find_gaps(min_yield=0.5)`, so the repair's own output pinned the
+    #     detector at its threshold and hid the half still unresolved. The
+    #     loop was blinded by what it had already fixed.
+    #
+    # An unusable copy carries nothing its usable twin lacks — same compound,
+    # same assay, same table, same grade, only no range. So it is dropped, and
+    # ONLY then. 17 of the 1,138 duplicate groups have both copies equally
+    # usable; those are different facts and both still ship.
+    by_key: dict[tuple, list] = {}
+    for r in list(baseline) + list(recovered):
+        by_key.setdefault((r.cid, r.assay_name, r.table_id), []).append(r)
+    merged = []
+    superseded = 0
+    for group in by_key.values():
+        if len(group) > 1 and any(r.is_usable for r in group):
+            keep = [r for r in group if r.is_usable]
+            superseded += len(group) - len(keep)
+            merged.extend(keep)
+        else:
+            merged.extend(group)
+    if superseded:
+        logger.info("repair: %s — %d unusable record(s) superseded by a "
+                    "repaired twin", patent_id, superseded)
+    report.superseded = superseded
+    return merged, report
 
 
 def _journal_rule(patent_id: str, gap, rule: Rule, produced: list,

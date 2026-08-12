@@ -567,6 +567,33 @@ _IMG_FILE = re.compile(r'<img[^>]*file="([^"]+)"')
 # which `table_names` reads directly) from one it did not.
 _NAME_HDR = re.compile(r"\bname\b", re.I)
 
+def _header_scaffolds(xml: str) -> dict[str, tuple[str, str]]:
+    """`chemistry id in a row -> (table id, the scaffold's chemistry id)`.
+
+    A table whose HEADER holds a `<chemistry>` states a shared scaffold, and
+    its rows then supply what varies. US10125101 TABLE-US-00012 is the shape:
+    the header reads `Ex- R L ... (coupling partner is R L -Br)` and holds
+    `CHEM-US-00050`; the row for compound 11 holds `CHEM-US-00051`, which is
+    the coupling partner, not the molecule.
+
+    So the row picture must NOT be offered to an image-to-structure step as
+    the compound. It is still wanted — it is one half of an enumeration — so
+    the caller records both halves rather than dropping the compound.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    for tb in re.finditer(r'<tables id="([^"]+)".*?</tables>', xml, re.S):
+        tid, body = tb.group(1), tb.group(0)
+        thead = re.search(r"<thead>.*?</thead>", body, re.S)
+        if not thead:
+            continue
+        scaf = _CHEM_ID.findall(thead.group(0))
+        if not scaf:
+            continue
+        for row in _ROW.findall(body):
+            for rid in _CHEM_ID.findall(row):
+                out.setdefault(rid, (tid, scaf[0]))
+    return out
+
 
 def _markush_cids(xml: str) -> dict[str, str]:
     """`cid -> table id`, for cids defined by a scaffold PLUS substituents.
@@ -587,6 +614,21 @@ def _markush_cids(xml: str) -> dict[str, str]:
 
     A table with a Name column is NOT included: the patent enumerated those
     itself and the name is already read.
+
+    KNOWN OVER-REACH, MEASURED AND LEFT ALONE. `build_columns` reads a
+    crystallography table — `x | y | z | U (eq)` over rows like
+    `H(21A) | 11662 | 5142 | 2184 | 33` — as a compound id with two substituent
+    columns, so US10376513 TABLE-US-00007 yields 28 "markush cids" that are
+    atom labels. It reaches nothing: `_resolve` only ever asks about cids the
+    assay reader produced, and the overlap there is ZERO
+    (`markush_marked == 0` on that patent).
+
+    A filter on "substituent values that are only numbers" was tried and
+    removed. It does not hold — crystallography writes a Unicode minus
+    (`\u22121277`) and an estimated standard deviation (`5640(60)`), so the
+    numeric test needs a special case per convention, which is patching the
+    patch. The defect is one level up, in `build_columns` calling a coordinate
+    axis a substituent column, and that is where it should be fixed.
     """
     out: dict[str, str] = {}
     try:
@@ -606,6 +648,7 @@ def _markush_cids(xml: str) -> dict[str, str]:
         ci = next((c.index for c in cols if c.kind == CID), None)
         if ci is None:
             continue
+
         for row in t.body_rows:
             if ci >= len(row):
                 continue
@@ -917,16 +960,33 @@ def _resolve(xml: str, patent_id: str = "") -> tuple[list[NamedCompound], Stats]
     # marker can carry an openable URL as well as an XML-internal pointer. One
     # pass over the document; `{}` when GP is disabled, which costs the marker
     # nothing (see `gp_images` for why GP's structures are not read at all).
+    chem_files = {m.group(1): m.group(2) for m in re.finditer(
+        r'<chemistry[^>]*id="([^"]+)"(?:(?!</chemistry>).)*?'
+        r'<img[^>]*file="([^"]+)"', xml, re.S)}
     chem_img = {m.group(1): m.group(2).rsplit(".", 1)[0]
                 for m in re.finditer(
                     r'<chemistry[^>]*id="([^"]+)"(?:(?!</chemistry>).)*?'
                     r'<img[^>]*file="([^"]+)"', xml, re.S)}
     gp_urls = _gp_image_urls(patent_id)
     markush = _markush_cids(xml)
+    scaffolds = _header_scaffolds(xml)
     for cid in searchable:
         if cid in resolved_cids or cid not in refs:
             continue
         ref = refs[cid]
+        if ref in scaffolds:
+            # THE ROW PICTURE IS NOT THE COMPOUND — the table header holds a
+            # shared scaffold and this row supplies a part. Recorded with both
+            # halves so enumeration can run after the image work, per the
+            # decision to defer it rather than drop these compounds.
+            tid, scaf = scaffolds[ref]
+            out.append(NamedCompound(
+                patent_id=patent_id, name="", smiles="", inchikey="",
+                start=-1, source=SOURCE, cid=cid,
+                markush=True, markush_reason=f"header_scaffold:{tid}",
+                markush_parts=f"scaffold={scaf};fragment={ref}"))
+            st.markush_marked += 1
+            continue
         if cid in markush:
             # NOT DRAWN — see `_markush_cids`. The row's picture is one
             # substituent's value, so `drawn_ref` stays EMPTY rather than
@@ -937,12 +997,14 @@ def _resolve(xml: str, patent_id: str = "") -> tuple[list[NamedCompound], Stats]
                 patent_id=patent_id, name="", smiles="", inchikey="",
                 start=-1, source=SOURCE, cid=cid,
                 markush=True,
-                markush_reason=f"substituent_table:{markush[cid]}"))
+                markush_reason=f"substituent_table:{markush[cid]}",
+                markush_parts=f"fragment={ref}"))
             st.markush_marked += 1
             continue
         out.append(NamedCompound(
             patent_id=patent_id, name="", smiles="", inchikey="",
             start=-1, source=SOURCE, cid=cid, drawn_ref=ref,
+            drawn_file=chem_files.get(ref, ""),
             drawn_url=gp_urls.get(chem_img.get(ref, ref), "")))
         st.drawn_marked += 1
     st.drawn_with_url = sum(1 for nc in out if nc.drawn_url)
