@@ -32,10 +32,27 @@ and never deletes a row — it returns a verdict and the caller records it.
 BindingDB is not involved and neither is any external reference; the only
 evidence used is the number the patent itself printed in that compound's row.
 
-Not a coverage measure either. It can only judge a compound whose row prints
-an MS, and most do not: over a 10-patent bench, 81 of 2,596 resolved
-structures (3.1%) carry one. A silent verdict here means "not checkable", and
-it must never be read as "checked and fine".
+Not a coverage measure either, and its reach is NARROWER THAN THE PATENT COUNT
+SUGGESTS. Two conditions must both hold for one row: the compound must have a
+resolved structure, AND its own table row must print an MS. Measured over the
+full 137-patent corpus (`verify --all --dump --no-heal`, 38,671 structures):
+
+    rows weighed                    74   (0.2%)
+    patents printing an MS anywhere  5   of 137
+
+Those two lines describe different things and confusing them is easy. Only 5
+patents print an MS inside an assay row at all, and on THREE of those five the
+set of compounds with a mass and the set with a resolved structure do not
+intersect:
+
+    US10125101       7 resolved     30 with a mass    overlap 0
+    US10329273       1 resolved     23 with a mass    overlap 0
+    US20240166635    0 resolved    195 with a mass    overlap 0
+
+So "5 patents" is not "5 patents' worth of checking". Nearly all 74 weighable
+rows are on US10730863, and no second patent has yet been found where the gate
+does real work. A silent verdict means "not checkable", and it must never be
+read as "checked and fine".
 
 THE TOLERANCE
 --------------

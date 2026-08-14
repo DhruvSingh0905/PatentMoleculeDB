@@ -47,21 +47,11 @@ VM_SCRIPT = Path(__file__).with_name("decimer_vm.py")
 WORK = config.OUTPUT_DIR / "decimer"          # per-patent staging, local side
 REMOTE = "/content/work"
 
-# THE VERSIONS BOTH DECIMER REPOS PIN, and Colab does not provide.
+# THE VERSIONS BOTH DECIMER REPOS PIN, and why they are NOT honoured.
 # `DECIMER-Image_Transformer` and `DECIMER-Image-Segmentation` both state
 # Python 3.10.0 / TensorFlow 2.10.1. Colab's kernel is 3.12 with TF 2.20, and
-# the kernel's interpreter cannot be swapped underneath a running session.
-#
-# `decimer` 2.8.0 alone DOES install on 3.12 (its PyPI metadata allows
-# tensorflow<=2.20) and produced the 93.4% measurement. What does NOT install
-# is `decimer-segmentation`, which is why `n_segments` came back 0 for every
-# image — a value that reads as "no image held two structures" when it means
-# "nobody looked".
-#
-# So the pin is honoured in a SEPARATE interpreter beside the kernel rather
-# than by fighting it: `uv` builds a 3.10 venv, both packages install there,
-# and the worker runs as a subprocess under it. The kernel stays 3.12 and is
-# only used to launch things.
+# a kernel's interpreter cannot be swapped underneath a running session — so
+# the recogniser runs in its own venv beside the kernel either way.
 VENV = "/content/decimer-venv"
 # 3.11, NOT the 3.10 both DECIMER repos state. Pinning 3.10 forces
 # `tensorflow==2.10.1` (what `decimer-segmentation` needs), and TF 2.10.1
@@ -162,6 +152,34 @@ def plan(pid: str, *, fetch: bool = True) -> tuple[list, list, list]:
     # three. Fetching locally first (`GP_ENABLED=1`) buys those back.
     needs = [it for it in have if it.cid not in by_ocr] + missing
     return needs, read, missing
+
+
+def candidates(limit: int = 15) -> list[tuple[str, int, int]]:
+    """Patents worth a scoring run, ranked. `(patent_id, validate, recover)`.
+
+    THE CRITERION IS `VALIDATE`, AND GETTING THAT WRONG COST A RUN. A VALIDATE
+    row is a compound whose structure the patent's own TEXT already gave, so
+    the recogniser's answer can be compared against it. That is the only thing
+    accuracy can be measured on.
+
+    I previously picked patents by whether they print an `MS (ESI)` value,
+    reasoning that the mass gate could referee. It cannot: on three of the
+    five patents that print masses, the compounds with a mass and the
+    compounds with a resolved structure do not intersect at all, so the run
+    produced 228 recovered structures and an accuracy of UNKNOWN. A mass
+    referees a structure we already have; it does not supply one.
+
+    Ranked by VALIDATE count because that is the sample size of the
+    measurement. `recover` is returned beside it only so the cost of the run
+    is visible — those images are recognised too, and cannot be scored.
+    """
+    per: dict[str, list] = {}
+    for w in IM.read_worklist():
+        row = per.setdefault(w.patent_id, [0, 0])
+        row[0 if w.job == "VALIDATE" else 1] += 1
+    ranked = sorted(((p, v, r) for p, (v, r) in per.items()),
+                    key=lambda t: -t[1])
+    return ranked[:limit]
 
 
 def stage(pid: str, needs: list) -> Path:
@@ -301,11 +319,22 @@ def ingest(pid: str) -> str:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="patentdb3.decimer")
-    ap.add_argument("action", choices=("plan", "run", "ingest"))
-    ap.add_argument("patent_id")
+    ap.add_argument("action",
+                choices=("plan", "run", "ingest", "candidates"))
+    ap.add_argument("patent_id", nargs="?", default="")
     ap.add_argument("-s", "--session", default="")
     a = ap.parse_args(argv[1:])
 
+    if a.action == "candidates":
+        rows = candidates()
+        print(f"{'patent':<16}{'VALIDATE':>9}{'RECOVER':>9}"
+              "   (rank on VALIDATE: it is the sample size)")
+        for pid, v, r in rows:
+            print(f"{pid:<16}{v:>9}{r:>9}")
+        if rows and not rows[0][1]:
+            print("\nNo patent in this worklist has a VALIDATE row. "
+                  "A run would produce structures and NO accuracy.")
+        return 0
     if a.action == "plan":
         needs, read, missing = plan(a.patent_id)
         print(f"{a.patent_id}")

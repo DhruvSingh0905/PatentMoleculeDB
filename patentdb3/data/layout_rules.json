@@ -889,8 +889,8 @@
         "held_out_excluded": 4,
         "baseline_rows": 0
       },
-      "times_applied": 51,
-      "rows_yielded": 2754
+      "times_applied": 53,
+      "rows_yielded": 2862
     },
     {
       "fingerprint": "41ebfe39c41b3358",
@@ -970,8 +970,8 @@
         "gate": "suspended",
         "objection": "column 0 cannot identify rows \u2014 its values are not distinct non-measurement labels (e.g. '6-O-mPEG4-'). Name the column that holds the compound id, or escalate: this layout may identify compounds in a way we cannot key on"
       },
-      "times_applied": 37,
-      "rows_yielded": 740
+      "times_applied": 39,
+      "rows_yielded": 780
     },
     {
       "fingerprint": "6a0d29d0bb283547",
@@ -1716,8 +1716,8 @@
         "gate": "suspended",
         "objection": "value_pattern must capture a named group `num` (got groups=4, named=['qual1', 'num1', 'qual2', 'num2'])"
       },
-      "times_applied": 31,
-      "rows_yielded": 248
+      "times_applied": 32,
+      "rows_yielded": 256
     },
     {
       "fingerprint": "826b47fdd8d1cd2d",
@@ -2131,9 +2131,9 @@
       },
       "source": "llm",
       "model": "claude-haiku-4-5-20251001",
-      "created": "2026-07-30T10:36:42",
-      "signature": "",
-      "epoch": "v19-source-first",
+      "created": "2026-08-12T12:46:53",
+      "signature": "5|text,text,num,text,text|concentration+diluted+solutions,well,concentration,dilution+ratio,mm+test+volumes",
+      "epoch": "v20-measured-outcome",
       "validated_on": {},
       "times_applied": 0,
       "rows_yielded": 0
@@ -2365,37 +2365,104 @@
         "coverage": 1.0,
         "kind": "bin_key"
       },
-      "times_applied": 32,
-      "rows_yielded": 22368
+      "times_applied": 33,
+      "rows_yielded": 23067
     },
     {
       "fingerprint": "b4c419dccb4fcc77",
-      "kind": "escalate",
+      "kind": "column_map",
       "payload": {
-        "capability": "unexecutable proposal",
-        "note": "value_pattern captures no number: no group named `num`, no single unnamed group to promote, and nothing named `num*` (groups=0, named=[]). Such a rule cannot produce a value on any input."
+        "cid": 1,
+        "assays": [
+          {
+            "index": 2,
+            "name": "BCL-2 Biochemical activity",
+            "unit": "nM"
+          },
+          {
+            "index": 3,
+            "name": "RS4; 11 Cellular activity",
+            "unit": "nM"
+          }
+        ]
       },
       "source": "llm",
       "model": "claude-haiku-4-5-20251001",
-      "created": "2026-07-30T14:25:15",
-      "signature": "",
-      "epoch": "v19-source-first",
-      "validated_on": {},
-      "times_applied": 0,
-      "rows_yielded": 0
+      "created": "2026-08-12T12:46:31",
+      "signature": "4|empty,cid,num,num|,example,activity+bcl+biochemical+ic+nm,activity+cellular+ic+nm+rs",
+      "epoch": "v20-measured-outcome",
+      "validated_on": {
+        "kind": "column_map",
+        "id_style": "code",
+        "assay_columns": 2,
+        "dropped_names": [],
+        "dropped_units": [],
+        "gate": "outcome",
+        "attempt": 1,
+        "records": 37,
+        "usable": 37,
+        "compounds": 20
+      },
+      "times_applied": 2,
+      "rows_yielded": 74
     },
     {
       "fingerprint": "fbc8ba8b5d79f9c9",
       "kind": "escalate",
       "payload": {
-        "capability": "contested not_assay",
-        "note": "model said not_assay but the sample contains potency language \u2014 downgraded to escalation rather than silently suppressing this layout"
+        "capability": "failed 3 attempts",
+        "note": "row_regex must capture a named group `cid`; without one there is no compound to attach a value to",
+        "attempts": [
+          {
+            "kind": "row_regex",
+            "payload": {
+              "pattern": "^\\s*\\|\\s*\\|\\s*(?P<param>.*?)\\s*\\|\\s*(?P<value1>\\d+(?:\\.\\d+)?)\\s*\\|\\s*(?P<unit1>[a-zA-Z/\\.]+)\\s*\\|\\s*(?P<value2>\\d+(?:\\.\\d+)?)\\s*\\|\\s*(?P<unit2>[a-zA-Z/\\.]+)\\s*$"
+            },
+            "why": "row_regex must capture a named group `cid`; without one there is no compound to attach a value to"
+          },
+          {
+            "kind": "column_map",
+            "payload": {
+              "cid": 1,
+              "assays": [
+                {
+                  "index": 2,
+                  "name": "clearance (CL)",
+                  "unit": "mL/min/kg"
+                },
+                {
+                  "index": 3,
+                  "name": "volume of distribution (V)",
+                  "unit": "L/kg"
+                },
+                {
+                  "index": 4,
+                  "name": "oral t\u00bd",
+                  "unit": "h"
+                },
+                {
+                  "index": 5,
+                  "name": "iv t\u00bd",
+                  "unit": "h"
+                }
+              ]
+            },
+            "why": "column 1 cannot identify rows \u2014 its values are not distinct non-measurement labels (e.g. 'distribution (V)'). Name the column that holds the compound id: without one there is nothing to attach a measurement to"
+          },
+          {
+            "kind": "row_regex",
+            "payload": {
+              "pattern": "^\\s*\\|\\s*\\[\\d+\\]\\s*(?P<param>(?:oral|iv)\\s+t\u00bd|clearance\\s*\\(CL\\)|volume\\s+of\\s+distribution\\s*\\(V\\))\\s*\\|\\s*(?P<value1>\\d+(?:\\.\\d+)?)\\s*\\|\\s*(?P<unit1>[a-zA-Z/]+)\\s*\\|\\s*(?P<value2>\\d+(?:\\.\\d+)?)\\s*\\|\\s*(?P<unit2>[a-zA-Z/]+)"
+            },
+            "why": "row_regex must capture a named group `cid`; without one there is no compound to attach a value to"
+          }
+        ]
       },
       "source": "llm",
-      "model": "claude-haiku-4-5-20251001",
-      "created": "2026-07-30T14:25:21",
-      "signature": "",
-      "epoch": "v19-source-first",
+      "model": "",
+      "created": "2026-08-12T13:24:54",
+      "signature": "6|empty,text,num,text,num,text|,cl+clearance+of+oral+volume,determined+example+not,determined+example+kg+min+ml+not,example,example+kg+min+ml",
+      "epoch": "v20-measured-outcome",
       "validated_on": {},
       "times_applied": 0,
       "rows_yielded": 0
@@ -3206,8 +3273,8 @@
         "coverage": 1.0,
         "kind": "bin_key"
       },
-      "times_applied": 41,
-      "rows_yielded": 9850
+      "times_applied": 45,
+      "rows_yielded": 10790
     },
     {
       "fingerprint": "effa94974785f871",
@@ -3312,8 +3379,8 @@
         "coverage": 1.0,
         "kind": "bin_key"
       },
-      "times_applied": 21,
-      "rows_yielded": 861
+      "times_applied": 23,
+      "rows_yielded": 943
     },
     {
       "fingerprint": "bbb8a94aa48da0a4",
@@ -3418,8 +3485,8 @@
         "coverage": 1.0,
         "kind": "bin_key"
       },
-      "times_applied": 21,
-      "rows_yielded": 5712
+      "times_applied": 23,
+      "rows_yielded": 6256
     },
     {
       "fingerprint": "79b4eca21d8e07fd",
@@ -3630,8 +3697,8 @@
         "coverage": 1.0,
         "kind": "bin_key"
       },
-      "times_applied": 40,
-      "rows_yielded": 960
+      "times_applied": 44,
+      "rows_yielded": 1056
     },
     {
       "fingerprint": "c47cadba3f074697",
@@ -4128,8 +4195,8 @@
         "gate": "suspended",
         "objection": "rule yields 13 rows but the existing parser already gets 16 \u2014 a repair must increase coverage, not reduce it"
       },
-      "times_applied": 11,
-      "rows_yielded": 176
+      "times_applied": 13,
+      "rows_yielded": 208
     },
     {
       "fingerprint": "b6f0a1dc2ff20c35",
@@ -4140,9 +4207,9 @@
       },
       "source": "llm",
       "model": "claude-haiku-4-5-20251001",
-      "created": "2026-08-03T19:01:37",
-      "signature": "",
-      "epoch": "v19-source-first",
+      "created": "2026-08-12T12:46:20",
+      "signature": "4|empty,num,num,cid|,examples,bolus+dose+in+iv+rat,bolus+dose+in+iv+rat",
+      "epoch": "v20-measured-outcome",
       "validated_on": {},
       "times_applied": 0,
       "rows_yielded": 0
