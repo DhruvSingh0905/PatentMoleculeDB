@@ -51,6 +51,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import subprocess
+import tempfile
 
 from ..core import config
 from . import losses as _losses
@@ -58,7 +61,8 @@ from . import losses as _losses
 logger = logging.getLogger(__name__)
 
 
-def batch(names: list[str], fmt: str = "SMILES", patent_id: str = "") -> list[str]:
+def batch(names: list[str], fmt: str = "SMILES", patent_id: str = "",
+          *, allow_bad_stereo: bool = False) -> list[str]:
     """Resolve `names` through OPSIN. Returns one entry per input, in order.
 
     An entry is `""` when that name did not resolve — and, per the module
@@ -69,6 +73,16 @@ def batch(names: list[str], fmt: str = "SMILES", patent_id: str = "") -> list[st
     temp file whose default name is a constant: two processes running
     concurrently overwrite each other's input and silently receive each
     other's answers.
+
+    `allow_bad_stereo` IS A DIAGNOSTIC, NOT A RESOLVER. It passes OPSIN's
+    `--allowUninterpretableStereo`, which makes the parser drop a stereo
+    descriptor it cannot map onto the skeleton and return the skeleton anyway.
+    The structure that comes back therefore stands for a SET of stereoisomers,
+    which is the same claim a Markush name makes and carries the same
+    treatment — see `classify()` below, which is the only caller in this
+    package. Nothing resolves through this flag; it exists to tell "OPSIN has
+    no grammar for this" apart from "the text is broken", which are different
+    populations owned by different parts of the pipeline.
     """
     if not names:
         return []
@@ -76,7 +90,8 @@ def batch(names: list[str], fmt: str = "SMILES", patent_id: str = "") -> list[st
 
     tmp = str(config.OUTPUT_DIR / f".opsin_in_{os.getpid()}.txt")
     try:
-        out = py2opsin(names, output_format=fmt, tmp_fpath=tmp)
+        out = py2opsin(names, output_format=fmt, tmp_fpath=tmp,
+                       allow_bad_stereo=allow_bad_stereo)
     except Exception as e:                       # OPSIN is a java subprocess
         logger.warning("opsin: batch of %d failed: %r", len(names), e)
         if _losses.ENABLED:
@@ -106,3 +121,154 @@ def batch(names: list[str], fmt: str = "SMILES", patent_id: str = "") -> list[st
         return [""] * len(names)
 
     return out
+
+
+def errors(names: list[str], patent_id: str = "") -> dict[str, str]:
+    """OPSIN's own error line per name, by running the jar directly.
+
+    `py2opsin` returns only the SMILES column and discards stderr, so the one
+    party that actually knows why a name failed is silent by the time the
+    result reaches us. That diagnosis is the single most informative thing
+    available about a failure — it distinguishes `unmatched opening bracket`
+    from `uninterpretable` from `unable to assign all locants`, which are three
+    different repairs — so it is worth one extra subprocess per patent.
+
+    Best-effort: any failure here yields an empty mapping and the caller
+    carries on without the annotation rather than losing the record.
+
+    This lived in `repair/name_gap.py` until `sources/image_ocr.py` needed the
+    same diagnosis. A `sources` module cannot import from `repair` — the
+    layering runs the other way — and a second copy is precisely what this
+    module's docstring exists to prevent, so it moved here. `name_gap` calls
+    it; nothing about its behaviour changed in the move.
+    """
+    if not names:
+        return {}
+    try:
+        import py2opsin
+        jar = None
+        base = os.path.dirname(py2opsin.__file__)
+        for root, _dirs, files in os.walk(base):
+            for f in files:
+                if f.endswith(".jar"):
+                    jar = os.path.join(root, f)
+                    break
+            if jar:
+                break
+        if not jar:
+            return {}
+        with tempfile.NamedTemporaryFile(
+                "w", suffix=".txt", delete=False,
+                dir=str(config.OUTPUT_DIR)) as fh:
+            fh.write("\n".join(n.replace("\n", " ") for n in names))
+            path = fh.name
+        proc = subprocess.run(["java", "-jar", jar, "-o", "smi", path],
+                              capture_output=True, text=True, timeout=300)
+        os.unlink(path)
+    except Exception as e:                       # java missing, timeout, ...
+        logger.info("opsin: diagnosis unavailable for %s: %r", patent_id, e)
+        return {}
+
+    # POSITIONAL, WITH A CONTENT FALLBACK — and getting this wrong hid the
+    # single most useful piece of context from 85% of prompts.
+    #
+    # Two content-matching versions were tried first and both under-captured.
+    # A literal `name[:60] in line` test matched 32 of 217 real gaps, because
+    # OPSIN echoes the name back in ITS normalisation (`′` U+2032 becomes `'`).
+    # Matching on alphanumerics only got 49. The reason neither works is that
+    # OPSIN's error frequently does not contain the name AT ALL:
+    #
+    #     Could not find atom that: <stereoChemistry locant="1" type="RorS"
+    #     value="R" stereoGroup="Abs">1r</stereoChemistry> appeared to be
+    #     referring to
+    #
+    # Measured directly: OPSIN emits one stderr line per FAILURE (not per
+    # name), in input order — 77 lines for 77 failing names, and 2 lines for a
+    # 5-name batch containing 2 failures. Every name here is already known to
+    # have failed, so the lines correspond one-to-one and IN ORDER.
+    #
+    # The count check is the guard: a name that emits two lines (an error plus
+    # a locant warning) would shift every later pairing, and a silently shifted
+    # diagnosis is worse than none — it would attribute one compound's failure
+    # to another. When the counts disagree, fall back to content matching,
+    # which under-captures but cannot mis-attribute.
+    lines = [l.strip() for l in proc.stderr.splitlines()
+             if l.strip() and "info" not in l.lower()[:20]]
+    if len(lines) == len(names):
+        return {n: l[:300] for n, l in zip(names, lines)}
+
+    logger.info("opsin: %s emitted %d lines for %d names — falling back "
+                "to content matching rather than risk mis-pairing",
+                patent_id, len(lines), len(names))
+
+    def _key(s: str) -> str:
+        return "".join(c for c in s if c.isalnum()).lower()
+
+    keyed = [(_key(n)[:40], n) for n in names]
+    out: dict[str, str] = {}
+    for line in lines:
+        lk = _key(line)
+        for head, n in keyed:
+            if n not in out and head and head in lk:
+                out[n] = line[:300]
+                break
+    return out
+
+
+# THE ONE REASON CODE THIS MODULE ISSUES. A name carrying it is not corrupt
+# text and no character rule will ever recover it, so it must leave the repair
+# loop — but it also must not vanish, which is what happened before: the whole
+# population was `continue`d with nothing but a count in a log line.
+REASON_STEREO = "stereo_unmappable"
+# A grammar OPSIN 2.9.0 does not implement at all — phane / macrocyclic
+# nomenclature (IUPAC P-26), verified against textbook examples including
+# `[2.2]paracyclophane`. Detected by the caller, from the NAME rather than
+# from an error, because OPSIN's refusal of these is not distinctive.
+REASON_GRAMMAR = "grammar_unsupported"
+# The complement of both, so a caller that records EVERY outcome uses one
+# vocabulary. Not issued by anything here — `stereo_blocked` answers one
+# question and the caller names the other side.
+REASON_TEXT = "text_defect"
+
+# OPSIN QUOTING ITS OWN PARSE BACK AT US. The element echo means OPSIN read the
+# descriptor, built a `<stereoChemistry>` node for it, and then could not place
+# that node on the skeleton — which is a statement about the parser, not about
+# the string.
+_STEREO_ELEMENT = re.compile(r"<stereoChemistry", re.I)
+
+
+def stereo_blocked(names: list[str], errs: dict[str, str],
+                   patent_id: str = "") -> set[str]:
+    """Of `names`, the ones OPSIN refuses ONLY because of stereochemistry.
+
+    THE TEST IS A MEASUREMENT, NOT A PATTERN. Ask OPSIN the same question again
+    with `--allowUninterpretableStereo`: a name that flips from refused to
+    accepted was never broken text — the only thing standing between it and a
+    structure is a descriptor the parser cannot map onto the skeleton.
+
+    Measured over 630 asserted-but-unresolved names from 30 patents:
+
+        parses with `-s`                     52
+        `<stereoChemistry` echo, no flip      1     `(3a,9bR)`, alphaOrBeta
+        union                                53   (8.4%)
+
+    The regex this replaced (`could not find atom that|<stereoChemistry`)
+    caught 46 — it missed the 7 OPSIN reports in prose instead of by element
+    echo (`endoExoSynAnti stereochemistry is not currently interpretable`,
+    `Failed to assign CIP stereochemistry`), which no amount of widening the
+    pattern would have found reliably. The element echo is KEPT as a second
+    arm because it catches the one case `-s` does not rescue, and because it
+    cannot mis-fire: the string only appears when OPSIN is quoting a stereo
+    node it built itself.
+
+    The other 577 are NOT this. 405 are `uninterpretable substring` and 97 an
+    unmatched bracket — text defects, which is exactly the repair loop's
+    population, and they stay there.
+    """
+    if not names:
+        return set()
+    uniq = sorted(set(names))
+    lax = batch(uniq, "SMILES", patent_id, allow_bad_stereo=True)
+    flipped = {n for n, s in zip(uniq, lax) if s.strip()}
+    return {n for n in uniq
+            if n in flipped or _STEREO_ELEMENT.search(errs.get(n, ""))}

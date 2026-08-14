@@ -259,6 +259,54 @@ IUPAC_MAX_VARIANTS = 12
 # guess costs, and it is why "prose" is retired rather than kept as a fallback.
 IDENTITY_ROUTE = os.environ.get("IDENTITY_ROUTE", "cid_first")
 
+# READ THE COMPOUND NAME OFF ITS OWN DRAWING, before any structure
+# recognition. Some patents print the IUPAC name inside the image beside the
+# structure; where they do, OCR plus OPSIN gives an exact answer that passes
+# the same gate every text-derived structure passes — unlike
+# `DECIMER.predict_SMILES`, which returns a bare SMILES with no confidence and
+# can only be checked against an InChIKey that, for these compounds, does not
+# exist. See `sources/image_ocr.py`.
+#
+# OFF BY DEFAULT, and the reason is CPU, not risk. The stage reads only images
+# already on disk and fetches nothing, so it is $0 and self-gating: a patent
+# with no local image does no work and never imports easyocr. But OCR runs at
+# roughly 2-4 seconds per image on a laptop CPU, and the shipped worklist is
+# 22,196 rows — a full corpus dump with this on would spend a day re-reading
+# pictures it read last run, because nothing here caches the result yet.
+# Turn it on for a patent or a batch whose images you have fetched.
+IMAGE_OCR = os.environ.get("IMAGE_OCR", "0") == "1"
+
+# ── Structure recognisers ────────────────────────────────────────────────
+# ONE FLAG PER MODEL. The results file carries a `recogniser` column and is
+# keyed on (patent_id, cid, recogniser), so a second model adds rows rather
+# than overwriting the first one's answers — see `sources/images.RESULT_FIELDS`.
+#
+# WHY THIS IS NOT ONE "WHICH MODEL" STRING. `IDENTITY_ROUTE` is a string
+# because those routes are alternatives. These are not: the point is to hold
+# two answers for one compound and see which the patent's own mass supports.
+#
+# A DEDICATED MARKUSH MODEL WAS EVALUATED AND REFUSED. MarkushGrapher-2 reads
+# a scaffold image AND its substituent table from pixels, scoring 48-56% on
+# its authors' own Markush benchmarks. We do not have that problem: the
+# substituent values are already clean text in the XML table cells, and
+# combining a scaffold with them is `rdkit.Chem.molzip`, which is exact and
+# free. Buying a two-environment 831M-parameter model to re-read text we
+# already hold is the wrong order of work. Its molecule-level USPTO figure
+# (89.8%, authors' own) is also below the 93.4% measured for DECIMER here, so
+# it was not a candidate for ordinary structures either.
+
+# The measured default. 93.4% on 61 known answers (US10730863), ~2s/image on a
+# T4. `>=2.8` is required, not incidental: 2.2.2 has no confidence output.
+DECIMER_ENABLED = os.environ.get("DECIMER_ENABLED", "1") == "1"
+
+# Off, and this one is a TRAP rather than a feature. `decimer-segmentation`
+# pins `tensorflow==2.10.1`, which caps `decimer` at 2.2.2 — silently
+# replacing the 2.8.0 model that produced our accuracy figure and removing the
+# confidence output entirely. It buys a structure COUNT per image, on images
+# that hold exactly one structure 98.9% of the time. If it is ever wanted, it
+# belongs in its OWN environment, never as a constraint on the recogniser's.
+DECIMER_SEGMENTATION = os.environ.get("DECIMER_SEGMENTATION", "0") == "1"
+
 
 # ── What counts as a deliverable compound ────────────────────────────────
 # ON. A patent numbers three different kinds of thing and only one of them is

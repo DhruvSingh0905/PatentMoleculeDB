@@ -514,6 +514,11 @@ class TableName:
     # a count rather than a flag so the rejoin's yield can be measured off the
     # artifact alone, without re-deriving it from the XML.
     rows_joined: int = 1
+    # Set by `sources/mass_gate.py`. Same contract as the identically-named
+    # fields on `iupac_names.NamedCompound` — read that docstring, not a second
+    # copy of it here. Blank means UNCHECKED, never "fine".
+    mass_check: str = ""
+    mass_delta: str = ""
 
     @property
     def key(self) -> str:

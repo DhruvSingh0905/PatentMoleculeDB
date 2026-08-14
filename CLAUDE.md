@@ -45,6 +45,36 @@ invent a second rule — an ad-hoc one scored 79.2% against the truth of 98.9%.
 Quote no coverage number without its date and its population. Re-run the dump
 if the tree changed.
 
+## Next fix
+
+**`table_names` on US12011444 and US9745328.** 678 compounds — 89% of the
+whole `name_in_a_table_cell` miss bucket — sit in these two documents. The
+route is sound (75% take rate corpus-wide), so this is a document defect, not
+a redesign.
+
+Measured over all 137 patents, 44,509 measured compounds, 51% resolved:
+
+| evidence the document gives | total | resolved | missed | take |
+|---|---|---|---|---|
+| drawn in its own row | 22,897 | 9,285 | **13,612** | 41% |
+| appears in prose only | 7,069 | 5,175 | 1,894 | 73% |
+| named in a heading | 6,600 | 5,663 | 937 | 86% |
+| name in a table cell | 2,981 | 2,222 | 759 | 75% |
+| cid IS a name | 420 | 360 | 60 | 86% |
+| nothing outside assay tables | 4,542 | 67 | 4,475 | 1% |
+
+Read it this way:
+
+- **Images are 13,612 missed — larger than everything else combined.** A
+  drawing does not imply a missing name: 9,285 drawn compounds already
+  resolve from text.
+- **The reader-side gap is 3,650 (8.2%)** and it is concentrated in about
+  eight documents. Document defects, not mechanism failures.
+- **4,475 are unfixable.** 78% of them are four patents — US9718790,
+  US9303033, US12065407, US10266548 — which identify a compound by a number
+  that appears nowhere else. Do not point the heal loop at these. Exclude
+  them from a coverage denominator and say so.
+
 ## Layout
 
 ```

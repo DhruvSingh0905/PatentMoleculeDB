@@ -83,8 +83,20 @@ RESULTS = config.OUTPUT_DIR / "image_results.tsv"
 
 WORK_FIELDS = ("patent_id", "cid", "job", "chemistry_id", "image_file",
                "local_path", "url", "expected_inchikey", "n_assays", "assays")
+# `recogniser` and `confidence` exist so more than one model can write into
+# ONE results file and be compared on identical images.
+#
+#   recogniser  which model produced the row (today only "decimer").
+#               The row key is (patent_id, cid, recogniser), so two models
+#               scoring the same compound are two rows, never a silent
+#               overwrite — and `score()` reports each separately, because an
+#               undifferentiated accuracy over two models measures neither.
+#   confidence  the model's own estimate, 0-1, or "" when it does not offer
+#               one. NOT comparable ACROSS models: DECIMER's is the mean of
+#               per-token decoder confidences and another model's will mean
+#               something else. Blank is "not offered", never "low".
 RESULT_FIELDS = ("patent_id", "cid", "image_file", "n_segments", "smiles",
-                 "inchikey", "error")
+                 "inchikey", "confidence", "recogniser", "error")
 
 _UA = "Mozilla/5.0 (compatible; patentdb3/1.0)"
 _TIMEOUT_S = 45
@@ -139,9 +151,30 @@ def emit(*, with_urls: bool = False, path: Path | None = None) -> dict:
     st = list(csv.DictReader(open(man["structures"]), delimiter="\t"))
     dump = list(csv.DictReader(open(man["dump"]), delimiter="\t"))
 
+    # A VALIDATE ROW IS A CLAIM THAT WE ALREADY KNOW THE ANSWER, and it is the
+    # only thing an image reader can ever be SCORED against. A wrong answer
+    # here does not merely fail to help — it inverts the measurement: the
+    # reader recognises the drawing correctly, disagrees with the reagent
+    # someone anchored to that compound number, and is recorded as an error.
+    # That is a score that cannot improve.
+    #
+    # It is not hypothetical. On US10730863 ten compounds carried a synthesis
+    # intermediate as their text answer, every one of them 300+ Da from the
+    # mass the patent prints in that compound's own row. Scoring against those
+    # ten produced "3 agree, 14 disagree" for a caption reader that was right
+    # every time the patent could referee it.
+    #
+    # So an answer the mass gate flags is NOT truth. It is demoted to RECOVER
+    # — the work is still queued, it simply carries no expected value. The row
+    # is not deleted, because "we have a disputed answer" and "we have no
+    # answer" are different states and the tally keeps them apart.
     known: dict[str, dict[str, str]] = defaultdict(dict)
+    disputed = 0
     for r in st:
         if r.get("cid") and r.get("inchikey"):
+            if r.get("mass_check") == "contradicts":
+                disputed += 1
+                continue
             known[r["patent_id"]].setdefault(r["cid"], r["inchikey"])
     assays: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for r in dump:
@@ -188,6 +221,9 @@ def emit(*, with_urls: bool = False, path: Path | None = None) -> dict:
                 url=urls.get(f.rsplit(".", 1)[0], "")))
 
     out = write_worklist(items, path)
+    # Counted, not silent. A demotion moves a row from VALIDATE to RECOVER, and
+    # without this line the two totals simply shift and nothing says why.
+    tally["demoted_mass_contradicts"] = disputed
     tally["rows"] = len(items)
     tally["path"] = str(out)
     logger.info("images: emitted %d rows (%d VALIDATE, %d RECOVER) -> %s",

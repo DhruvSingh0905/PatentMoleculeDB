@@ -171,8 +171,9 @@ _MAX_COLLATERAL = 0.02
 # `1,1,1,3,3,3-Hexafluoropropan-2-yl` (735), which are clusters of chemistry.
 #
 # What IS content-independent is OPSIN's own account of the failure — the same
-# source `_UNSUPPORTED_GRAMMAR` already trusts, and for the same stated reason:
-# use the parser's diagnosis rather than guess from the string. Measured over
+# source `sources/opsin.errors` feeds `name_gap`, and for the same stated
+# reason: use the parser's diagnosis rather than guess from the string.
+# Measured over
 # the asserted-name gaps of 5 patents, 96 distinct raw error strings collapse
 # to a handful of families once the offending token is replaced by its CLASS:
 #

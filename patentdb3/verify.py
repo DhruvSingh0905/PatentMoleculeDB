@@ -79,7 +79,7 @@ from .core import config
 from .core.cost_tracker import cost_tracker
 from .repair.loop import repair_patent
 from .repair.rules import RuleLibrary
-from .sources import losses
+from .sources import image_ocr, losses, mass_gate
 from .sources.cid_first import extract_by_cid
 from .sources.iupac_names import NamedCompound, extract_names
 from .sources.table_names import TableName, extract_table_names
@@ -204,7 +204,7 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
     DUMP_PATH.parent.mkdir(parents=True, exist_ok=True)
     STRUCT_PATH.parent.mkdir(parents=True, exist_ok=True)
     lib = RuleLibrary() if heal else None
-    n = n_struct = n_repaired = 0
+    n = n_struct = n_repaired = n_ocr = 0
     done: list[str] = []
     recovered_total = adopted_total = gaps_total = superseded_total = 0
     struct_sources: Counter = Counter()
@@ -307,7 +307,32 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                 _table_cids = {t.cid for t in tnames if getattr(t, "cid", None)}
                 _filled = [nc for nc in names
                            if not (getattr(nc, "cid", None) in _table_cids)]
-                for nc in [*tnames, *_filled]:
+                _merged = [*tnames, *_filled]
+                # THE THIRD IDENTITY ROUTE, and the only one that reads the
+                # PICTURE. Where a patent prints the compound's IUPAC name
+                # inside its own drawing, OCR plus OPSIN answers a cid that no
+                # text route could — and it REPLACES that cid's drawn marker
+                # rather than joining it, so one compound never holds two rows.
+                # Off unless `config.IMAGE_OCR`; free and silent when the
+                # patent's images are not on disk. See `image_ocr.supersede`.
+                try:
+                    _merged, _n_ocr = image_ocr.supersede(_merged, pid)
+                    n_ocr += _n_ocr
+                except Exception as e:
+                    print(f"  {pid}: image_ocr failed ({e})")
+                    losses.record("image_ocr_exception", pid, error=repr(e))
+                # THE ONE CHECK THAT DOUBTS THE ANCHOR, not the name. Run here
+                # because this is the first point both routes have been
+                # resolved AND merged, so every shipped row is weighed exactly
+                # once under the precedence that decided it. It stamps two
+                # fields and records a loss; it drops nothing — see
+                # `sources/mass_gate.py` for why that is deliberate.
+                try:
+                    mass_gate.check(_merged, xml, pid)
+                except Exception as e:
+                    print(f"  {pid}: mass gate failed ({e})")
+                    losses.record("mass_gate_exception", pid, error=repr(e))
+                for nc in _merged:
                     vals = [str(getattr(nc, f, "") if getattr(nc, f, None) is not None else "")
                             .replace("\t", " ").replace("\n", " ") for f in STRUCT_FIELDS]
                     sfh.write("\t".join(vals) + "\n")
@@ -378,6 +403,17 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
         "structures_rows": n_struct,
         "structures_fields": list(STRUCT_FIELDS),
         "structures_sources": dict(struct_sources),
+        # WHICH OPTIONAL ROUTES ACTUALLY RAN. A count of zero is ambiguous by
+        # itself — "off", "on but nothing to read", and "on and found none"
+        # are three different states and only one of them is a result. These
+        # two flags are what tell them apart, and they belong in the manifest
+        # rather than a log line because the manifest is the thing a reader
+        # still has a week later.
+        "image_ocr": config.IMAGE_OCR,
+        "mass_gate": mass_gate.available(),
+        # Drawn markers replaced by a name read off the picture. Read this
+        # against `image_ocr` above before quoting it.
+        "image_ocr_superseded": n_ocr,
         # HOW MANY OF THOSE ROWS EXIST ONLY BECAUSE OF A CONFIRMED TEXT
         # REPAIR (`sources/name_repair.py`, either route). 0 here with a
         # non-zero `structures_rows` means the repair tier ran and confirmed

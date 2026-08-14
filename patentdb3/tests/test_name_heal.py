@@ -251,6 +251,37 @@ def test_phane_and_conjunction_headings_are_not_offered_as_gaps():
     assert not _PHANE.search("2-methyl-4-(trifluoromethoxy)benzyl acetate")
 
 
+@requires_opsin
+def test_every_excluded_compound_is_recorded_not_just_skipped(tmp_path):
+    """LEAVING THE LOOP IS NOT THE SAME AS LEAVING THE ARTIFACT.
+
+    Three populations used to exit `find_name_gaps` through a bare `continue`:
+    a name blocked only by stereochemistry, a phane, and two compounds sharing
+    one heading. All three were then indistinguishable from a compound nothing
+    ever looked at. Each now carries a reason code so a later pass can act on
+    a list instead of re-deriving one.
+
+    US10227341 is the fixture because its headings carry the conjunction shape
+    (`Example 42 and Example 43: ...`) — verified against the cached XML, not
+    constructed.
+    """
+    import json
+
+    from patentdb3.sources import losses, opsin
+    losses.reset(tmp_path / "loss.jsonl")
+    find_name_gaps(_xml("US10227341"), "US10227341", with_opsin_errors=False)
+    losses.flush()
+    rows = [json.loads(l) for l in
+            (tmp_path / "loss.jsonl").read_text().splitlines() if l.strip()]
+    rows = [r for r in rows if r["loss_type"] == "asserted_name_unparsed"]
+    assert rows, "every exclusion was silent again"
+    assert {r["reason"] for r in rows} <= {
+        opsin.REASON_STEREO, opsin.REASON_GRAMMAR,
+        "two_compounds_one_assertion"}
+    assert all(r["cid"] and r["name"] for r in rows)
+    assert all(r["assertion"] in ("heading", "table") for r in rows)
+
+
 # ── library ──────────────────────────────────────────────────────────────
 
 def test_library_round_trips_and_replaces_by_id(tmp_path):

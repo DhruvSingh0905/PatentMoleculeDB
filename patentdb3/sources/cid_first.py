@@ -283,6 +283,37 @@ _LABEL_BEFORE = re.compile(
 _NOT_FINISHED_LABEL = {"intermediate", "intermediates", "step", "steps",
                        "preparation", "preparations"}
 
+# THE WORD NEXT TO THE ID CAN SAY THE OPPOSITE OF WHAT THE PHRASE SAYS.
+#
+#     Preparation of Intermediate for Example 534. Ethyl 3-hydroxy-1,4-...
+#                                   ^^^^^^^ _LABEL_BEFORE reads this
+#
+# `_LABEL_BEFORE` anchors at `$`, so it captures the ONE word touching the id.
+# Here that word is `Example`, which is not in `_NOT_FINISHED_LABEL`, so
+# `FINISHED_ONLY` never refuses it — and the route then anchors the
+# INTERMEDIATE's name to compound 534. Measured against the patent's own
+# `MS (ESI) 561 (M+H)`: the anchored structure weighs 185 Da. Ten compounds on
+# US10730863 shipped a reagent this way, every one labelled `compound`.
+#
+# WHY THIS IS SPELLED SO NARROWLY. Four phrase shapes in this corpus put a
+# not-finished word before an id, and only ONE of them misdirects:
+#
+#   Preparation of Intermediate for Example 524.  -> a NAME follows; the name
+#   Intermediate for the Synthesis of Example 366:   belongs to the intermediate
+#   Step G for the preparation of Example 159:    -> yield data follows; the id
+#   Preparation as described for example 30 using    IS the compound described
+#
+# The head noun before `for` is what separates them: an INTERMEDIATE *for* an
+# example is a different compound, while a STEP *for the preparation of* an
+# example is that example's own synthesis. So only `intermediate` heads this
+# pattern, and the gap to `for` admits lowercase words only — that is what
+# keeps `Intermediate 519E according to methods described for ... Example 130`
+# out, where a digit and a second id sit in between.
+_REFERRED_WINDOW = 72
+_INTERMEDIATE_FOR = re.compile(
+    rf"\bintermediates?\b[a-z ]{{0,12}}?\bfor\b[A-Za-z ]{{0,20}}?"
+    rf"(?:{_LABEL_WORD})\s*(?:nos?\.?|#)?\s*$", re.I)
+
 # `<id>:` or `<id>.` at the start of a line, with no label word — the
 # combined-heading shape a patent writes when it has already said "Example"
 # in a section title.
@@ -424,8 +455,15 @@ def _assertion(text: str, m: re.Match) -> _Occurrence | None:
     left = text[max(0, s - _LABEL_WINDOW):s]
     lm = _LABEL_BEFORE.search(left)
     if lm is not None:
-        return _Occurrence(cid=cid, start=s, end=e, shape="label",
-                           label=lm.group(1).lower())
+        label = lm.group(1).lower()
+        # READ THE PHRASE, NOT THE ADJACENT WORD. See `_INTERMEDIATE_FOR`:
+        # `Intermediate for Example 534` declares an intermediate FOR 534, and
+        # the label touching the id says the opposite. Correcting the LABEL
+        # rather than returning None keeps one refusal path — `FINISHED_ONLY`
+        # already refuses this value and already records why.
+        if _INTERMEDIATE_FOR.search(text[max(0, s - _REFERRED_WINDOW):s]):
+            label = "intermediate"
+        return _Occurrence(cid=cid, start=s, end=e, shape="label", label=label)
     # `(<id>)`, with the opening paren not glued to a word — "Acquity(4)" is a
     # column model number, not a compound id.
     if (s >= 1 and text[s - 1] == "(" and e < len(text) and text[e] == ")"
@@ -761,6 +799,7 @@ def _cids_that_are_names(cids: list[str],
             start=-1, source=SOURCE, cid=cid,
             label=verdict.label, reason=verdict.reason,
             markush=bool(stereo),
+            markush_kind="relative_stereo" if stereo else "",
             markush_reason=("relative_stereo:" + ",".join(stereo)) if stereo else "",
             heading_transform=kind))
     return out
@@ -983,8 +1022,11 @@ def _resolve(xml: str, patent_id: str = "") -> tuple[list[NamedCompound], Stats]
             out.append(NamedCompound(
                 patent_id=patent_id, name="", smiles="", inchikey="",
                 start=-1, source=SOURCE, cid=cid,
-                markush=True, markush_reason=f"header_scaffold:{tid}",
-                markush_parts=f"scaffold={scaf};fragment={ref}"))
+                markush=True, markush_kind="header_scaffold",
+                markush_reason=f"header_scaffold:{tid}",
+                markush_parts=(
+                    f"scaffold={scaf};scaffold_file={chem_files.get(scaf, '')};"
+                    f"fragment={ref};fragment_file={chem_files.get(ref, '')}")))
             st.markush_marked += 1
             continue
         if cid in markush:
@@ -996,9 +1038,10 @@ def _resolve(xml: str, patent_id: str = "") -> tuple[list[NamedCompound], Stats]
             out.append(NamedCompound(
                 patent_id=patent_id, name="", smiles="", inchikey="",
                 start=-1, source=SOURCE, cid=cid,
-                markush=True,
+                markush=True, markush_kind="substituent_table",
                 markush_reason=f"substituent_table:{markush[cid]}",
-                markush_parts=f"fragment={ref}"))
+                markush_parts=(f"fragment={ref};"
+                               f"fragment_file={chem_files.get(ref, '')}")))
             st.markush_marked += 1
             continue
         out.append(NamedCompound(

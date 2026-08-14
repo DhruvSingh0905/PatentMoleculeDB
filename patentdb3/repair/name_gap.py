@@ -50,15 +50,13 @@ WHAT IS DELIBERATELY EXCLUDED
 from __future__ import annotations
 
 import logging
-import os
 import re
-import subprocess
-import tempfile
 from dataclasses import dataclass, field
 
-from ..core import config
 from ..sources import iupac_names as IN
 from ..sources import table_names as TN
+from ..sources import losses as _losses
+from ..sources import opsin as OP
 from ..sources.anchor import anchor_text
 from ..sources.dewrap import targeted as _dewrap_targeted
 
@@ -91,33 +89,38 @@ _CONJUNCTION = re.compile(
     r"\)\s+and\s+\(|\band its enantiomer|\band\s+\(\d"
     r"|^and\s+(?:\d|intermediate|example|compound|preparation)", re.I)
 
-# OPSIN'S OWN ERROR SAYING THE GRAMMAR IS MISSING, NOT THAT THE TEXT IS BROKEN.
-# Matched against `opsin_error`, never against the name — the point is to use
-# the parser's own account of why it failed rather than to guess from the
-# string, which is what every other classification attempt in this
-# investigation got wrong.
+# NOT AN OPSIN LIMIT, so it does not come from `sources/opsin.py`. The parser
+# was never asked: two compounds share one assertion and the repair is a
+# SPLIT, which is `anchor.py`'s question. Recorded under its own reason so a
+# later pass can tell it apart from a name OPSIN actually refused.
+_REASON_TWO_COMPOUNDS = "two_compounds_one_assertion"
+
+# THE STEREO POPULATION IS DETECTED BY `sources/opsin.stereo_blocked`, NOT
+# HERE. A regex over OPSIN's prose used to do it
+# (`could not find atom that|<stereoChemistry`); it caught 46 of the 53 real
+# cases in a 630-name census and over-reached on one. The replacement asks
+# OPSIN the same name again with `--allowUninterpretableStereo` and watches
+# whether it flips, which is a measurement rather than a guess about wording.
+# See that function for the numbers and for why the element echo is kept as a
+# second arm.
 #
-# The dominant case by a wide margin is the pseudo-asymmetric CIP descriptor:
-#
-#     Could not find atom that: <stereoChemistry locant="1" type="RorS"
-#     value="S" stereoGroup="Abs">1s</stereoChemistry> appeared to be
-#     referring to
-#
-# i.e. the lowercase `r`/`s` in `(1r,4R)-4-hydroxycyclohexyl`. Measured over
+# The dominant shape is the pseudo-asymmetric CIP descriptor — the lowercase
+# `r`/`s` in `(1r,4R)-4-hydroxycyclohexyl`. Measured over
 # US10155002 / US10710980 / US11420968: **155 of 217 asserted-compound gaps
-# (71%)**, far more than every text corruption combined. No character rule can
-# add a grammar to the parser, so a loop pointed at these buys nothing and
-# escalates forever — and worse, a model handed one will try to make it parse
-# by rewriting the chemistry (`acetamido` -> `amino`, observed).
+# (71%)**; over the first 30 patents of the corpus it is 53 of 630 (8.4%). Both
+# are real — it is a per-document convention, like everything else here.
+#
+# No character rule can add a grammar to the parser, so a loop pointed at these
+# buys nothing and escalates forever — and worse, a model handed one will try
+# to make it parse by rewriting the chemistry (`acetamido` -> `amino`,
+# observed). They therefore leave the loop.
 #
 # THEY ARE NOT UNRECOVERABLE, they are just not repairable HERE: stripping the
 # descriptor makes 154 of the 155 parse. That loses the stereochemistry, so the
-# result stands for a SET of stereoisomers and must carry the same treatment a
-# Markush name does — flagged, and no InChIKey. That is a deliberate, separate
-# decision about what the artifact claims, not something this detector should
-# do behind it.
-_UNSUPPORTED_GRAMMAR = re.compile(
-    r"could not find atom that|<stereoChemistry", re.I)
+# result would stand for a SET of stereoisomers and would have to carry the
+# same treatment a Markush name does — flagged, and no InChIKey. That trade was
+# put to the user and declined: these stay UNRESOLVED and are recorded, so the
+# decision can be revisited against a list rather than re-derived from scratch.
 
 
 @dataclass
@@ -150,89 +153,14 @@ class NameGap:
 
 
 def _opsin_errors(names: list[str]) -> dict[str, str]:
-    """OPSIN's own error line per name, by running the jar directly.
+    """OPSIN's own error line per name. Lives in `sources/opsin.py`.
 
-    `py2opsin` returns only the SMILES column and discards stderr, so the one
-    party that actually knows why a name failed is silent by the time the
-    result reaches us. That diagnosis is the single most informative thing
-    available about a failure — it distinguishes `unmatched opening bracket`
-    from `uninterpretable` from `unable to assign all locants`, which are three
-    different repairs — so it is worth one extra subprocess per patent.
-
-    Best-effort: any failure here yields an empty mapping and the loop carries
-    on without the annotation rather than losing the gap.
+    Kept as a one-line alias rather than inlined at the call sites: this name
+    is what the tests and the surrounding commentary already refer to, and the
+    move was about removing a SECOND copy from the tree, not about renaming
+    the thing. See `opsin.errors` for why it must run the jar directly.
     """
-    if not names:
-        return {}
-    try:
-        import py2opsin
-        jar = None
-        base = os.path.dirname(py2opsin.__file__)
-        for root, _dirs, files in os.walk(base):
-            for f in files:
-                if f.endswith(".jar"):
-                    jar = os.path.join(root, f)
-                    break
-            if jar:
-                break
-        if not jar:
-            return {}
-        with tempfile.NamedTemporaryFile(
-                "w", suffix=".txt", delete=False,
-                dir=str(config.OUTPUT_DIR)) as fh:
-            fh.write("\n".join(n.replace("\n", " ") for n in names))
-            path = fh.name
-        proc = subprocess.run(["java", "-jar", jar, "-o", "smi", path],
-                              capture_output=True, text=True, timeout=300)
-        os.unlink(path)
-    except Exception as e:                       # java missing, timeout, ...
-        logger.info("name_gap: OPSIN diagnosis unavailable: %r", e)
-        return {}
-
-    # POSITIONAL, WITH A CONTENT FALLBACK — and getting this wrong hid the
-    # single most useful piece of context from 85% of prompts.
-    #
-    # Two content-matching versions were tried first and both under-captured.
-    # A literal `name[:60] in line` test matched 32 of 217 real gaps, because
-    # OPSIN echoes the name back in ITS normalisation (`′` U+2032 becomes `'`).
-    # Matching on alphanumerics only got 49. The reason neither works is that
-    # OPSIN's error frequently does not contain the name AT ALL:
-    #
-    #     Could not find atom that: <stereoChemistry locant="1" type="RorS"
-    #     value="R" stereoGroup="Abs">1r</stereoChemistry> appeared to be
-    #     referring to
-    #
-    # Measured directly: OPSIN emits one stderr line per FAILURE (not per
-    # name), in input order — 77 lines for 77 failing names, and 2 lines for a
-    # 5-name batch containing 2 failures. Every name here is already known to
-    # have failed, so the lines correspond one-to-one and IN ORDER.
-    #
-    # The count check is the guard: a name that emits two lines (an error plus
-    # a locant warning) would shift every later pairing, and a silently shifted
-    # diagnosis is worse than none — it would attribute one compound's failure
-    # to another. When the counts disagree, fall back to content matching,
-    # which under-captures but cannot mis-attribute.
-    lines = [l.strip() for l in proc.stderr.splitlines()
-             if l.strip() and "info" not in l.lower()[:20]]
-    if len(lines) == len(names):
-        return {n: l[:300] for n, l in zip(names, lines)}
-
-    logger.info("name_gap: OPSIN emitted %d lines for %d names — falling back "
-                "to content matching rather than risk mis-pairing",
-                len(lines), len(names))
-
-    def _key(s: str) -> str:
-        return "".join(c for c in s if c.isalnum()).lower()
-
-    keyed = [(_key(n)[:40], n) for n in names]
-    out: dict[str, str] = {}
-    for line in lines:
-        lk = _key(line)
-        for head, n in keyed:
-            if n not in out and head and head in lk:
-                out[n] = line[:300]
-                break
-    return out
+    return OP.errors(names)
 
 
 def find_name_gaps(xml: str, patent_id: str = "",
@@ -314,12 +242,28 @@ def find_name_gaps(xml: str, patent_id: str = "",
         # `<sup>` footnote digit fused to `...propan-2-ol2`).
         asserted.append((cid, _dewrap_targeted(raw), "table"))
 
+    # EVERY EXCLUSION BELOW IS RECORDED, not just skipped. Each of these was a
+    # bare `continue`, so three different populations left the pipeline through
+    # the same silence and none of them was countable afterwards. The reason
+    # codes are the vocabulary a later pass reads; `_CHEM` is the one exclusion
+    # that stays silent, because a section header is not a compound and never
+    # was.
     gaps: list[NameGap] = []
     for cid, name_text, src in asserted:
         if not _CHEM.search(name_text):
             continue                                  # a section header
-        if _PHANE.search(name_text) or _CONJUNCTION.search(name_text):
-            continue                                  # not repairable here
+        if _PHANE.search(name_text):
+            _losses.record("asserted_name_unparsed", patent_id, cid=cid,
+                           name=name_text, reason=OP.REASON_GRAMMAR,
+                           opsin_error="", assertion=src,
+                           detail="phane / macrocycle: OPSIN 2.9.0 does not "
+                                  "implement IUPAC P-26")
+            continue
+        if _CONJUNCTION.search(name_text):
+            _losses.record("asserted_name_unparsed", patent_id, cid=cid,
+                           name=name_text, reason=_REASON_TWO_COMPOUNDS,
+                           opsin_error="", assertion=src)
+            continue
         gaps.append(NameGap(patent_id=patent_id, cid=cid, name_text=name_text,
                             clean_names=clean, source=src))
 
@@ -327,25 +271,36 @@ def find_name_gaps(xml: str, patent_id: str = "",
         return []
 
     doc = anchor_text(xml, patent_id)
-    # Always run the diagnosis — it is needed to EXCLUDE the unsupported-
-    # grammar cases below, not only to enrich the prompt. `with_opsin_errors`
-    # controls whether it reaches the model, which is the thing the harness
-    # ablates; it must not also control whether the loop knows what it is
-    # looking at.
+    # Always run the diagnosis — `stereo_blocked` reads it, so it decides
+    # which gaps leave the loop, not only what the prompt says.
+    # `with_opsin_errors` controls whether it reaches the MODEL, which is the
+    # thing the harness ablates; it must not also control whether the loop
+    # knows what it is looking at.
     errs = _opsin_errors([g.name_text for g in gaps])
+    blocked = OP.stereo_blocked([g.name_text for g in gaps], errs, patent_id)
     kept: list[NameGap] = []
     dropped = 0
     for g in gaps:
         err = errs.get(g.name_text, "")
-        if _UNSUPPORTED_GRAMMAR.search(err):
+        if g.name_text in blocked:
+            # LEAVING THE LOOP IS NOT THE SAME AS LEAVING THE ARTIFACT. This
+            # branch used to be a bare `continue` with a count in a log line,
+            # so a compound the patent named, that we read correctly, and that
+            # is blocked only by a parser limit, was indistinguishable from
+            # one nothing ever looked at. It is unresolved either way — the
+            # record is what makes it addressable later.
             dropped += 1
+            _losses.record("asserted_name_unparsed", patent_id, cid=g.cid,
+                           name=g.name_text, reason=OP.REASON_STEREO,
+                           opsin_error=err, assertion=g.source)
             continue
         g.doc_text = doc
         g.opsin_error = err if with_opsin_errors else ""
         kept.append(g)
     if dropped:
-        logger.info("name_gap: %s — %d gap(s) excluded as unsupported OPSIN "
-                    "grammar, not corruption", patent_id, dropped)
+        logger.info("name_gap: %s — %d gap(s) recorded as %s and excluded "
+                    "from the loop; a character rule cannot add a grammar",
+                    patent_id, dropped, OP.REASON_STEREO)
     gaps = kept
 
     n_tbl = sum(1 for g in gaps if g.source == "table")

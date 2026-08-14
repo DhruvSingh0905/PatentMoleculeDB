@@ -692,6 +692,20 @@ def _coverage(accepted: str, name_text: str) -> float:
     return len(got) / len(hay)
 
 
+def _markush_kind(stereo, dropped, kind: str) -> str:
+    """The KIND behind `markush_reason`, derived from the same three inputs.
+
+    Kept beside the one call site that needs all three rather than restated
+    inline: the reason string and the kind must never disagree, and the way
+    they drift is somebody editing one branch of a nested conditional.
+    """
+    if stereo:
+        return "relative_stereo"
+    if dropped or kind == "stereo_stripped":
+        return "stereo_stripped"
+    return ""
+
+
 @dataclass
 class NamedCompound:
     """A name the patent states, resolved to a structure by OPSIN."""
@@ -724,6 +738,20 @@ class NamedCompound:
     # SET of stereoisomers rather than one molecule. Set in `extract_names`,
     # never by `reagents.classify`.
     markush: bool = False
+    # WHICH KIND, because `markush=True` covers two populations that need
+    # opposite work and a single flag hides the difference. Measured over 137
+    # patents, 990 flagged rows:
+    #
+    #   substituent_table  644  no structure — a scaffold plus table values,
+    #   header_scaffold     29  and ENUMERATION is what is missing
+    #   stereo_stripped    218  HAS a structure — we dropped a descriptor, so
+    #   relative_stereo     99  the row stands for a set. Nothing to enumerate.
+    #
+    # 317 of the 990 need no image and no enumeration at all. Filtering on
+    # `markush` alone therefore overstates the outstanding work by ~50%, and
+    # every consumer that wanted the enumerable rows was parsing the prefix
+    # off `markush_reason` to get it. This is that prefix, as a field.
+    markush_kind: str = ""
     markush_reason: str = ""
     # A POINTER TO THE PICTURE, when the patent DREW this compound instead of
     # naming it. Set only by `sources/cid_first.py`, only for a cid whose own
@@ -774,6 +802,21 @@ class NamedCompound:
     # different amounts of trust, and an undifferentiated total would hide
     # which one is carrying the recovery.
     heading_transform: str = ""
+    # THE ONLY FIELD HERE THAT DOUBTS THE ROW ITSELF. Set by
+    # `sources/mass_gate.py`: "agrees" / "contradicts" / "" when the compound's
+    # own table row prints no `MS (ESI) (M+H)` and nothing could be weighed.
+    #
+    # Every other check in this package tests the NAME. This one tests whether
+    # the structure belongs to the COMPOUND NUMBER it was filed under, which is
+    # the failure a valid name cannot reveal — an anchored reagent parses,
+    # resolves and keeps a real InChIKey. Blank is NOT a pass: it means
+    # unchecked, and it is the majority (81 of 2,596 rows over a 10-patent
+    # bench carry a mass at all).
+    mass_check: str = ""
+    # Signed, in Da: structure mass + proton, minus what the patent printed.
+    # Carried so a reader can separate a lost methyl (14) from an anchored
+    # starting material (376) without recomputing anything.
+    mass_delta: str = ""
 
     @property
     def key(self) -> str:
@@ -965,6 +1008,7 @@ def _heading_structures(xml: str, patent_id: str,
             cid=_normalize_cid(heads[i][0]) or None,
             label=verdict.label, reason=verdict.reason,
             markush=is_markush,
+            markush_kind=_markush_kind(stereo, dropped, kind),
             markush_reason=(
                 ("relative_stereo:" + ",".join(stereo)) if stereo else
                 (f"stereo_stripped:{dropped.group(0).strip('-')}" if dropped else
@@ -1234,6 +1278,7 @@ def extract_names(xml: str, patent_id: str = "") -> list[NamedCompound]:
             patent_id=patent_id, name=name, smiles=smi, inchikey=ik, start=pos,
             label=verdict.label, reason=verdict.reason,
             markush=is_markush,
+            markush_kind="relative_stereo" if stereo else "",
             markush_reason=("relative_stereo:" + ",".join(stereo)) if stereo else "",
             repair=repair_by_pos.get(pos, "")))
 

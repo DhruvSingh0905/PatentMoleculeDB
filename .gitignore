@@ -62,3 +62,16 @@ patentdb/data/ref_ik_cache.json
 # v3 produced artifacts — the dump, its manifest and the workbook
 /patentdb3/out/
 /output_v3/
+
+# ── v2 run artifacts. v2 is reference-only and must never be ADDED to; these
+# are files a v2 run drops into its own data dir, not inputs anything reads.
+/patentdb_v2/data/*.json
+
+# ── Agent/editor scratch, and hand-made screenshots from investigations ──
+/.codex/
+/.playwright-mcp/
+/docs/backups/
+/docs/notes/
+/data/*.json
+*.bak
+/*.png
