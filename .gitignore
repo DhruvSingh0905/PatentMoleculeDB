@@ -75,3 +75,7 @@ patentdb/data/ref_ik_cache.json
 /data/*.json
 *.bak
 /*.png
+
+# ── v2, retired. Kept ON DISK for reference (see CLAUDE.md) but never
+# published: it is not the live package and must not be added to.
+/patentdb_v2/
