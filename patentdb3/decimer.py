@@ -37,6 +37,7 @@ import argparse
 import csv
 import shutil
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -150,7 +151,18 @@ def plan(pid: str, *, fetch: bool = True) -> tuple[list, list, list]:
     # runs here and here is where the image is not. That is a real cost: the
     # OCR route is free, exact, and self-checking, and DECIMER is none of the
     # three. Fetching locally first (`GP_ENABLED=1`) buys those back.
-    needs = [it for it in have if it.cid not in by_ocr] + missing
+    # ONLY SEND WHAT THE VM CAN ACTUALLY OPEN. An item with no local image is
+    # work ONLY if the VM can fetch it, which needs a Google Patents URL, which
+    # needs `GP_ENABLED`. Without that the manifest carries rows whose pixels
+    # exist nowhere, and every one comes back "image not staged and not
+    # fetchable" — 341 such rows on the first US10730863 run, against 67 real
+    # ones. That is not a harmless no-op: it inflates the manifest, and a
+    # results file that is 84% errors buries the measurement it was made for.
+    reachable = missing if config.GP_ENABLED else []
+    if missing and not config.GP_ENABLED:
+        print(f"{len(missing)} image(s) have no local file and no URL "
+              f"(GP_ENABLED=0) — excluded from the run, not sent to fail")
+    needs = [it for it in have if it.cid not in by_ocr] + reachable
     return needs, read, missing
 
 
@@ -245,6 +257,46 @@ def check_contract() -> None:
                 f"images.RESULT_FIELDS requires — fix it before running.")
 
 
+def _await_worker(session: str, expected: int, *, tries: int = 60,
+                  every: int = 45) -> bool:
+    """Poll the VM until `results.tsv` is complete. True when it is.
+
+    Complete means one header plus `expected` rows. A partial file is a
+    RUNNING job, not a finished one — `decimer_vm` flushes every ten images
+    so progress is visible, and downloading mid-flight would silently score a
+    fraction of the patent as if it were the whole.
+    """
+    probe = (
+        "import os\n"
+        "p='/content/work/results.tsv'\n"
+        "n=sum(1 for _ in open(p)) - 1 if os.path.exists(p) else -1\n"
+        "print('ROWS', n)\n")
+    for _ in range(tries):
+        # `timeout=` IS THE WHOLE POINT. Without it the probe inherits the same
+        # 600-second websocket stall this loop exists to work around, so a
+        # "45 second" poll blocks for ten minutes and the run looks hung when
+        # the worker has already finished. Measured: one poll line in 25
+        # minutes, while the VM had written all 67 rows.
+        try:
+            r = subprocess.run(["colab", "exec", "-s", session], input=probe,
+                               capture_output=True, text=True, timeout=90)
+        except subprocess.TimeoutExpired:
+            print("  worker: probe timed out, retrying", flush=True)
+            continue
+        got = -1
+        for line in (r.stdout or "").splitlines():
+            if line.strip().startswith("ROWS"):
+                try:
+                    got = int(line.split()[1])
+                except (IndexError, ValueError):
+                    pass
+        print(f"  worker: {got}/{expected}", flush=True)
+        if got >= expected:
+            return True
+        time.sleep(every)
+    return False
+
+
 def run(pid: str, session: str) -> int:
     """Stage, upload, recognise, download. Attaches to `session`; never
     allocates one and never stops one."""
@@ -278,10 +330,21 @@ def run(pid: str, session: str) -> int:
     # would run it at Python 3.12, which is what silently disabled
     # segmentation on the first run.
     _colab("upload", "-s", session, str(VM_SCRIPT), "/content/decimer_vm.py")
+
+    # DETACHED, THEN POLLED. `colab exec` holds a websocket and gives up after
+    # 600 seconds; the kernel keeps working, so a long job "fails" on this side
+    # while succeeding on that one. It cost three runs before it was fixed
+    # here. Loading the model alone can exceed the timeout, and a 400-image
+    # patent certainly will.
     _colab("exec", "-s", session, code=(
         "import subprocess\n"
-        f"rc = subprocess.run(['{VENV}/bin/python', '/content/decimer_vm.py'])\n"
-        "print('WORKER_RC', rc.returncode)\n"))
+        f"subprocess.Popen(['{VENV}/bin/python', '/content/decimer_vm.py'],\n"
+        "                 stdout=open('/content/worker.log','w'),\n"
+        "                 stderr=subprocess.STDOUT)\n"
+        "print('worker launched detached')\n"))
+    if not _await_worker(session, len(needs)):
+        print("worker did not finish; /content/worker.log on the VM has why")
+        return 1
     _colab("download", "-s", session, f"{REMOTE}/results.tsv",
            str(d / "results.tsv"))
     print(f"\nresults -> {d / 'results.tsv'}")
@@ -314,17 +377,20 @@ def ingest(pid: str) -> str:
         w.writeheader()
         w.writerows(keep + fresh)
     return (f"{pid}: {len(fresh)} row(s) merged into {IM.RESULTS}\n\n"
-            + IM.report())
+            + IM.benchmark())
 
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="patentdb3.decimer")
     ap.add_argument("action",
-                choices=("plan", "run", "ingest", "candidates"))
+                choices=("plan", "run", "ingest", "candidates", "benchmark"))
     ap.add_argument("patent_id", nargs="?", default="")
     ap.add_argument("-s", "--session", default="")
     a = ap.parse_args(argv[1:])
 
+    if a.action == "benchmark":
+        print(IM.benchmark())
+        return 0
     if a.action == "candidates":
         rows = candidates()
         print(f"{'patent':<16}{'VALIDATE':>9}{'RECOVER':>9}"

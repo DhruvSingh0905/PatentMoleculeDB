@@ -33,12 +33,28 @@ THE CONFIDENCE COLUMN, AND WHAT IT IS NOT
 in DECIMER >= 2.8; earlier builds have no such flag at all and the row says so
 in `error` rather than leaving a blank that reads as certainty.
 
-It is the model's own decoder confidence, collapsed to a MEAN over tokens. It
-is not calibrated, it is not comparable to another model's number, and it has
-not been shown here to correlate with being right. Treat it as a triage
-ORDERING until somebody measures it against the VALIDATE half — which is
-exactly what that half is for. Accuracy still comes from the known answers,
-never from a confidence or a recovery count.
+It is the model's own decoder confidence, collapsed to a MEAN over tokens.
+
+IT HAS NOW BEEN MEASURED AGAINST THE VALIDATE HALF, AND IT DOES NOT WORK.
+US10730863, 61 compounds whose structure the patent's own text already gave:
+
+    correct   n=57   mean 0.9923   min 0.9772   max 0.9976
+    WRONG     n=4    mean 0.9889   min 0.9832   max 0.9965
+
+The distributions overlap completely. The single most confident answer among
+the four wrong ones — compound 96, where a fluorine was read as a methyl —
+scored 0.997, HIGHER than 51 of the 57 correct answers. Catching all four
+errors means flagging 51 correct ones with them: an 89% false-alarm rate.
+There is no threshold.
+
+So the column is recorded and must NOT be used as a filter, a sort key, or a
+quality signal. It sits at ~0.99 whether the answer is right or wrong. It is
+kept because a negative result that is not written down gets re-discovered,
+and because a future model's confidence may behave differently — the column
+is the place to check that, not a claim that this one means anything.
+
+Accuracy comes from the known answers. Never from a confidence, never from a
+recovery count.
 """
 import csv
 import os
@@ -225,9 +241,26 @@ def main() -> int:
                     got = predict_SMILES(img, confidence=True)
                     if isinstance(got, tuple):
                         smiles = (got[0] or "").strip()
-                        toks = [c for _t, c in (got[1] or [])
-                                if isinstance(c, (int, float))]
-                        conf = round(sum(toks) / len(toks), 4) if toks else ""
+                        pairs = got[1] or []
+                        # `float(...)`, NOT `isinstance(c, float)`. DECIMER
+                        # returns NUMPY scalars, and `isinstance(np.float32(x),
+                        # float)` is False — an isinstance filter drops every
+                        # value, leaves an EMPTY list rather than raising, and
+                        # writes a blank confidence with no error beside it.
+                        # That silently produced 67 blank rows on the first
+                        # run and looked exactly like "the model offers none".
+                        toks = []
+                        for item in pairs:
+                            try:
+                                toks.append(float(item[1]))
+                            except (TypeError, ValueError, IndexError):
+                                pass
+                        if toks:
+                            conf = round(sum(toks) / len(toks), 4)
+                        elif pairs:
+                            # Values came back and none survived. Say so.
+                            err = (f"confidence unreadable: {len(pairs)} pair(s),"
+                                   f" first={pairs[0]!r}"[:150])
                     else:                       # older DECIMER: no confidence
                         smiles, conf = (got or "").strip(), ""
                 except TypeError:

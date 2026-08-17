@@ -372,6 +372,84 @@ def score(results_path: Path | None = None,
     return s
 
 
+def score_by_patent(results_path: Path | None = None,
+                    worklist_path: Path | None = None) -> dict:
+    """`{patent_id -> Score}`. THE HONEST UNIT OF ACCURACY IS ONE PATENT.
+
+    A corpus-wide percentage over these rows is close to meaningless, because
+    the compounds inside one patent are near-identical to each other — a
+    single scaffold with substituents varied around it. Recognise one
+    correctly and you will very likely recognise its forty siblings
+    correctly; miss the ring system and you miss all forty. So the effective
+    sample size is closer to the number of PATENTS than the number of rows,
+    and pooling rows across patents reports a confidence interval it has not
+    earned.
+
+    Concretely: 93.4% on US10730863 is one measurement, n=1 patent, not 61
+    independent trials. Two patents at 93% and 60% do not average to 76% in
+    any useful sense — they say the recogniser is document-dependent, which
+    is the thing worth knowing.
+
+    Report per patent. Aggregate only by saying how many patents were
+    measured and what the spread was.
+    """
+    rp = results_path or RESULTS
+    if not rp.exists():
+        return {}
+    expected = {(w.patent_id, w.cid): w for w in read_worklist(worklist_path)}
+    out: dict = {}
+    for r in csv.DictReader(open(rp), delimiter="\t"):
+        w = expected.get((r["patent_id"], r["cid"]))
+        if w is None:
+            continue
+        s = out.setdefault(r["patent_id"], Score())
+        if int(r.get("n_segments") or 0) > 1:
+            s.multi_segment += 1
+        got = (r.get("inchikey") or "").strip()
+        if w.job == "RECOVER":
+            if r.get("smiles"):
+                s.recovered += 1
+            continue
+        s.validated += 1
+        if not got:
+            s.no_smiles += 1
+        elif got == w.expected_inchikey:
+            s.agreed += 1
+        else:
+            s.disagreed += 1
+    return out
+
+
+def benchmark(results_path: Path | None = None,
+              worklist_path: Path | None = None) -> str:
+    """The running benchmark: one line per patent, scored independently.
+
+    Written to be re-read after every patent, so a second document either
+    confirms the first number or contradicts it — and contradiction is the
+    informative outcome. See `score_by_patent` for why this is not pooled.
+    """
+    per = score_by_patent(results_path, worklist_path)
+    scored = {p: s for p, s in per.items() if s.validated}
+    L = [f"{'patent':<16}{'VALIDATE':>9}{'agree':>7}{'wrong':>7}"
+         f"{'none':>6}{'accuracy':>10}{'RECOVER':>9}"]
+    for pid in sorted(per):
+        s = per[pid]
+        acc = f"{100*s.accuracy:.1f}%" if s.validated else "  n/a"
+        L.append(f"{pid:<16}{s.validated:>9}{s.agreed:>7}{s.disagreed:>7}"
+                 f"{s.no_smiles:>6}{acc:>10}{s.recovered:>9}")
+    if not scored:
+        L.append("\nNo patent has a VALIDATE row. Accuracy is UNKNOWN — a "
+                 "recovery count is not evidence the structures are right.")
+        return "\n".join(L)
+    accs = [s.accuracy for s in scored.values()]
+    L.append(f"\n{len(scored)} patent(s) scored. "
+             f"accuracy {100*min(accs):.1f}% to {100*max(accs):.1f}%")
+    if len(scored) == 1:
+        L.append("ONE patent is n=1. Compounds within a patent are near-"
+                 "identical, so this does not generalise to the next document.")
+    return "\n".join(L)
+
+
 def recovered(results_path: Path | None = None,
               worklist_path: Path | None = None) -> list:
     """Structures the recogniser produced, as `NamedCompound` rows.
