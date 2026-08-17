@@ -101,6 +101,38 @@ def test_the_window_clears_every_correct_structure_measured():
         assert 1.20 < mass_gate.tolerance(m) < 2.016
 
 
+def test_a_negative_mode_row_is_not_judged_as_if_it_were_positive():
+    """US10125101 prints 20 `[M-H]-` rows beside 44 `[M+H]+`.
+
+    Adding a proton to a negative-mode row makes a CORRECT structure read
+    2.015 Da light — outside the window, so it is reported as contradicting,
+    and `images.emit` then discards it from the truth set. 22 rows corpus-wide
+    were affected.
+
+    The markup is the real shape from that patent: a Unicode minus, as an XML
+    entity, inside a `<sup>` tag.
+    """
+    xml = ('<table>'
+           '<row><entry>1</entry><entry>MS (ESI<sup>+</sup>): m/z = 181 '
+           '[M + H]<sup>+</sup></entry></row>'
+           '<row><entry>2</entry><entry>MS (ESI&#x2212;): m/z = 179 '
+           '[M &#x2212; H]&#x2212;</entry></row></table>')
+    assert mass_gate.reported_masses(xml) == {"1": 181, "2": 179}
+    shifts = mass_gate.reported_shifts(xml)
+    assert shifts["1"] == pytest.approx(mass_gate.PROTON)
+    assert shifts["2"] == pytest.approx(-mass_gate.PROTON)
+
+    # ASPIRIN is 180.04 neutral: 181.05 as [M+H], 179.03 as [M-H]. Both rows
+    # describe the same correct structure and both must agree.
+    for cid in ("1", "2"):
+        v, _ = mass_gate.verdict(ASPIRIN, mass_gate.reported_masses(xml)[cid],
+                                 shifts[cid])
+        assert v == mass_gate.VERDICT_AGREES, cid
+    # and the bug this replaced: the same row judged as [M+H]
+    assert mass_gate.verdict(ASPIRIN, 179, mass_gate.PROTON)[0] == \
+        mass_gate.VERDICT_CONTRADICTS
+
+
 def test_a_large_error_is_still_caught_at_this_window():
     """The class the gate demonstrably resolves: whole-molecule substitution.
 

@@ -56,13 +56,20 @@ read as "checked and fine".
 
 THE TOLERANCE
 --------------
-The patent prints a NOMINAL integer (`561`) and this computes an EXACT
-monoisotopic mass (`561.17`). The two drift apart as a molecule grows, because
-every carbon adds ~3.4 mDa of defect and every hydrogen ~7.8 mDa. A flat
-window therefore fails at one end or the other: 0.5 Da rejects correct large
-structures, and 2.0 Da accepts a wrong small one. `tolerance()` scales, and it
-is deliberately generous — this gate exists to catch a 300 Da error, not to
-adjudicate an isotope.
+The patent prints a NOMINAL integer (`561`) and this computes an exact mass.
+`tolerance()` is FLAT at 1.5 Da and its own docstring carries the measurement
+that set it, including what it cannot see. Do not restate the number here —
+one of the two copies will drift, and it has already happened once.
+
+THE ADDUCT
+-----------
+Not always `[M+H]`. US10125101 prints 20 rows as `[M-H]-` beside 44 as
+`[M+H]+`, and adding a proton to a negative-mode row makes a CORRECT structure
+read 2.015 Da light — a confident wrong verdict, on a row that `images.emit`
+then discards from the truth set. `reported_shifts` reads the sign from the
+same row as the m/z, off the raw markup, and `verdict` takes it as an
+argument. Its default is `[M+H]` because most rows print that, and that
+default is now a stated fallback rather than an unexamined assumption.
 """
 from __future__ import annotations
 
@@ -81,7 +88,32 @@ REPORTED = re.compile(r"MS\s*\(ESI[^)]*\)[^0-9]{0,12}(\d{2,4})(?:\.\d+)?", re.I)
 # a row whose first cell is prose states no compound number.
 _ROW_CID = re.compile(r"\s*(\d+[A-Za-z]?)\s")
 
-PROTON = 1.00728          # M+H, the only adduct this corpus prints
+PROTON = 1.00728
+
+# THE ADDUCT IS NOT ALWAYS [M+H], AND ASSUMING IT WAS PRODUCED WRONG VERDICTS.
+# This constant's comment used to read "the only adduct this corpus prints".
+# It is not: US10125101 prints 20 rows as `[M - H]-` (negative mode) beside 44
+# as `[M + H]+`. Adding a proton to a negative-mode row makes it read 2.015 Da
+# light — outside the 1.5 Da window, so a CORRECT structure is reported as
+# contradicting, and `images.emit` then discards it from the truth set. 22
+# rows corpus-wide are affected and all of them would have been thrown away.
+#
+# The minus sign may be ASCII, U+2212, an en dash, or an XML entity for any of
+# those, and it may sit inside a `<sup>` tag. So this is matched against the
+# RAW markup, not a tag-stripped string — the same reason `cid_first`
+# `_drawing_refs` reads raw XML.
+_ADDUCT_MINUS = re.compile(
+    r"\[\s*M\s*(?:&#x2212;|&#8722;|&minus;|[-−–])\s*H\s*\]", re.I)
+
+
+def _shift(row_markup: str) -> float:
+    """Mass to ADD to a neutral structure to compare it with this row.
+
+    `+1.007` for `[M+H]`, `-1.007` for `[M-H]`. Defaults to `[M+H]`, which is
+    what 331 of the 353 adduct-bearing rows in this corpus print — but the
+    default is now a stated fallback rather than an assumption nobody checked.
+    """
+    return -PROTON if _ADDUCT_MINUS.search(row_markup) else PROTON
 
 VERDICT_AGREES = "agrees"
 VERDICT_CONTRADICTS = "contradicts"
@@ -142,7 +174,11 @@ def tolerance(nominal: float) -> float:
 
 
 def reported_masses(xml: str) -> dict[str, int]:
-    """`{compound number -> M+H the patent prints in that compound's row}`.
+    """`{compound number -> the m/z the patent prints in that compound's row}`.
+
+    THE VALUE IS THE PRINTED NUMBER, NOT A NEUTRAL MASS. Which adduct it
+    represents is a separate question — see `reported_shifts`, and pass both
+    to `verdict`.
 
     Read per `<row>` rather than per document, so a mass can only ever be
     attributed to the row that carries it. A row with no id, or no MS, is
@@ -161,6 +197,25 @@ def reported_masses(xml: str) -> dict[str, int]:
         cid = _ROW_CID.match(flat)
         if cid:
             out.setdefault(cid.group(1), int(hit.group(1)))
+    return out
+
+
+def reported_shifts(xml: str) -> dict[str, float]:
+    """`{compound number -> mass to add to the neutral structure}`.
+
+    Read from the SAME `<row>` as the m/z, on the raw markup so a `<sup>`
+    around the sign cannot hide it. Absent from the result when the row prints
+    no mass at all; `verdict` then falls back to `[M+H]`.
+    """
+    out: dict[str, float] = {}
+    for m in re.finditer(r"<row>.*?</row>", xml, re.S):
+        raw = m.group(0)
+        flat = re.sub(r"<[^>]+>", " ", raw)
+        if not REPORTED.search(flat):
+            continue
+        cid = _ROW_CID.match(flat)
+        if cid:
+            out.setdefault(cid.group(1), _shift(raw))
     return out
 
 
@@ -188,8 +243,15 @@ def _mass(smiles: str) -> "tuple[float, float] | None":
     return None if mol is None else (ExactMolWt(mol), MolWt(mol))
 
 
-def verdict(smiles: str, reported: "int | None") -> tuple[str, float | None]:
-    """`(verdict, delta)` for one structure against one reported M+H.
+def verdict(smiles: str, reported: "int | None",
+            shift: float = PROTON) -> tuple[str, float | None]:
+    """`(verdict, delta)` for one structure against one reported m/z.
+
+    `shift` is what the row's adduct adds to the neutral mass: `+PROTON` for
+    `[M+H]`, `-PROTON` for `[M-H]`. Defaulting it to `[M+H]` is safe only
+    because that is what most rows print — pass the real value from
+    `reported_shifts`, or a negative-mode row is judged 2.015 Da light and a
+    correct structure is reported as contradicting.
 
     `delta` is signed and in Da — positive means the structure is heavier than
     the patent says. It is carried so a reader can tell a lost methyl (14 Da)
@@ -204,7 +266,7 @@ def verdict(smiles: str, reported: "int | None") -> tuple[str, float | None]:
     # is the fair comparison. Reporting the nearer delta also keeps the number
     # a reader can act on: an anchored reagent is hundreds of Da out either
     # way, and a two-hydrogen recognition error is 2.0 either way.
-    deltas = [mass + PROTON - reported for mass in m]
+    deltas = [mass + shift - reported for mass in m]
     delta = min(deltas, key=abs)
     if abs(delta) <= tolerance(reported):
         return VERDICT_AGREES, delta
@@ -226,6 +288,7 @@ def check(rows: list, xml: str, patent_id: str = "") -> dict[str, int]:
     from . import losses as _losses
 
     ms = reported_masses(xml)
+    shifts = reported_shifts(xml)
 
     # THE GATE ANNOUNCES ITS OWN ABSENCE. Silently returning "everything is
     # unchecked" is how a safety check stays off for a week without anyone
@@ -253,7 +316,9 @@ def check(rows: list, xml: str, patent_id: str = "") -> dict[str, int]:
     tally = {VERDICT_AGREES: 0, VERDICT_CONTRADICTS: 0, "unchecked": 0}
     for r in rows:
         cid = getattr(r, "cid", None)
-        v, d = verdict(getattr(r, "smiles", ""), ms.get(str(cid)) if cid else None)
+        key = str(cid) if cid else ""
+        v, d = verdict(getattr(r, "smiles", ""), ms.get(key),
+                       shifts.get(key, PROTON))
         try:
             r.mass_check = v
             r.mass_delta = round(d, 2) if d is not None else ""
