@@ -287,17 +287,72 @@ IMAGE_OCR = os.environ.get("IMAGE_OCR", "0") == "1"
 #
 # A DEDICATED MARKUSH MODEL WAS EVALUATED AND REFUSED. MarkushGrapher-2 reads
 # a scaffold image AND its substituent table from pixels, scoring 48-56% on
-# its authors' own Markush benchmarks. We do not have that problem: the
-# substituent values are already clean text in the XML table cells, and
-# combining a scaffold with them is `rdkit.Chem.molzip`, which is exact and
-# free. Buying a two-environment 831M-parameter model to re-read text we
-# already hold is the wrong order of work. Its molecule-level USPTO figure
-# (89.8%, authors' own) is also below the 93.4% measured for DECIMER here, so
-# it was not a candidate for ordinary structures either.
+# its authors' own Markush benchmarks. It costs two python environments, vllm
+# and two model downloads, and exposes no callable API. Its molecule-level
+# USPTO figure (89.8%, authors' own) is below what we measure here for both
+# models below. Not adopted.
+#
+# CORRECTION TO AN EARLIER NOTE IN THIS FILE: it said the substituent values
+# are "already clean text in the XML table cells". That is true for one of the
+# two Markush patents and FALSE for the other — on US10125101 both the
+# scaffold and every substituent are images. The join is still exact; what
+# varies is how many pictures have to be read first.
 
 # The measured default. 93.4% on 61 known answers (US10730863), ~2s/image on a
 # T4. `>=2.8` is required, not incidental: 2.2.2 has no confidence output.
 DECIMER_ENABLED = os.environ.get("DECIMER_ENABLED", "1") == "1"
+
+# THE DEFAULT RECOGNISER. Measured on the SAME 61 compounds of US10730863
+# whose structure the patent's own text already gave:
+#
+#     MolScribe   59 / 61   96.7%
+#     DECIMER     57 / 61   93.4%
+#
+# and head to head, both right on 56, DECIMER alone on 1, MolScribe alone on 3.
+#
+# Accuracy is the smaller reason. MolScribe is the only one of the two that
+# can mark an ATTACHMENT POINT: it carries R-group symbols in its vocabulary
+# and emits them as isotope-tagged dummy atoms (`R1` -> `[1*]`), which is
+# exactly what `rdkit.Chem.molzip` consumes. DECIMER returns a bare SMILES and
+# has no way to say "the substituent goes here", so it cannot touch a Markush
+# scaffold at all. That path is measured: 29 of 29 compounds on US10125101,
+# every one legal and every one agreeing with the mass its own row prints.
+#
+# ONE PATENT IS n=1. Both figures come from one document, and compounds inside
+# one patent are near-identical — see `images.score_by_patent`. This default is
+# a starting position, not a settled result. Swap it with
+# `RECOGNISER=decimer`, and run both to compare: the results file is keyed on
+# (patent_id, cid, recogniser) so two models never overwrite each other.
+RECOGNISER = os.environ.get("RECOGNISER", "molscribe")
+
+# Everything a recogniser needs to run remotely, in one place, so adding a
+# third model is a dict entry rather than an edit spread across two files.
+# `python` is the interpreter version its dependencies resolve under —
+# MolScribe pins `torch<2.0` AND `timm==0.4.12`, whose torchvision needs
+# `torch>=2.0`; that is unsatisfiable above 3.9, where the old torchvision
+# wheels stop.
+#
+# `numpy<2` appears in BOTH because both models predate the numpy 2 ABI break
+# and neither declares it in its PyPI metadata. MolScribe's own
+# `requirements.txt` does pin it; the published package does not carry that
+# pin, so the resolver installs numpy 2 and `torch.from_numpy` dies with
+# "Numpy is not available". Read the repo's requirements file, not the
+# package metadata.
+RECOGNISERS = {
+    "molscribe": {
+        "python": "3.9",
+        "pip": ["numpy<2", "torch==1.13.1", "torchvision==0.14.1",
+                "MolScribe", "huggingface_hub", "rdkit"],
+        "checkpoint": ("yujieq/MolScribe", "swin_base_char_aux_1m.pth"),
+        "attachment_points": True,   # emits [1*]/[2*]/... and bare *
+    },
+    "decimer": {
+        "python": "3.11",
+        "pip": ["decimer>=2.8", "rdkit", "keras_preprocessing"],
+        "checkpoint": None,          # downloads itself on first import
+        "attachment_points": False,
+    },
+}
 
 # Off, and this one is a TRAP rather than a feature. `decimer-segmentation`
 # pins `tensorflow==2.10.1`, which caps `decimer` at 2.2.2 — silently
