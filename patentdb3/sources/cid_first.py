@@ -605,6 +605,31 @@ _IMG_FILE = re.compile(r'<img[^>]*file="([^"]+)"')
 # which `table_names` reads directly) from one it did not.
 _NAME_HDR = re.compile(r"\bname\b", re.I)
 
+_TABLE_BLOCK = re.compile(r"<tables\b([^>]*)>(.*?)</tables>", re.S)
+_TABLE_ID = re.compile(r'id="([^"]+)"')
+
+
+def _drawn_table_ids(xml: str) -> set[str]:
+    """Ids of the `<tables>` blocks that hold at least one `<chemistry>`.
+
+    Same block regex and same id regex as `uspto_xml.parse_tables`, so the ids
+    returned here are the ids `Table.table_id` carries. `Cell.text` is
+    tag-stripped, so the test has to be a raw-XML one.
+
+    BLOCK-LEVEL, NOT ROW-LEVEL, and deliberately. A substituent table prints
+    the fragment once and shares it down the column, so many of its rows carry
+    no `<chemistry>` of their own — US9670157 TABLE-US-00006 flags 20 rows over
+    9 drawings. A row test would throw those rows away; the question is whether
+    the TABLE draws anything, not whether this row does.
+    """
+    out: set[str] = set()
+    for m in _TABLE_BLOCK.finditer(xml):
+        if "<chemistry" in m.group(2):
+            im = _TABLE_ID.search(m.group(1) or "")
+            out.add(im.group(1) if im else "")
+    return out
+
+
 def _header_scaffolds(xml: str) -> dict[str, tuple[str, str]]:
     """`chemistry id in a row -> (table id, the scaffold's chemistry id)`.
 
@@ -653,13 +678,41 @@ def _markush_cids(xml: str) -> dict[str, str]:
     A table with a Name column is NOT included: the patent enumerated those
     itself and the name is already read.
 
-    KNOWN OVER-REACH, MEASURED AND LEFT ALONE. `build_columns` reads a
-    crystallography table — `x | y | z | U (eq)` over rows like
-    `H(21A) | 11662 | 5142 | 2184 | 33` — as a compound id with two substituent
-    columns, so US10376513 TABLE-US-00007 yields 28 "markush cids" that are
-    atom labels. It reaches nothing: `_resolve` only ever asks about cids the
-    assay reader produced, and the overlap there is ZERO
-    (`markush_marked == 0` on that patent).
+    THE TABLE MUST ACTUALLY DRAW SOMETHING. This function exists only to
+    overturn `_drawing_refs`, and `_drawing_refs` only ever claims anything
+    about a row that holds a `<chemistry>`. A table with no `<chemistry>`
+    anywhere therefore makes no false claim to overturn, and flagging its rows
+    is pure cost: `markush=True` withholds the InChIKey and `images.emit`
+    drops the compound from the recognition work list. So `_drawn_table_ids`
+    gates the scan.
+
+    Measured over the 137 cached patents. Before the gate, 18 tables and 1,241
+    rows. Five of those tables held ZERO `<chemistry>` between them and
+    contributed 89 rows:
+
+        US10376513 TABLE-US-00007  28  `x | y | z | U (eq)` crystallography,
+                                       rows like `H(21A) | 11662 | 5142 | ...`
+        US11649247 TABLE-US-00011  37  `ATOM | X | Y | Z` coordinates
+        US12011444 TABLE-US-00001   2  an HPLC gradient — `t (min) | 0 | 0.01`
+                                       over `Eluent A (%) | x | x | 95 | 95`,
+                                       whose `x` cells head three columns
+        US9718825  TABLE-US-00005   6  a real `Example no. | Ar | MS`, no image
+        US9718825  TABLE-US-00006  16  the same
+
+    After the gate, 13 tables and 1,152 rows: the 89 go, every real substituent
+    row stays.
+
+    Read the last two carefully. They ARE substituent tables and they were
+    still wrong to flag, because there is no drawing in them to be mistaken for
+    the molecule. That is why the gate asks whether the table draws, not
+    whether the substituent column is real.
+
+    THE COLUMN CLASSIFIER IS STILL WRONG AND IS NOT FIXED HERE.
+    `uspto_assays._HEADER_SUBST` matches a bare `X`/`Y`/`Z`, so `build_columns`
+    reads a coordinate axis and a gradient program as substituent columns, and
+    hands those tables a cid column that is a coordinate too. The gate stops
+    that reaching the artifact; it does not correct it. The correction belongs
+    in `classify_column`.
 
     A filter on "substituent values that are only numbers" was tried and
     removed. It does not hold — crystallography writes a Unicode minus
@@ -674,7 +727,12 @@ def _markush_cids(xml: str) -> dict[str, str]:
     except Exception as e:
         logger.warning("markush cid scan failed: %r", e)
         return out
+    drawn = _drawn_table_ids(xml)
     for t in blocks:
+        # No drawing in this table, so nothing here to overturn. First, and
+        # cheapest — it is a set lookup against a raw-XML scan done once.
+        if t.table_id not in drawn:
+            continue
         try:
             cols = build_columns(t)
         except Exception:
