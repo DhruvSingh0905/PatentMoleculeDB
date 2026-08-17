@@ -53,6 +53,19 @@ kept because a negative result that is not written down gets re-discovered,
 and because a future model's confidence may behave differently — the column
 is the place to check that, not a claim that this one means anything.
 
+WHAT MIGHT FIX IT, LATER. The released checkpoint is trained on >450 million
+generic image/SMILES pairs, none of them USPTO patent renders. A confidence
+that is uniformly ~0.99 on this corpus is what an out-of-distribution model
+looks like: it is equally sure everywhere because nothing here resembles what
+it was calibrated on. Fine-tuning on patent images could plausibly restore a
+usable spread, and the training data already exists as a by-product — every
+VALIDATE row is an (image, known-correct SMILES) pair, and `image_ocr` mints
+more of them for free wherever a patent prints the name inside the drawing.
+DECIMER publishes a fine-tuning path (TFRecord of image bytes plus tokenised
+SMILES). This is a note, not a plan: nothing here has been tried, and the
+column stays unusable until something measures a fine-tuned model the same
+way this one was measured.
+
 Accuracy comes from the known answers. Never from a confidence, never from a
 recovery count.
 """
