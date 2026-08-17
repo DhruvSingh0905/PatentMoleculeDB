@@ -582,3 +582,181 @@ def test_cid_69_is_still_blocked_by_the_out_of_scope_footnote_digit():
     out = _extract(_xml("US10376513"), "US10376513")
     if out:
         assert "69" not in {o.cid for o in out}
+
+
+# ── vertical records: one compound per RUN of rows ────────────────────────
+#
+# The layout and every string below are copied verbatim from US9265734
+# TABLE-US-00006 (label column, value column, seven fields per record, the
+# `(nM)` unit line on its own row). Hand-built only in the sense that seven
+# real records are stacked to clear `vertical_blocks`'s own measured floors
+# (>= 30 label rows, an anchor with >= 5 evenly spaced hits); no string is
+# invented. See "A THIRD SHAPE" in the module docstring.
+
+# (cid, name) — R119/R120/R122 are the patent's own first records; R122's name
+# is the wrapped one, split exactly where the source splits it.
+_VERT_RECORDS = [
+    ("R119", ["N-(2-aminophenyl)-6-(phenylsulfonamido)hexanamide"]),
+    ("R120", ["N-(6-(2-amino-4-fluorophenylamino)-6-oxohexyl)-4-fluoro-"
+              "N-methylbenzamide"]),
+    ("R122", ["N-(2-amino-4-fluorophenyl)-6-(6-fluoro-1-oxo-3,4-"
+              "dihydroisoquinolin-2(1H)-",
+              "yl)hexanamide"]),
+    ("R121", ["N-(7-(2-aminophenylamino)-7-oxoheptyl)-4-methylbenzamide"]),
+    ("R123", ["N-(6-(2-aminophenylamino)-6-oxohexyl)benzamide"]),
+    ("R124", ["N-(5-(2-aminophenylamino)-5-oxopentyl)benzamide"]),
+    ("R125", ["N-(2-aminophenyl)-6-(phenylsulfonamido)hexanamide"]),
+]
+
+
+def _vertical_xml(records=None, *, name_label: str = "Chemical_name",
+                   table_id: str = "TABLE-US-00006") -> str:
+    """US9265734 TABLE-US-00006's shape: two columns, fields down column 0."""
+    recs = _VERT_RECORDS if records is None else records
+
+    def row(a: str, b: str) -> str:
+        return f"<row><entry>{a}</entry><entry>{b}</entry></row>"
+
+    rows = []
+    for i, (cid, parts) in enumerate(recs, start=1):
+        rows.append(row(f"Record {i}", ""))
+        rows.append(row("Structure", ""))
+        rows.append(row("Comp id", cid))
+        rows.append(row("HDAC1 IC50", str(7000 + i)))
+        rows.append(row("(nM)", ""))
+        rows.append(row("HDAC3 IC50", str(1100 + i)))
+        rows.append(row("(nM)", ""))
+        rows.append(row(name_label, parts[0]))
+        for tail in parts[1:]:
+            rows.append(row("", tail))          # the source's own wrapped line
+        rows.append(row("LC/MS Calc'd (M + H)", "376.4"))
+        rows.append(row("LC/MS Obsv'd (M + H)", "376.1"))
+    return _table_xml("".join(rows), cols=2, table_id=table_id)
+
+
+def test_vert_name_label_is_a_separate_pattern_because_signal_a_cannot_match():
+    """`_NAME_HEADER` provably does not reach `Chemical_name`, which is why a
+    second pattern exists rather than a widened first one — `_` is a word
+    character, so `\\bname\\b` finds no boundary in front of `name`."""
+    from patentdb3.sources.table_names import _NAME_HEADER, _VERT_NAME_LABEL
+
+    assert not _NAME_HEADER.search("Chemical_name")
+    for label in ("Chemical_name", "Name", "Compound Name", "IUPAC name",
+                  "chemical name:"):
+        assert _VERT_NAME_LABEL.match(label), label
+    # Full-string match: the other fields sharing that column must not read as
+    # names, and neither must a real name that happens to contain the word.
+    for label in ("Structure", "Comp id", "LC/MS Calc'd (M + H)",
+                  "HDAC1 IC50 (nM)", "Record 1", "",
+                  "N-(2-aminophenyl)-6-(phenylsulfonamido)hexanamide"):
+        assert not _VERT_NAME_LABEL.match(label), label
+
+
+def test_vertical_candidates_read_the_name_field_and_its_record_id():
+    from patentdb3.sources.table_names import _vertical_candidates
+    from patentdb3.sources.uspto_xml import parse_tables
+
+    got = _vertical_candidates(parse_tables(_vertical_xml()), set())
+    assert len(got) == len(_VERT_RECORDS)
+    assert [c[4] for c in got] == [r[0] for r in _VERT_RECORDS]
+    assert all(c[0] == "TABLE-US-00006" for c in got)
+    assert all(c[3] == "vertical" for c in got)
+    assert [c[1] for c in got] == list(range(len(_VERT_RECORDS)))
+    # Nothing but the name field is offered: no cid, no IC50, no LC/MS mass.
+    assert got[0][5] == _VERT_RECORDS[0][1][0]
+    assert all("IC50" not in c[5] and "376" not in c[5] for c in got)
+
+
+def test_vertical_name_rejoins_a_label_less_wrapped_row():
+    """R122's name spills onto a row with an EMPTY label. It is one name."""
+    from patentdb3.sources.table_names import _vertical_candidates
+    from patentdb3.sources.uspto_xml import parse_tables
+
+    got = _vertical_candidates(parse_tables(_vertical_xml()), set())
+    r122 = next(c for c in got if c[4] == "R122")
+    assert r122[6] == 2                       # rows_joined
+    assert r122[5].endswith("2(1H)- yl)hexanamide")
+    assert all(c[6] == 1 for c in got if c[4] != "R122")
+
+
+def test_vertical_does_not_absorb_a_finished_name():
+    """A label-less row after a COMPLETE name starts nothing and joins nothing
+    — the same `_UNFINISHED_TAIL` rule `_records` applies to the row layout.
+
+    R122 is the record edited, and it has to be: `_vertical_anchor` cuts on a
+    label whose spacing is EVEN (modal stride, >= 80% of strides), so the one
+    record already carrying an extra row is the only one that can carry this
+    one. Give the extra row to any other record and the detector — correctly —
+    stops recognising the table at all.
+    """
+    from patentdb3.sources.table_names import _vertical_candidates
+    from patentdb3.sources.uspto_xml import parse_tables
+
+    recs = list(_VERT_RECORDS)
+    finished = "N-(2-aminophenyl)-6-(phenylsulfonamido)hexanamide"
+    recs[2] = ("R122", [finished, "4-(4-chlorophenyl)-1-methylpiperidine"])
+    got = _vertical_candidates(parse_tables(_vertical_xml(recs)), set())
+    r122 = next(c for c in got if c[4] == "R122")
+    assert r122[6] == 1
+    assert r122[5] == finished
+
+
+def test_vertical_pass_skips_a_block_the_row_wise_pass_already_read():
+    """`skip` is what makes this pass strictly additive — a block cannot be
+    read both ways and emit the same compound twice."""
+    from patentdb3.sources.table_names import _vertical_candidates
+    from patentdb3.sources.uspto_xml import parse_tables
+
+    tabs = parse_tables(_vertical_xml())
+    assert _vertical_candidates(tabs, {"TABLE-US-00006"}) == []
+
+
+def test_vertical_detector_is_not_reimplemented_here():
+    """This module calls `uspto_assays.vertical_blocks`; it does not own a
+    second copy of the detection. Asserted so a later 'small local tweak'
+    to the thresholds has to break a test to happen."""
+    from patentdb3.sources import table_names, uspto_assays
+
+    assert table_names.vertical_blocks is uspto_assays.vertical_blocks
+    src = (table_names.__file__ and
+           open(table_names.__file__, encoding="utf-8").read())
+    for private in ("_VERT_MAX_LABEL_UNIQ", "_VERT_MIN_LABEL_ROWS",
+                    "_VERT_MIN_ANCHOR_HITS", "_vertical_anchor",
+                    "_vertical_pairs"):
+        assert f"{private} =" not in src and f"def {private}" not in src
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_extract_resolves_vertical_records_through_opsin():
+    out = _extract(_vertical_xml(), "US9265734")
+    if not out:
+        pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
+    assert len(out) == len(_VERT_RECORDS)
+    assert all(o.column_signal == "vertical" for o in out)
+    assert {o.cid for o in out} == {r[0] for r in _VERT_RECORDS}
+    assert all(o.smiles and o.inchikey for o in out)
+    # The wrapped one is rejoined and then dewrapped — the glue space this
+    # module injected is removed by TARGETED, exactly as `_variants` documents.
+    r122 = next(o for o in out if o.cid == "R122")
+    assert r122.rows_joined == 2
+    assert r122.dewrap == "targeted"
+    assert " " not in r122.name
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_us9265734_vertical_measured_yield():
+    """MEASURED 2026-08-17 against the cached XML, reader only, no heal:
+    TABLE-US-00006 offers 199 `Chemical_name` fields, all 199 carry a `Comp id`,
+    OPSIN resolves 199 of 199 (0 refused), 7 needed the label-less rejoin and
+    all 7 then needed TARGETED dewrap. Before this pass the same call returned
+    0. Re-measure before editing any number here."""
+    out = _extract(_xml("US9265734"), "US9265734")
+    if not out:
+        pytest.skip("OPSIN produced nothing — treat as unavailable, not a failure")
+    vert = [o for o in out if o.column_signal == "vertical"]
+    assert len(vert) == 199
+    assert all(o.table_id == "TABLE-US-00006" for o in vert)
+    assert len({o.cid for o in vert}) == 199
+    assert all(o.smiles for o in vert)
+    assert sum(1 for o in vert if o.rows_joined > 1) == 7
+    assert all(o.dewrap == "targeted" for o in vert if o.rows_joined > 1)

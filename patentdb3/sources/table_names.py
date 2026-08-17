@@ -194,6 +194,71 @@ every embedded space correctly, `ch_as_ey` proposes the `eyloro` -> `chloro`
 fix, and the result still fails OPSIN purely on the trailing `2`. That cell
 is the reason `ch_as_ey` contributes 0 of the 18 above.
 
+A THIRD SHAPE: THE VERTICAL RECORD, WHERE A COMPOUND IS A RUN OF ROWS
+------------------------------------------------------------------------
+Signals A and B both assume one compound per ROW and one field per COLUMN.
+US9265734 TABLE-US-00006 publishes 199 HDAC inhibitors the other way round —
+the FIELD NAMES run down column 0 and each compound is a consecutive run of
+rows:
+
+    Record 1      | -
+    Structure     | <chemistry>
+    Comp id       | R119
+    HDAC1 IC50    | 7000
+    (nM)          | -
+    HDAC3 IC50    | 1100
+    (nM)          | -
+    Chemical_name | N-(2-aminophenyl)-6-(phenylsulfonamido)hexanamide
+
+Read a row at a time, column 1 is in turn a cid, two IC50 values and an IUPAC
+name, so no single `Column.kind` describes it and `_name_columns` finds
+nothing at all. Measured: `extract_table_names("US9265734")` returned **0**
+before this section existed, against 199 `Chemical_name` fields the patent
+states in full.
+
+**THE DETECTOR IS IMPORTED, NOT REIMPLEMENTED.**
+`uspto_assays.vertical_blocks` already decides whether a block is vertical and
+where each record starts, and it is public for exactly this reason — its own
+docstring says "Public because BOTH tracks lose this layout". Its thresholds
+(`_VERT_MAX_LABEL_UNIQ`, `_VERT_MIN_LABEL_ROWS`, the evenly-spaced-anchor
+rule) were scored against all 122 two- and three-column tables in the 137
+cached patents and match exactly one block. Copying that here is the specific
+mistake `sources/opsin.py` exists to prevent: three private copies of one
+wrapper all carried the same bug, and fixing the copy in front of you looked
+like fixing it. So this module calls `vertical_blocks` and adds only the
+question the assay reader has no reason to ask — *which pair is the name*.
+
+What IS local is the pair of label spellings, `_VERT_ID_LABEL` and
+`_VERT_NAME_LABEL`. Those are one-line constants of the same class as
+`_PROSE_LIKE` and `_CHEM_SUBSTR` above, kept local under the same rule this
+module already states — it depends on `uspto_assays`'s public functions and
+never on its underscore-prefixed internals, so `_VERT_CID_LABEL` is not
+importable without breaking that. Neither constant WIDENS anything: signal
+A's `_NAME_HEADER` (`\bname\b`) does not match `Chemical_name` at all, because
+`_` is a word character and there is no word boundary in front of `name` —
+and widening it to reach one table would change how every header in 137
+patents scores. A separate pattern for a separate layout is the precedent
+`uspto_assays._VERT_CID_LABEL` sets, for that same reason, one function away.
+
+The pass is gated to blocks that produced no row-wise candidate at all, which
+is the same anti-regression rule `uspto_assays.extract_from_tables`'s PASS 4
+applies to the assay side: it can only ADD. `column_signal == "vertical"`
+marks what it added, so the yield is readable off the artifact without
+re-deriving it from the XML.
+
+**A NAME WRAPS DOWNWARD HERE TOO, AND WITH NO LABEL AT ALL.** 7 of the 199
+records spill the name onto a following row whose label cell is EMPTY:
+
+    Chemical_name | N-(2-amino-4-fluorophenyl)-6-(6-fluoro-1-oxo-3,4-dihydroisoquinolin-2(1H)-
+                  | yl)hexanamide
+
+That is the `_records` case (see below) in a different layout, so it reuses
+the same two constants rather than new ones: a label-less row joins the name
+above it only when that name is visibly UNFINISHED (`_UNFINISHED_TAIL`), and
+the fragments are glued with `_REJOIN_GLUE` and handed to the same
+`dewrap_candidates` every other cell goes through. `rows_joined` counts them,
+so TARGETED-first ordering in `_variants` applies unchanged.
+
 WHAT THIS DOES NOT DO
 ------------------------
 No Markush enumeration (the patent already enumerated these) and no filtering
@@ -222,7 +287,8 @@ from .dewrap import dewrap_candidates
 from .name_repair import repair_names as _repair_names
 from .opsin import batch as _opsin_batch_shared
 from .reagents import classify as _classify_reagent
-from .uspto_assays import CID, UNKNOWN, build_columns, normalize_cid
+from .uspto_assays import (
+    CID, UNKNOWN, build_columns, normalize_cid, vertical_blocks)
 from .uspto_xml import Table, assemble_blocks, description_text, parse_tables
 
 logger = logging.getLogger(__name__)
@@ -266,6 +332,28 @@ def _looks_chem_shaped(text: str) -> bool:
         return False
     return bool(_CHEM_SUBSTR.search(text)) or (
         text.count("-") + text.count("[") + text.count("(")) >= 3
+
+
+def _accept(signal: str, cid: str | None, raw: str) -> bool:
+    """Is this cell worth asking OPSIN about? ONE definition, three callers'
+    worth of layouts.
+
+    Factored out when the vertical layout was added, so a candidate found by
+    reading a table sideways and one found by reading it downward face exactly
+    the same three gates — a second copy of these lines would be the drift this
+    module's `cell_resolution` docstring already argues against for the OPSIN
+    verdict itself.
+
+    Signal B is weaker than an explicit header, so it earns trust only when the
+    row also carries its own id (see module docstring — this is what keeps
+    wrapped legend prose out). Signal A and the vertical layout both name their
+    field outright and are held to no such condition.
+    """
+    if len(raw) < MIN_CELL_LEN:
+        return False
+    if _PROSE_LIKE.search(raw):
+        return False
+    return not (signal == "unlabeled" and not cid)
 
 
 def _column_headers(table: Table) -> list[str]:
@@ -462,6 +550,105 @@ def _records(table: Table, cid_idx: int | None,
     return out
 
 
+# ── vertical records: one compound per RUN of rows ───────────────────────
+#
+# See "A THIRD SHAPE" in the module docstring. The DETECTION is
+# `uspto_assays.vertical_blocks`, imported; only the two label spellings and
+# the name field's own downward wrap live here.
+
+# The vertical layout's spelling of "this pair is the compound's id". A
+# verbatim local copy of `uspto_assays._VERT_CID_LABEL` — that name is
+# private, and this module's contract (module docstring, "WHAT COUNTS AS A
+# NAME COLUMN") is that it imports that module's public functions and none of
+# its underscore-prefixed internals. Same rule that already makes `_PROSE_LIKE`
+# and `_CHEM_SUBSTR` local copies rather than imports.
+_VERT_ID_LABEL = re.compile(
+    r"^\s*(?:comp(?:ound)?|cpd|example|entry)\s*"
+    r"(?:\.?\s*(?:id|no|number|#))?\s*[:.]?\s*$", re.I)
+
+# `Chemical_name`, `Compound Name`, `IUPAC name`, bare `Name`. NOT `_NAME_HEADER`
+# widened: `\bname\b` cannot match `Chemical_name` (no word boundary after `_`),
+# and loosening the pattern that scores every column header in 137 patents to
+# buy one table is the trade `uspto_assays._VERT_CID_LABEL` refuses by name.
+# A FULL-STRING match, unlike signal A's substring search, because a vertical
+# label IS the whole field name — `Structure` and `LC/MS Calc'd (M + H)` sit in
+# the same column and must not be read as name fields.
+_VERT_NAME_LABEL = re.compile(
+    r"^\s*(?:(?:chemical|chem|compound|cpd|iupac|systematic|product)"
+    r"[\s_.\-]*)*names?\s*[:.]?\s*$", re.I)
+
+# `vertical_blocks` reads `(col 0, col 1)` of a two-column tgroup, so every
+# value it returns came from column index 1. Recorded on the row rather than
+# left at 0 so `TableName.column_index` still names the cell it was read from.
+_VERT_VALUE_COL = 1
+
+
+def _vertical_candidates(
+        tables: list[Table], skip: set[str],
+) -> list[tuple[str, int, int, str, str | None, str, int]]:
+    """Name candidates from vertical-record blocks, in `cell_resolution` shape.
+
+    `skip` holds the table ids that already produced a row-wise candidate. A
+    block in that set is left alone, so this pass can only ADD — the same
+    anti-regression gate `uspto_assays.extract_from_tables`'s PASS 4 applies on
+    the assay side, and for the same reason: a layout read two ways would emit
+    the same compound twice.
+
+    `row_index` is the RECORD's index within the block, not a `<row>` index.
+    A vertical record spans a dozen rows; the record ordinal is what identifies
+    it, and it is what the assay side of the same block counts by.
+
+    Takes RAW tgroups, not `assemble_blocks`'s grid: `_header_rows_of` promotes
+    this block's first data row (`Comp id | R119`) to a header and loses that
+    compound with it — measured at 198 records instead of 199, the same defect
+    `_vertical_pairs` documents.
+    """
+    by_block: dict[str, list[Table]] = {}
+    for t in tables:
+        by_block.setdefault(t.table_id, []).append(t)
+
+    out: list[tuple[str, int, int, str, str | None, str, int]] = []
+    for block_id, raw_block in by_block.items():
+        if block_id in skip:
+            continue
+        try:
+            blocks = vertical_blocks(raw_block)
+        except Exception as e:                 # a malformed block scores nothing
+            logger.warning("table_names: %s — vertical_blocks failed: %r",
+                            block_id, e)
+            continue
+        for bi, block in enumerate(blocks):
+            cid = ""
+            for lab, val in block:
+                if val and _VERT_ID_LABEL.match(lab):
+                    cid = normalize_cid(val)   # "" for a non-id; its own gate
+                    if cid:
+                        break
+            # Fragments of each name field, in order. `cur` is the open field:
+            # a labelled row that is not a name label closes it, and a
+            # label-less row extends it only while the text so far ends
+            # mid-name (see `_UNFINISHED_TAIL` — 7 of US9265734's 199 records
+            # wrap this way, and nothing else in the block has a blank label).
+            fields: list[list[str]] = []
+            cur: list[str] | None = None
+            for lab, val in block:
+                if _VERT_NAME_LABEL.match(lab):
+                    cur = [val] if val else None
+                    if cur is not None:
+                        fields.append(cur)
+                elif lab:
+                    cur = None
+                elif cur and val and _UNFINISHED_TAIL.search(cur[-1]):
+                    cur.append(val)
+                else:
+                    cur = None
+            for parts in fields:
+                out.append((block_id, bi, _VERT_VALUE_COL, "vertical",
+                            cid or None, _REJOIN_GLUE.join(parts).strip(),
+                            len(parts)))
+    return out
+
+
 # ── OPSIN ───────────────────────────────────────────────────────────────
 
 def _opsin_batch(names: list[str], fmt: str, patent_id: str = "") -> list[str]:
@@ -495,7 +682,7 @@ class TableName:
     table_id: str
     row_index: int
     column_index: int
-    column_signal: str           # "header" | "unlabeled"
+    column_signal: str           # "header" | "unlabeled" | "vertical"
     cid: str | None = None       # the patent's own compound number, if present
     source: str = "table"
     label: str = "compound"
@@ -567,7 +754,8 @@ def cell_resolution(xml: str, patent_id: str = "") -> tuple[
     exist.
     """
     try:
-        blocks = assemble_blocks(parse_tables(xml))
+        tabs = parse_tables(xml)
+        blocks = assemble_blocks(tabs)
     except Exception as e:
         logger.warning("table_names: %s — parse_tables/assemble_blocks failed: %r",
                         patent_id, e)
@@ -591,17 +779,18 @@ def cell_resolution(xml: str, patent_id: str = "") -> tuple[
         for ri, cid_text, cells, n_rows in _records(t, cid_idx, name_cols):
             cid = normalize_cid(cid_text) if cid_text else None
             for ci, raw in cells.items():
-                if len(raw) < MIN_CELL_LEN:
-                    continue
-                if _PROSE_LIKE.search(raw):
-                    continue
                 signal = "header" if ci in sig_a else "unlabeled"
-                # Signal B is weaker than an explicit header; it only earns
-                # trust when the row also carries its own id (see module
-                # docstring — this is what keeps wrapped legend prose out).
-                if signal == "unlabeled" and not cid:
+                if not _accept(signal, cid, raw):
                     continue
                 candidates.append((t.table_id, ri, ci, signal, cid, raw, n_rows))
+
+    # 1b. The vertical layout, on blocks the row-wise pass found nothing in.
+    #     `skip` is what makes this strictly additive — see
+    #     `_vertical_candidates` and "A THIRD SHAPE" in the module docstring.
+    seen_blocks = {c[0] for c in candidates}
+    candidates.extend(
+        c for c in _vertical_candidates(tabs, seen_blocks)
+        if _accept(c[3], c[4], c[5]))
 
     if not candidates:
         return [], {}
