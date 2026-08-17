@@ -34,6 +34,7 @@ import functools
 import json
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -1531,6 +1532,222 @@ def extract_inverted(tables: list[Table], bin_key: dict, *,
     return out
 
 
+# ── vertical records: one compound per BLOCK of rows ──────────────
+
+# The field NAMES run down column 0; each compound is a consecutive run of rows,
+# not a row. `build_columns` cannot represent this at all: its loop (l.1229)
+# emits one `Column.kind` per column INDEX for the whole table, and `Column`
+# (l.421) holds one `kind`. Column 1 of such a table is in turn a cid, two IC50
+# values and an IUPAC name, so whatever single verdict it gets is wrong for most
+# of its cells. Measured on US9265734 TABLE-US-00006 the verdict was
+# `substituent`; `assay_cols` came back empty and `extract_from_tables` skipped
+# the block at its `cid_col is None or (not assay_cols and not prose_cols)`
+# guard (l.2118). 199 compounds, 371 measurements and 199 IUPAC names, 0
+# records, and — because `find_gaps` drops the block on its payload ratio
+# (gap.py:530) and `usable_yield` never sees it (gap.py:826) — no loss logged
+# either. This is the silent-block failure, not the unread-ids one.
+#
+# It is not the heal loop's to fix. The loop writes regexes: value_pattern,
+# column_map, bin key. None of those can say "a compound is twelve rows".
+#
+# DETECTION. Column 0 of a real row-per-compound table holds compound IDS, which
+# are distinct. Column 0 of a vertical table holds FIELD NAMES, which repeat once
+# per record. `distinct(col0)/count(col0)` therefore separates the two, and on
+# this corpus it separates them by a factor of five with an empty gap:
+#
+#     0.087  US9265734   TABLE-US-00006  <- vertical
+#     0.441  US8957068   TABLE-US-00025  <- next lowest, an ordinary table
+#     0.505  US10995073  TABLE-US-00011
+#     ...    118 more, all higher
+#
+# All 122 two- and three-column tables in the 137 cached patents with >=30
+# populated col-0 cells were scored (2026-08-17). One matched. 0.35 sits INSIDE
+# the gap, not at the edge of either population — same argument as _CID_MAX_LEN.
+_VERT_MAX_LABEL_UNIQ = 0.35
+# Below this the ratio is noise: a 6-row table of three repeated labels scores
+# 0.5 by accident. Also what keeps US20250170122 TABLE-US-00004 out — a 366-row
+# STRUCTURE GALLERY whose col 0 is 366 <chemistry> refs under one 'Structure'
+# label and whose block contains zero numeric tokens. It has no measurements to
+# take; its 365 labelled drawings belong to the image route, not here.
+_VERT_MIN_LABEL_ROWS = 30
+_VERT_MIN_ANCHOR_HITS = 5
+
+# A parenthesised label on its own line is the typesetter wrapping the previous
+# label, not a field: US9265734 prints `HDAC1 IC50` and `(nM)` as two rows, the
+# second with an empty value cell. Joining them is what lets `_unit_from` read
+# the unit off the label — without it every one of the 371 values is unitless
+# and `is_usable` is False for all of them.
+_VERT_WRAPPED_LABEL = re.compile(r"^\(.*\)$")
+
+# `_CID_LABEL` (l.135) does not match `Comp id` — it spells the word out as
+# `compounds?`. This is the vertical layout's own spelling of the same idea, and
+# it is deliberately a SEPARATE pattern: widening `_CID_LABEL` would change how
+# 137 patents' id columns parse, to buy one table.
+_VERT_CID_LABEL = re.compile(
+    r"^\s*(?:comp(?:ound)?|cpd|example|entry)\s*"
+    r"(?:\.?\s*(?:id|no|number|#))?\s*[:.]?\s*$", re.I)
+
+# THE IUPAC NAMES IN THIS LAYOUT ARE NOT READ, AND THAT IS A REAL GAP.
+# Each of the 199 blocks on US9265734 TABLE-US-00006 carries a
+# `Chemical_name` field holding a full IUPAC name — 199 compounds that OPSIN
+# would resolve with no image recognition at all, which is the highest-yield
+# route this package has. `extract_table_names` returns 0 for this patent,
+# because the name track reads a row per compound too.
+#
+# No pattern is defined here for it on purpose. A constant nothing calls is
+# the leftover this codebase refuses to keep, and the hook belongs in
+# `sources/table_names.py`, not in the assay reader. Written down so the gap
+# is a recorded number rather than something rediscovered later.
+
+
+def _vertical_pairs(tables: list[Table]) -> list[list[str]]:
+    """Every `(label, value)` row of a block, header rows INCLUDED.
+
+    Header rows are included on purpose. `_header_rows_of` (l.734) promotes the
+    leading run of label-looking rows, and on a vertical table the first such row
+    is record 1's DATA: US9265734's assembled grid reports its header as
+    `['Comp id', 'R119']`, which is compound R119's id. Reading the raw tgroups
+    and taking every row back recovers 199 cids where the assembled view gives
+    198 — and the two measurements attached to the lost one.
+    """
+    pairs: list[list[str]] = []
+    for t in tables:
+        for row in list(t.header_rows) + list(t.body_rows):
+            lab = row[0].text.strip() if len(row) > 0 else ""
+            val = row[1].text.strip() if len(row) > 1 else ""
+            if not lab and not val:
+                continue
+            # A wrapped unit line carries no value of its own; fold it back onto
+            # the label it belongs to rather than emitting a field named `(nM)`.
+            if pairs and not val and _VERT_WRAPPED_LABEL.match(lab):
+                pairs[-1][0] = f"{pairs[-1][0]} {lab}"
+                continue
+            pairs.append([lab, val])
+    return pairs
+
+
+def _vertical_anchor(pairs: list[list[str]]) -> str | None:
+    """The label that starts each record, or None if none does.
+
+    Chosen by EVENNESS, not by frequency. `(nM)` and `(M + H)` appear twice per
+    record in US9265734, so cutting on the most frequent label would halve every
+    block. The record boundary is the label whose occurrences are evenly spaced:
+    `Structure` recurs every 12 rows, 199 times, with no exception.
+    """
+    counts = Counter(l for l, _ in pairs)
+    for lab, n in counts.most_common():
+        if n < _VERT_MIN_ANCHOR_HITS:
+            break                        # most_common is descending; done
+        pos = [i for i, (l, _) in enumerate(pairs) if l == lab]
+        strides = [b - a for a, b in zip(pos, pos[1:])]
+        if not strides:
+            continue
+        modal, hits = Counter(strides).most_common(1)[0]
+        if modal >= 3 and hits >= 0.8 * len(strides):
+            return lab
+    return None
+
+
+def vertical_blocks(tables: list[Table]) -> list[list[list[str]]]:
+    """One compound per returned block, as `[label, value]` pairs. [] if not.
+
+    Public because BOTH tracks lose this layout, not just the assay one:
+    `table_names.extract_table_names` returns 0 for US9265734, so its 199
+    `Chemical_name` cells are invisible to the identity route as well. One
+    detector, called from both sides — a second implementation would be a second
+    thing to keep true.
+    """
+    # Per TGROUP, not per block. A block's tgroups routinely disagree on column
+    # count (see `Table.col_widths`), and this block is the case in point:
+    # US9265734 TABLE-US-00006 opens with a 1-column caption tgroup and carries
+    # all 2,595 label/value rows in the second. Gating on `tables[0].n_cols`
+    # rejected the whole block on the strength of its title bar and returned 0
+    # records — the fix that made this function fire, with no threshold moved.
+    two = [t for t in tables if t.n_cols == 2]
+    if not two:
+        return []
+    pairs = _vertical_pairs(two)
+    labels = [l for l, _ in pairs if l]
+    if len(labels) < _VERT_MIN_LABEL_ROWS:
+        return []
+    if len(set(labels)) > _VERT_MAX_LABEL_UNIQ * len(labels):
+        return []                        # col 0 holds ids, not field names
+    anchor = _vertical_anchor(pairs)
+    if anchor is None:
+        return []
+    cut = [i for i, (l, _) in enumerate(pairs) if l == anchor]
+    blocks = [pairs[s:e] for s, e in zip(cut, cut[1:] + [len(pairs)])]
+    # A repeating label column with no measurements in it is a characterisation
+    # listing or a structure gallery, and importing it would re-add exactly the
+    # noise column classification exists to remove. Same gate, same reason, as
+    # the caption fallback in `build_columns` (l.1318).
+    lem = _assay_lemma_re()
+    scored = sum(1 for b in blocks
+                 if any(v and lem.search(l.lower()) and parse_value(v) for l, v in b))
+    return blocks if scored >= 0.5 * len(blocks) else []
+
+
+def extract_vertical(tables: list[Table], *, table_id: str) -> list[AssayRecord]:
+    """Assay records from a vertical-record block.
+
+    US9265734 TABLE-US-00006 publishes 199 HDAC inhibitors like this:
+
+        Record 1      | -
+        Structure     | <chemistry>
+        Comp id       | R119
+        HDAC1 IC50    | 7000
+        (nM)          | -
+        HDAC3 IC50    | 1100
+        (nM)          | -
+        Chemical_name | N-(2-aminophenyl)-6-(phenylsulfonamido)hexanamide
+
+    Measured yield of this function on that block: 199 blocks, 199 cids, 371
+    usable records (HDAC3 199, HDAC1 172 — 27 blocks leave HDAC1 blank), unit
+    `nM` on all 371, read from the folded label. The patent today produces 47
+    records over 10 distinct cids; 2 of the 199 cids are already among those 10,
+    so this is +197 distinct compounds.
+    """
+    out: list[AssayRecord] = []
+    lem = _assay_lemma_re()
+    for block in vertical_blocks(tables):
+        cid = ""
+        for lab, val in block:
+            if val and _VERT_CID_LABEL.match(lab) and _CID_PAT.match(val):
+                cid = normalize_cid(val)
+                break
+        if not cid:
+            # No id means no record. Inventing one from position would file real
+            # measurements under the wrong compound, which is the failure mode
+            # `_column_groups` exists to avoid (l.2119 comment) and is strictly
+            # worse than losing them.
+            continue
+        for lab, val in block:
+            if not val or not lem.search(lab.lower()):
+                continue
+            parsed = parse_value(val)
+            if not parsed:
+                continue
+            # The unit is in the label's own parenthetical, which `_vertical_pairs`
+            # folded back on. HEADER FIRST is the same precedence rule
+            # `build_columns` applies (l.1311): a label is a statement about this
+            # field, a caption is prose about the biology.
+            unit = parsed.get("unit") or _unit_from(lab)
+            name = re.sub(r"\s*\([^)]*\)\s*$", "", lab).strip()
+            out.append(AssayRecord(
+                cid=cid,
+                assay_name=name or "unnamed assay",
+                value_numeric=parsed.get("value_numeric"),
+                qualifier=parsed.get("qualifier"),
+                unit=unit,
+                letter_grade=parsed.get("letter_grade"),
+                value_text=parsed.get("value_text", ""),
+                table_id=table_id,
+                column_header=lab,
+                source="uspto_xml_vertical",
+            ))
+    return out
+
+
 def _best_per_block(raw: list[Table]) -> list[Table]:
     """Per `<tables>` block, whichever view yields more usable records.
 
@@ -1657,6 +1874,26 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
                     r.unit, r.unit_source = br.unit, "bin_key"
                 elif not r.unit:
                     r.unit = br.unit
+
+    # PASS 4: vertical-record blocks — one compound per RUN of rows.
+    #
+    # Gated on the block having produced nothing usable, so this can only ADD.
+    # That gate is the whole regression argument: on the 137 cached patents the
+    # detector matches exactly one block (US9265734 TABLE-US-00006), and that
+    # block's current usable count is 0, so no existing record can be displaced,
+    # duplicated or relabelled. It is also the same anti-deletion rule
+    # `_best_per_block` applies (l.1561) and the repair loop applies to
+    # model-proposed rules: a restructuring must add usable records, never
+    # remove them.
+    #
+    # RAW tgroups, not the assembled grid. `_best_per_block` -> `_header_rows_of`
+    # promotes this block's first data row (`Comp id | R119`) to a header and the
+    # compound is lost with it; measured, that is 198 cids instead of 199.
+    usable_by_block = Counter(r.table_id for r in records if r.is_usable)
+    for block_id, raw_block in by_block.items():
+        if usable_by_block.get(block_id):
+            continue
+        records.extend(extract_vertical(raw_block, table_id=block_id))
 
     unitless = sorted({r.assay_name for r in records if not r.unit})
     if unitless:
