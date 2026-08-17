@@ -210,6 +210,12 @@ def fetch_grant_xml(patent_id: str, *, refresh: bool = False) -> str:
 
 # ── data model ────────────────────────────────────────────────────
 
+# The `<chemistry>` element id inside one `<entry>`. Matched on the entry's
+# RAW body, before `_text` strips the tags — that is the only point where
+# the markup still exists.
+_CHEM_ID = re.compile(r'<chemistry[^>]*\bid="([^"]+)"')
+
+
 @dataclass
 class Cell:
     text: str
@@ -220,6 +226,24 @@ class Cell:
     # left-to-right misaligns the merged header. -1 means "not declared";
     # the caller falls back to accumulation.
     col_start: int = -1
+    # THE `<chemistry>` ID WHEN THIS CELL HOLDS A DRAWING, "" otherwise.
+    #
+    # `text` is tag-stripped, so a cell containing nothing but a structure
+    # image parses to the empty string and the row reads as though the column
+    # were blank. On US10626094's substituent table the `R1` column is exactly
+    # that: every row shows `-` where a drawn substituent sits, and the table
+    # looks like it has one fewer column of data than it has.
+    #
+    # This is the gotcha CLAUDE.md already records — "`Cell.text` is
+    # tag-stripped, use a raw-XML regex" — and every consumer that needed the
+    # id was going back to the raw XML to re-find a cell it had already
+    # parsed. Capturing it HERE, beside the text, is what makes a parsed row
+    # self-describing: `R1 = <image CHEM-US-00080>, R2 = 3-CH3, R3 = H`.
+    #
+    # The id only. Not the file name, not the URL: `cid_first` and
+    # `sources/images.py` already own the id-to-file mapping, and a second
+    # copy of it here would be a second thing to keep in step.
+    chemistry_id: str = ""
 
 
 @dataclass
@@ -317,7 +341,9 @@ def _parse_row(row_xml: str) -> list[Cell]:
                            - int(_NON_DIGIT.sub("", st.group(1))) + 1)
             except ValueError:
                 span = 1
-        cells.append(Cell(_text(body), span, start))
+        cid = _CHEM_ID.search(body)
+        cells.append(Cell(_text(body), span, start,
+                          cid.group(1) if cid else ""))
     return cells
 
 
@@ -808,7 +834,11 @@ def assemble_block(tables: list["Table"], table_id: str) -> "Table | None":
                 r = [Cell(c.text,
                           (remap[i + 1] - remap[i]) if i + 1 < len(remap)
                           else max(1, width - remap[i]),
-                          remap[i])
+                          remap[i],
+                          # Carried through the remap. Dropping it here would
+                          # make the id present or absent depending on whether
+                          # a header happened to need re-spanning.
+                          c.chemistry_id)
                      for i, c in enumerate(r)]
             k = _row_key(r)
             if k not in seen_hdr:
