@@ -36,6 +36,31 @@ THE ROUTES, AND WHY THESE
 
 `nothing_varies`     no image, no non-default text. Nothing to enumerate.
 
+WHAT BLOCKS US10626094, MEASURED
+---------------------------------
+Its 32 runnable rows were run end to end. The scaffold half worked and the
+fragment half did not, and the split is total:
+
+    scaffold   `*C . *C . *c1nc(-c2ccccc2)nc2ccccc12`   3 pieces, 3 dummies
+    after `strip_open_points`  ->  `*c1nc(-c2ccccc2)nc2ccccc12`   clean, 1 point
+
+    fragments  attachment points per fragment:  {0: 32}
+    build      fragment_has_no_attachment_point:    32
+
+ZERO of 32 fragments carried an attachment point. Not most — all. Those
+images mark the cut bond with a WAVY LINE drawn across it, and the recogniser
+reads that as an ordinary bond end and invents a group there: one was
+returned as a plain tert-butyl. Nothing in the output says a mark was missed.
+
+So exactly one failure stands between this patent and 32 compounds, and it is
+a recogniser limitation rather than anything this module can repair. The
+build refuses these rather than joining at an arbitrary atom, because a join
+made at a guessed position produces a clean-looking wrong molecule that
+nothing downstream can detect.
+
+US10125101's fragments use an asterisk instead, which the same recogniser
+reads correctly — 29 of 29. The two patents differ only in house style.
+
 WHAT IS A DEFAULT
 ------------------
 `H`, an empty cell, or a dash. All three mean "no substituent here". Hydrogen
