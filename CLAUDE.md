@@ -52,6 +52,24 @@ whole `name_in_a_table_cell` miss bucket — sit in these two documents. The
 route is sound (75% take rate corpus-wide), so this is a document defect, not
 a redesign.
 
+## Deferred, with their sizes
+
+Recorded so nobody re-derives them. Each is real and each is small; none is
+worth the build cost today. Date: **2026-08-17**.
+
+| item | size | why deferred |
+|---|---|---|
+| wavy cut bond | 32 rows on US10626094 | No recogniser reads a squiggle across a bond. Its FORMAL meaning in molfile is unspecified stereochemistry (flag 4), not attachment — the patent use is a drawing convention with no format backing. Most likely route is cropping/splicing the image so the model sees an asterisk, which it reads at 29 of 29. |
+| IUPAC locant to atom | **8 rows corpus-wide** | Procedure is known and verified safe for a monosubstituted ring: position 1 is the atom bonded to the scaffold, and 2/6 and 3/5 are symmetry-equivalent so direction cannot produce a wrong molecule. Breaks on a second substituent, a ring heteroatom or a fused ring. Worth 8 rows. |
+| three table layouts | 385 rows | Split headers, repeated column groups, vertical records. `markush.classify` covers 857 of 1,285 rows. |
+| unknown dropped IUPACs | not sized | Text extraction drops names nobody has counted. Sits beside these as future gain. |
+
+**Markush total is 1,152 real rows in 11 of 137 patents** — under 3% of the
+13,612 drawn-compound gap, and only **one** of those 11 prints an MS, so 97%
+of it can never be verified against the document. Per-patent VALIDATE accuracy
+(`decimer benchmark`) is the only available proxy. Prioritised anyway because
+Jie says the important structures are here.
+
 Measured over all 137 patents, 44,509 measured compounds, 51% resolved:
 
 | evidence the document gives | total | resolved | missed | take |
