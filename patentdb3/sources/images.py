@@ -157,9 +157,23 @@ def emit(*, with_urls: bool = False, path: Path | None = None) -> dict:
     _here = {"structures": config.STRUCTURES, "dump": config.DUMP}
 
     def _beside(key: str):
+        """The recorded path, or the configured one when it has gone away.
+
+        THE RECORDED PATH WINS WHENEVER IT EXISTS, and the order matters. The
+        first version preferred the configured location unconditionally, which
+        silently overrode a manifest pointing somewhere deliberate — a test
+        injecting a two-row fixture got the real 38,871-row dump instead and
+        its assertion turned into a corpus measurement. A fallback that fires
+        when nothing is wrong is not a fallback.
+        """
         recorded = Path(man[key])
+        if recorded.exists():
+            return recorded
         here = Path(_here[key])
-        return here if here.exists() else recorded
+        if here.exists():
+            logger.info("images: %s moved; reading %s", recorded, here)
+            return here
+        return recorded                   # let open() report the real path
 
     st = list(csv.DictReader(open(_beside("structures")), delimiter="\t"))
     dump = list(csv.DictReader(open(_beside("dump")), delimiter="\t"))
