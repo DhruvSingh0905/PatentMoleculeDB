@@ -76,6 +76,19 @@ def test_a_table_with_a_name_column_is_not_treated_as_markush():
     `build_columns`, so this test keeps asserting the two things the marker
     actually depends on rather than a count: no NAME-COLUMN table is claimed,
     and nothing the assay reader measured is wrongly marked.
+
+    AND `markush_marked == 0` WAS ITSELF A COUNT STANDING IN FOR AN INVARIANT.
+    It broke when `_banner_scaffold` taught `_header_scaffolds` the second
+    house style — the scaffold drawn in a leading `cols="1"` `<tgroup>` rather
+    than in `<thead>` — and US10376513 went from 0 marked to 154. Nothing was
+    lost: measured both ways, `_resolve` returns 178 structures with an
+    InChIKey with the banner off and 178 with it on, on this patent and on
+    US9428511, US9670157, US10214537 and US10626094 alike. Marking is the
+    POINT of the fix; those 154 row pictures are substituent fragments and
+    marking them is what keeps them out of the image work list.
+
+    So the assertion is now the invariant the count was proxying for: turning
+    the marker on may not cost this patent a single resolved structure.
     """
     xml = _xml(NAMED)
     mk = _markush_cids(xml)
@@ -98,8 +111,21 @@ def test_a_table_with_a_name_column_is_not_treated_as_markush():
     measured = {r.cid for r in extract_from_patent(xml) if r.cid}
     assert not (set(mk) & measured), (
         f"{len(set(mk) & measured)} measured compound(s) wrongly marked markush")
-    _, st = _resolve(xml, NAMED)
-    assert st.markush_marked == 0
+
+    # 3. THE INVARIANT: marking costs no resolved structure.
+    import patentdb3.sources.cid_first as _cf
+    banner = _cf._banner_scaffold
+    try:
+        _cf._banner_scaffold = lambda _body: ""
+        off, _ = _resolve(xml, NAMED)
+    finally:
+        _cf._banner_scaffold = banner
+    on, st = _resolve(xml, NAMED)
+    assert st.markush_marked, "the banner shape is no longer exercised here"
+    assert (sum(1 for n in on if n.inchikey)
+            == sum(1 for n in off if n.inchikey)), (
+        f"marking cost {sum(1 for n in off if n.inchikey) - sum(1 for n in on if n.inchikey)} "
+        f"resolved structure(s)")
 
 
 def test_a_markush_compound_never_claims_a_drawing():

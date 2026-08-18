@@ -59,16 +59,32 @@ worth the build cost today. Date: **2026-08-17**.
 
 | item | size | why deferred |
 |---|---|---|
-| wavy cut bond | 32 rows on US10626094 | No recogniser reads a squiggle across a bond. Its FORMAL meaning in molfile is unspecified stereochemistry (flag 4), not attachment — the patent use is a drawing convention with no format backing. Most likely route is cropping/splicing the image so the model sees an asterisk, which it reads at 29 of 29. |
+| wavy cut bond | **RE-SIZED 2026-08-17: 968 rows in 6 patents**, not 32 in one | No recogniser reads a squiggle across a bond. Its FORMAL meaning in molfile is unspecified stereochemistry (flag 4), not attachment — the patent use is a drawing convention with no format backing. Most likely route is cropping/splicing the image so the model sees an asterisk, which it reads at 29 of 29. **Two new facts.** MolScribe does not drop the mark, it INVENTS a group there — measured, it returns a terminal isopropyl or tert-butyl, which is why a fragment read is never a substructure of the truth. And US9718825 states the convention in its own prose: *"the line crossed with the symbol represents the free bond via which the group —Z—R3 is bonded to the carbon atom in the 4-position"*. The document says where the attachment is. |
 | IUPAC locant to atom | **8 rows corpus-wide** | Procedure is known and verified safe for a monosubstituted ring: position 1 is the atom bonded to the scaffold, and 2/6 and 3/5 are symmetry-equivalent so direction cannot produce a wrong molecule. Breaks on a second substituent, a ring heteroatom or a fused ring. Worth 8 rows. |
-| three table layouts | 385 rows | Split headers, repeated column groups, vertical records. `markush.classify` covers 857 of 1,285 rows. |
+| three table layouts | 385 rows | Split headers, repeated column groups, vertical records. |
 | unknown dropped IUPACs | not sized | Text extraction drops names nobody has counted. Sits beside these as future gain. |
 
-**Markush total is 1,152 real rows in 11 of 137 patents** — under 3% of the
-13,612 drawn-compound gap, and only **one** of those 11 prints an MS, so 97%
-of it can never be verified against the document. Per-patent VALIDATE accuracy
-(`decimer benchmark`) is the only available proxy. Prioritised anyway because
-Jie says the important structures are here.
+**The markush MS claim below was WRONG. Corrected 2026-08-17.**
+
+It read: *"only one of those 11 prints an MS, so 97% of it can never be
+verified against the document."* That was measured with a mass finder that
+required the literal `MS (ESI` — see the gotcha list. The substituent tables
+print their m/z in a COLUMN (`MS (m/e)` over `481.0 (M + H)`), which that
+finder could not see. Measured over the four real substituent tables:
+
+| | |
+|---|---|
+| data rows | 653 |
+| print their own m/z | **591 (90.5%)** |
+| give a substituent as text | 653 (100%) |
+
+So an assembly can be refereed on 90.5% of the population, and the R-groups
+need no image recognition. The assemblable population is **644 rows in 2
+patents and 4 tables** (US9718825 593, US10626094 51), not 1,152 in 11 — the
+other 317 markush rows are `stereo_stripped` / `relative_stereo`, which are
+named compounds with loose stereo and a different problem.
+
+Prioritised because Jie says the important structures are here.
 
 Measured over all 137 patents, 44,509 measured compounds, 51% resolved:
 
@@ -116,6 +132,7 @@ patentdb3/
     name_gap.py name_loop.py name_rules.py               name tier
     name_synthesize.py name_outcome.py name_harness.py
     name_capability.py                                   model-authored code
+    markush_gap.py markush_loop.py markush_outcome.py    assembly tier
     plausibility.py                                      post-hoc checks
   core/              config, cost tracking, API client, response cache
   data/              assay_vocabulary.json + layout_rules.json (both TRACKED)
@@ -153,6 +170,7 @@ is needed only to fetch a patent that is not in `output_v3/uspto_xml/`.
 | `IDENTITY_ROUTE` | `cid_first` | Which identity route runs. |
 | `FINISHED_ONLY` | 1 | Refuse intermediates and steps. |
 | `GP_ENABLED` | 0 | Fetch Google Patents image URLs. |
+| `MARKUSH_ASSEMBLY` | 0 | Assemble substituent tables. Needs recognised drawings; blocks by name without them and spends $0. |
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -188,6 +206,25 @@ Each item below cost real time. Read this list before you measure anything.
   172-rule `layout_rules.json`.
 - **Measure at the stage where the code runs.** A repair in `name_repair`
   acts inside the extractor. It never reaches the heal loop.
+- **A document states its shared scaffold in three places.** `<thead>`, the
+  `<tbody>` of a leading `cols="1"` `<tgroup>` under an EMPTY thead, and the
+  prose paragraph that introduces the table. Reading only the first found 29 of
+  673 assemblable rows.
+- **A regex for a word must carry `\b`.** `esi` in `_HEADER_MS` matched inside
+  "Synth**esi**s", so US10207999's `Chemical Synthesis Example No.` typed as a
+  mass column and four tables lost their compound id. Same family as `open`
+  matching `open_count`.
+- **A search anchored on one vendor's phrasing measures that vendor.**
+  `mass_gate.REPORTED` required `MS (ESI`. US8722692 prints `ESI-MS` 500 times
+  and `MS (ESI` zero times, so the gate never saw a whole patent. 5 of 137
+  patents matched; 31 of 137 print a mass.
+- **OPSIN separates a substituent name from a condensed formula, exactly.**
+  With `wildcard_radicals` it resolves every name to a `*`-marked fragment and
+  refuses `CH3`, `NH2`, `3-CH3`, `2-F`. That is what tells `5-chloro-2,4-
+  difluoro-phenyl` from a locant `5` — do not write a heuristic for it.
+- **Grep for the module, not the word.** Four files mention "markush" and none
+  of them imported `sources/markush.py`; it was dead code with a passing test
+  suite, and `CLAUDE.md` quoted a coverage number it had never produced.
 
 ## Design invariants
 

@@ -61,8 +61,34 @@ from . import losses as _losses
 logger = logging.getLogger(__name__)
 
 
+def radicals(names: list[str], patent_id: str = "") -> list[str]:
+    """Resolve SUBSTITUENT names. One entry per input, in order, `""` on refusal.
+
+    `batch` refuses a substituent by design — OPSIN's own message is "a name is
+    just a substituent" — because a fragment is not a compound and returning
+    one as if it were would put half a molecule in the artifact. A substituent
+    table asks the opposite question: its cells are substituents and nothing
+    else, and each one needs to come back with its attachment point marked.
+
+    `--wildcardRadicals` is that answer: `5-chloro-2,4-difluoro-phenyl` returns
+    `*C1=C(C=C(C(=C1)Cl)F)F`, a `*`-marked fragment in exactly the form
+    `markush.build_text_group` joins.
+
+    IT ALSO SEPARATES A NAME FROM A FORMULA, WHICH NOTHING ELSE DOES. Measured
+    on US9718825's slot values: every substituent name resolved, and `CH3`,
+    `NH2`, `3-CH3` and `2-F` were all refused. So a cell this resolves is a
+    name and its leading digits are locants of its OWN ring, not a position on
+    the scaffold — which is what stops `5-chloro-...-phenyl` being read as
+    "locant 5, group chloro-...-phenyl" and built into a wrong molecule.
+
+    This is the ONE OPSIN wrapper still. Do not write a second.
+    """
+    return batch(names, patent_id=patent_id, wildcard_radicals=True)
+
+
 def batch(names: list[str], fmt: str = "SMILES", patent_id: str = "",
-          *, allow_bad_stereo: bool = False) -> list[str]:
+          *, allow_bad_stereo: bool = False,
+          wildcard_radicals: bool = False) -> list[str]:
     """Resolve `names` through OPSIN. Returns one entry per input, in order.
 
     An entry is `""` when that name did not resolve — and, per the module
@@ -91,7 +117,9 @@ def batch(names: list[str], fmt: str = "SMILES", patent_id: str = "",
     tmp = str(config.OUTPUT_DIR / f".opsin_in_{os.getpid()}.txt")
     try:
         out = py2opsin(names, output_format=fmt, tmp_fpath=tmp,
-                       allow_bad_stereo=allow_bad_stereo)
+                       allow_bad_stereo=allow_bad_stereo,
+                       allow_radicals=wildcard_radicals,
+                       wildcard_radicals=wildcard_radicals)
     except Exception as e:                       # OPSIN is a java subprocess
         logger.warning("opsin: batch of %d failed: %r", len(names), e)
         if _losses.ENABLED:

@@ -81,7 +81,32 @@ logger = logging.getLogger(__name__)
 # `MS (ESI) 561 (M+H)`, `MS (ESI+) m/z 561.2 (M+H)+`, `MS(ESI) 561`. The mass
 # is the FIRST number after the ionisation mode — a `+` charge marker, `m/z`
 # and a space may sit between, and nothing else observed does.
+#
+# THIS PATTERN ALONE READ 5 OF 137 PATENTS. It requires the literal order
+# `MS (ESI`, and the corpus does not agree on it: US8722692 prints `ESI-MS m/z
+# 499.2 (MH+)` 500 times and `MS (ESI` zero times, so `reported_masses`
+# returned `{}` for that whole document and six structures wrong by 40-145 Da
+# were never weighed. The gate did not pass them — it never saw them.
 REPORTED = re.compile(r"MS\s*\(ESI[^)]*\)[^0-9]{0,12}(\d{2,4})(?:\.\d+)?", re.I)
+
+# The same statement with the words in the other order, or another instrument.
+# `ESI-MS m/z 499.2 (MH+)`, `LC-MS: 412 (M+1)`, `HRMS (ESI) m/z 350.1`.
+# Anchored on `m/z` or on the mode marker so a bare `MS` in prose cannot match.
+REPORTED_ALT = re.compile(
+    r"\b(?:ESI|APCI|LC|HR|HPLC)[\s/-]*MS\b[^0-9]{0,16}(\d{2,4})(?:\.\d+)?",
+    re.I)
+
+# A COLUMN, not a sentence: `MS (m/e)` over `481.0 (M + H), CP`, or
+# `[m/z (M+H)]` over `450.24`. 22 of 137 patents print their mass only in this
+# shape, including every markush substituent table — which is why the wiki's
+# claim that markush tables cannot be verified against the document was wrong.
+# Which columns those are is `uspto_assays.build_columns`'s answer, not a
+# second header regex here; this is only the CELL under one.
+#
+# A number, optionally followed by the adduct and any trailing note
+# (`481.0 (M + H), CP`). It must START with the number: a cell reading
+# `not determined 481` states no mass for this row.
+_MASS_CELL = re.compile(r"^\s*(\d{2,4})(?:\.\d+)?\s*(?:[(\[]|,|$)")
 
 # The row's own compound number: the first cell, digits with an optional
 # letter suffix. Same shape `uspto_assays` reads, and deliberately strict —
@@ -187,16 +212,107 @@ def reported_masses(xml: str) -> dict[str, int]:
     First occurrence wins. A compound number repeated across tables states the
     same compound, and the alternative (last wins) would silently prefer
     whichever table the parser happened to reach last.
+
+    THREE SHAPES, IN PRIORITY ORDER. A sentence naming the instrument
+    (`REPORTED`, then `REPORTED_ALT`) beats a bare column, because a sentence
+    says what it is measuring and a column says it only in its header. The
+    column shape is read last and only for rows the sentences did not answer.
     """
-    out: dict[str, int] = {}
+    return {cid: mass for cid, (mass, _shift_) in _scan(xml).items()}
+
+
+def _scan(xml: str) -> dict[str, tuple[int, float]]:
+    """`{compound number -> (printed m/z, the adduct shift for that row)}`.
+
+    ONE SCAN FOR BOTH ANSWERS, and that is the point. `reported_masses` and
+    `reported_shifts` used to walk the document separately with different
+    patterns, so broadening one and not the other gave every row the other
+    could not see a silent `[M+H]` default. On a negative-mode row that makes a
+    CORRECT structure read 2.015 Da light — a confident wrong verdict, and
+    `images.emit` then discards that row from the truth set. It cost 9 correct
+    structures the first time this file was broadened, all of them landing in a
+    tight cluster at 2.1-2.3 Da that is the signature of exactly this mistake.
+
+    A shape either yields both numbers or neither.
+    """
+    out: dict[str, tuple[int, float]] = {}
     for m in re.finditer(r"<row>.*?</row>", xml, re.S):
-        flat = re.sub(r"<[^>]+>", " ", m.group(0))
-        hit = REPORTED.search(flat)
+        raw = m.group(0)
+        flat = re.sub(r"<[^>]+>", " ", raw)
+        hit = REPORTED.search(flat) or REPORTED_ALT.search(flat)
         if not hit:
             continue
         cid = _ROW_CID.match(flat)
         if cid:
-            out.setdefault(cid.group(1), int(hit.group(1)))
+            out.setdefault(cid.group(1), (int(hit.group(1)), _shift(raw)))
+    for cid, pair in _column_masses(xml).items():
+        out.setdefault(cid, pair)
+    return out
+
+
+def _column_masses(xml: str) -> dict[str, tuple[int, float]]:
+    """The bare-column shape. `{compound number -> (printed m/z, adduct shift)}`.
+
+    The header names the measurement once and every cell below it is a plain
+    number. `uspto_assays` already solves the hard half of this — which header
+    governs which column, across split headers and sibling tgroups — so this
+    reads the assembled table rather than re-deriving it from flat text, which
+    is what made the header invisible to the sentence patterns.
+
+    THE COLUMN MUST BE A MASS COLUMN, NOT A NUMERIC ONE. The header has to say
+    so. An IC50 column of integers is indistinguishable from an m/z column by
+    its values alone — that mistake, made one layer down in `build_columns`,
+    is what let an assay column win the compound-id role on US10253019.
+
+    So the column kinds come from `uspto_assays.build_columns`, which already
+    decides which header governs which column across split headers and sibling
+    tgroups. Reading `Table.header_rows` directly instead re-derives that badly:
+    US11548900 spells its header over two lines (`LCMS` above
+    `m/z = (M + H)+`) and only the first is classed as a header row, so a
+    hand-rolled scan sees `LCMS` over a blank and finds nothing.
+    """
+    from .uspto_assays import MS, build_columns, CID
+    from .uspto_xml import assemble_blocks, parse_tables
+
+    out: dict[str, tuple[int, float]] = {}
+    try:
+        tables = assemble_blocks(parse_tables(xml))
+    except Exception as e:                       # a parse failure is not a mass
+        logger.debug("column mass scan skipped: %r", e)
+        return out
+    for t in tables:
+        try:
+            cols = build_columns(t)
+        except Exception as e:
+            logger.debug("column mass scan skipped on %s: %r", t.table_id, e)
+            continue
+        mass_cols = [c.index for c in cols if c.kind == MS]
+        if not mass_cols:
+            continue
+        id_col = next((c.index for c in cols if c.kind == CID), 0)
+        # The adduct is stated in the HEADER of a column, not in every cell:
+        # `m/z = (M + H)+` over bare numbers. A header is one string per table,
+        # so it is read once — and the cell is still checked, because a table
+        # printing `[M+H]` in its header may print `[M-H]` in a given row.
+        head_shift = {i: -PROTON if _ADDUCT_MINUS.search(
+            next((c.header or "" for c in cols if c.index == i), "")) else PROTON
+            for i in mass_cols}
+        for row in t.body_rows:
+            if len(row) <= id_col:
+                continue
+            cid = (row[id_col].text or "").strip().split()
+            if not cid or not re.fullmatch(r"\d+[A-Za-z]?", cid[0]):
+                continue
+            for i in mass_cols:
+                if i >= len(row):
+                    continue
+                cell = (row[i].text or "").strip()
+                hit = _MASS_CELL.match(cell)
+                if hit:
+                    shift = (-PROTON if _ADDUCT_MINUS.search(cell)
+                             else head_shift.get(i, PROTON))
+                    out.setdefault(cid[0], (int(hit.group(1)), shift))
+                    break
     return out
 
 
@@ -207,16 +323,7 @@ def reported_shifts(xml: str) -> dict[str, float]:
     around the sign cannot hide it. Absent from the result when the row prints
     no mass at all; `verdict` then falls back to `[M+H]`.
     """
-    out: dict[str, float] = {}
-    for m in re.finditer(r"<row>.*?</row>", xml, re.S):
-        raw = m.group(0)
-        flat = re.sub(r"<[^>]+>", " ", raw)
-        if not REPORTED.search(flat):
-            continue
-        cid = _ROW_CID.match(flat)
-        if cid:
-            out.setdefault(cid.group(1), _shift(raw))
-    return out
+    return {cid: sh for cid, (_m, sh) in _scan(xml).items()}
 
 
 def _mass(smiles: str) -> "tuple[float, float] | None":

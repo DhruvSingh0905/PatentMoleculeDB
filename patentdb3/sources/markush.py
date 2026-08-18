@@ -103,8 +103,15 @@ logger = logging.getLogger(__name__)
 # A cell that means "no substituent here".
 _DEFAULT_SLOT = {"", "-", "h", "—", "–", "none", "na"}
 
-# A column heading that names a variable position: R1, R2, R', RL, X, Y, Z.
-_SLOT_HEADING = re.compile(r"^(R\s*[0-9A-Za-z']{0,3}|[XYZQ])$", re.I)
+# A column heading that names a variable position: R1, R2, R', RL, X, Y, Z, Ar.
+#
+# `Ar` WAS MISSING AND THE COLUMN WAS DROPPED IN SILENCE. US9718825 heads its
+# three big tables `Example no. | Ar | R1 | <drawing> | Synthesis | MS (m/e)`,
+# and without `Ar` here `classify` returned rows whose `slots` held only R1 —
+# so an assembly would have been built without the aryl group and come out a
+# different, legal-looking compound. `uspto_assays._HEADER_SUBST` already
+# admitted `Ar`; the two lists disagreed and this one was wrong.
+_SLOT_HEADING = re.compile(r"^(R\s*[0-9A-Za-z']{0,3}|Ar\s*\d*|[XYZQ])$", re.I)
 
 # A text slot that names a ring POSITION before the group: `3-CH3`, `4-O(i-Pr)`,
 # `2-F`. The leading integer is an IUPAC locant, and resolving it to an atom is
@@ -190,8 +197,43 @@ def _slot_columns(rows: list) -> tuple[int, dict]:
     return -1, {}
 
 
-def classify(body_rows: list, header_rows: list | None = None) -> list[MarkushRow]:
+def slot_values(body_rows: list, header_rows: list | None = None) -> list[str]:
+    """Every DISTINCT slot cell in the table, for one batched name lookup.
+
+    `classify` must know whether `5-chloro-2,4-difluoro-phenyl` is a name or a
+    locant `5` in front of a group, and only OPSIN can say. OPSIN is a java
+    subprocess, so asking per row would cost one launch per row; this collects
+    the question once and `classify` takes the answer as an argument. It also
+    keeps this module free of any OPSIN import — there is one wrapper and it
+    lives in `sources/opsin.py`.
+    """
+    hdr, headings = _slot_columns(body_rows)
+    if hdr < 0 and header_rows:
+        _h, headings = _slot_columns(header_rows)
+        hdr = -1
+    seen: dict[str, None] = {}
+    for r in body_rows[hdr + 1:]:
+        for col in headings:
+            if col < len(r):
+                v = _LEAD_DASH.sub("", (r[col].text or "").strip()).strip()
+                if v and v.lower() not in _DEFAULT_SLOT:
+                    seen.setdefault(v, None)
+    return list(seen)
+
+
+def classify(body_rows: list, header_rows: list | None = None,
+             names: dict | None = None) -> list[MarkushRow]:
     """Tag every data row of one parsed substituent table.
+
+    `names` is `{slot text -> one-attachment-point SMILES}` for the cells OPSIN
+    read as substituent NAMES — see `slot_values`. It settles a question this
+    module cannot: `5-chloro-2,4-difluoro-phenyl` and `3-CH3` both match
+    `_LOCANT_VALUE`, and reading the first as "locant 5, group
+    chloro-2,4-difluoro-phenyl" is a wrong molecule, not a refusal. Measured,
+    OPSIN separates them perfectly with `wildcard_radicals`: it resolves every
+    substituent name to a `*`-marked fragment and refuses every condensed
+    formula and every locant value (`3-CH3`, `2-F`, `CH3`, `NH2` — all four).
+    So a cell it resolved is a name and carries no locant.
 
     `body_rows` / `header_rows` are `uspto_xml.Table`'s. The image reference
     comes from `Cell.chemistry_id`, which is why that field exists — before
@@ -230,6 +272,10 @@ def classify(body_rows: list, header_rows: list | None = None) -> list[MarkushRo
                 image_slot = name
             if v.lower() in _DEFAULT_SLOT or r[col].chemistry_id:
                 continue                          # default, or the image slot
+            key = _LEAD_DASH.sub("", v).strip()
+            if names and key in names:
+                varying[name] = (None, v)         # a NAME. Its digits are its own.
+                continue
             m = _LOCANT_VALUE.match(v)
             varying[name] = (m.group(1), m.group(2)) if m else (None, v)
 
@@ -404,13 +450,32 @@ def _grow(items, rw, anchor):
             current = idx
 
 
-def _group_fragment(text: str, isotope: int) -> tuple[str, str]:
+def _group_fragment(text: str, isotope: int, name_smiles: str = "") -> tuple[str, str]:
     """One slot value -> a one-point fragment SMILES. `(smiles, error)`.
 
     The returned dummy carries `isotope`, which is how the caller says WHERE
     this group goes. Nothing here knows the scaffold.
+
+    A NAME IS RESOLVED BY OPSIN, NOT BY THIS GRAMMAR. `name_smiles` is what
+    OPSIN returned for this cell (see `slot_values`), and it is preferred
+    because it is a real parse of a real nomenclature. The condensed-formula
+    grammar below exists only for what OPSIN refuses — `CH3`, `NH2`, `CF3` —
+    and its written-hydrogen gate is what makes that safe. Running the grammar
+    on a name would not be safe: `5-chloro-2,4-difluoro-phenyl` is not a
+    formula and a partial read of it is a wrong molecule.
     """
     from rdkit import Chem
+
+    if name_smiles:
+        mol = Chem.MolFromSmiles(name_smiles)
+        if mol is None:
+            return "", f"resolved name did not parse: {name_smiles!r}"
+        d = [a for a in mol.GetAtoms() if a.GetAtomicNum() == 0]
+        if len(d) != 1:
+            return "", (f"{text!r} resolved to {len(d)} attachment points, "
+                        "expected 1")
+        d[0].SetIsotope(isotope)
+        return Chem.MolToSmiles(mol), ""
 
     items = _formula_items(text)
     if items is None:
@@ -438,7 +503,9 @@ def _group_fragment(text: str, isotope: int) -> tuple[str, str]:
 
 
 def build_text_group(scaffold_smiles: str, row: MarkushRow,
-                     fragment_smiles: str = "") -> tuple[str, str]:
+                     fragment_smiles: str = "",
+                     names: dict | None = None,
+                     slot_map: dict | None = None) -> tuple[str, str]:
     """The group-with-no-locant route. `(smiles, error)` — one is empty.
 
     `fragment_smiles` is the drawn substituent, needed only when the row has
@@ -469,6 +536,19 @@ def build_text_group(scaffold_smiles: str, row: MarkushRow,
         return "", "scaffold has no attachment point"
 
     def _iso(head: str):
+        """Which attachment point this column fills.
+
+        The heading answers it when the heading carries a number, because the
+        recogniser writes `R2` in a drawing as the dummy `[2*]`. A heading
+        without one — `Ar`, `RL`, `X` — names a position the drawing marks some
+        other way, and NOTHING here may guess which. `slot_map` is where an
+        answer comes from: the repair loop proposes it, applies it to the whole
+        table, and is judged on what the assembled molecules weigh. Refusing
+        without it is the point — a guessed join builds a clean-looking wrong
+        molecule that nothing downstream can detect.
+        """
+        if slot_map and head in slot_map:
+            return slot_map[head]
         m = _SLOT_NUMBER.match(head or "")
         return int(m.group(1)) if m else None
 
@@ -486,7 +566,7 @@ def build_text_group(scaffold_smiles: str, row: MarkushRow,
         if group.lower() in _DEFAULT_SLOT:        # `—H`: a default a dash hid
             drop.add(n)
             continue
-        frag, err = _group_fragment(group, n)
+        frag, err = _group_fragment(group, n, (names or {}).get(group, ""))
         if err:
             return "", err
         fill[n] = frag

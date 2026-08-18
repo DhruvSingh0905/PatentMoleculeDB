@@ -276,6 +276,13 @@ IDENTITY_ROUTE = os.environ.get("IDENTITY_ROUTE", "cid_first")
 # Turn it on for a patent or a batch whose images you have fetched.
 IMAGE_OCR = os.environ.get("IMAGE_OCR", "0") == "1"
 
+# Assemble substituent-table compounds from scaffold plus substituents —
+# `repair/markush_loop.py`. Off by default because it needs recognised
+# structures for the drawings, which come from a GPU run and are not part of a
+# `verify --dump`. It costs nothing when the structures are absent: every gap
+# reports `scaffold_drawing_not_recognised` and no molecule is invented.
+MARKUSH_ASSEMBLY = os.environ.get("MARKUSH_ASSEMBLY", "0") == "1"
+
 # ── Structure recognisers ────────────────────────────────────────────────
 # ONE FLAG PER MODEL. The results file carries a `recogniser` column and is
 # keyed on (patent_id, cid, recogniser), so a second model adds rows rather

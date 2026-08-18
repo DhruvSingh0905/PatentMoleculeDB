@@ -598,6 +598,15 @@ def _candidates(nt: _NameText, patent_id: str) -> list[tuple[str, str]]:
 _ROW = re.compile(r"<row>.*?</row>", re.S)
 _ENTRY = re.compile(r"<entry[^>]*>(.*?)</entry>", re.S)
 _CHEM_ID = re.compile(r'<chemistry[^>]*id="([^"]+)"')
+
+# `formula Ib`, `formula I`, `formula (IIa)`. The sentence that introduces a
+# substituent table names the core it shares. See `_intro_scaffolds`.
+_FORMULA_LABEL = re.compile(r"\bformula[e]?\s*\(?\s*[IVX]+[a-z]?\b", re.I)
+
+# How far back from a `<tables>` the introducing sentence may sit. Measured,
+# not chosen: the largest true gap in this corpus is US9718825's Table 1 at
+# 1,950 characters, and the window never crosses a previous `<tables>`.
+_INTRO_WINDOW = 2400
 _IMG_FILE = re.compile(r'<img[^>]*file="([^"]+)"')
 
 # A column header naming the compound in full. Its PRESENCE is what separates
@@ -630,14 +639,62 @@ def _drawn_table_ids(xml: str) -> set[str]:
     return out
 
 
+def _banner_scaffold(body: str) -> str:
+    """The scaffold drawn ABOVE the data, in its own `<tgroup>`. `""` if none.
+
+    A `<thead>` is not the only place a table states its shared scaffold. The
+    second house style opens the `<tables>` block with a separate single-column
+    `<tgroup>` whose `<tbody>` holds the drawing and nothing else, and leaves
+    the `<thead>` empty:
+
+        <tables id="TABLE-US-00002">
+          <tgroup cols="1">
+            <thead><row><entry/></row></thead>       <- EMPTY
+            <tbody> ... <chemistry id="CHEM-US-00079">   <- THE SCAFFOLD
+          </tgroup>
+          <tgroup cols="8">   <- the data rows
+
+    `_header_scaffolds` used to read `<thead>` alone, so on this shape it found
+    a thead, found no `<chemistry>` in it, and recorded no scaffold at all —
+    which is why 644 of the 673 assemblable markush rows stored a `fragment=`
+    with no `scaffold=` to attach it to, and why the row's fragment picture
+    then reached the image work list as if it were the compound.
+
+    THE BANNER MUST BE SINGLE-COLUMN AND HOLD EXACTLY ONE DRAWING. `cols="1"`
+    is the load-bearing test: a one-column tgroup cannot be a data table, so a
+    structure inside it is not any row's compound. Prose IS allowed beside it —
+    US10626094's banner carries two caption lines (`Table 1 summarizes studies
+    on the quinazoline series`, `SAR explorations of the quinazoline core`),
+    and rejecting on prose rejects the very shape this exists to read.
+
+    The drawing must also be followed by a WIDER tgroup. Without that the
+    single column is the whole table and there are no rows to attach.
+    """
+    groups = re.findall(r"<tgroup\b.*?</tgroup>", body, re.S)
+    if len(groups) < 2:
+        return ""                     # nothing below it, so it banners nothing
+    cols = re.search(r'cols="(\d+)"', groups[0])
+    if not cols or int(cols.group(1)) != 1:
+        return ""
+    if not any((m := re.search(r'cols="(\d+)"', g)) and int(m.group(1)) > 1
+               for g in groups[1:]):
+        return ""
+    tbody = re.search(r"<tbody\b.*?</tbody>", groups[0], re.S)
+    if not tbody:
+        return ""
+    ids = _CHEM_ID.findall(tbody.group(0))
+    return ids[0] if len(ids) == 1 else ""
+
+
 def _header_scaffolds(xml: str) -> dict[str, tuple[str, str]]:
     """`chemistry id in a row -> (table id, the scaffold's chemistry id)`.
 
-    A table whose HEADER holds a `<chemistry>` states a shared scaffold, and
-    its rows then supply what varies. US10125101 TABLE-US-00012 is the shape:
-    the header reads `Ex- R L ... (coupling partner is R L -Br)` and holds
-    `CHEM-US-00050`; the row for compound 11 holds `CHEM-US-00051`, which is
-    the coupling partner, not the molecule.
+    A table that draws ONE structure above its data states a shared scaffold,
+    and its rows then supply what varies. US10125101 TABLE-US-00012 is the
+    header shape: the header reads `Ex- R L ... (coupling partner is R L -Br)`
+    and holds `CHEM-US-00050`; the row for compound 11 holds `CHEM-US-00051`,
+    which is the coupling partner, not the molecule. US10626094
+    TABLE-US-00002 is the banner shape — see `_banner_scaffold`.
 
     So the row picture must NOT be offered to an image-to-structure step as
     the compound. It is still wanted — it is one half of an enumeration — so
@@ -647,14 +704,54 @@ def _header_scaffolds(xml: str) -> dict[str, tuple[str, str]]:
     for tb in re.finditer(r'<tables id="([^"]+)".*?</tables>', xml, re.S):
         tid, body = tb.group(1), tb.group(0)
         thead = re.search(r"<thead>.*?</thead>", body, re.S)
-        if not thead:
-            continue
-        scaf = _CHEM_ID.findall(thead.group(0))
-        if not scaf:
+        scaf = _CHEM_ID.findall(thead.group(0)) if thead else []
+        head_id = scaf[0] if scaf else _banner_scaffold(body)
+        if not head_id:
             continue
         for row in _ROW.findall(body):
             for rid in _CHEM_ID.findall(row):
-                out.setdefault(rid, (tid, scaf[0]))
+                if rid != head_id:
+                    out.setdefault(rid, (tid, head_id))
+    return out
+
+
+def _intro_scaffolds(xml: str) -> dict[str, str]:
+    """`table id -> the scaffold drawn in the paragraph that INTRODUCES it`.
+
+    The third and last place a document states a substituent table's shared
+    core. US9718825 draws none of its three big tables' scaffolds inside the
+    table at all — it writes the sentence and then the structure, and only
+    then opens the table:
+
+        ... the example compounds of the formula Ib listed in Table 1 were
+        synthesized. In the formulae of the groups -Z-R3 in Table 1 the line
+        crossed with the symbol represents the free bond via which the group
+        -Z-R3 is bonded to the carbon atom in the 4-position ...
+        <chemistry id="CHEM-US-00020">        <- formula Ib, THE SCAFFOLD
+        <tables id="TABLE-US-00001">          <- 426 rows that need it
+
+    593 of the 644 rows that stored a fragment with no scaffold are this shape.
+
+    TWO CONSTRAINTS, BOTH STRUCTURAL. The window holds exactly one
+    `<chemistry>` — two drawings state a reaction or a pair of formulae and
+    which is the core is then a guess — and it names a formula. Measured over
+    this corpus the largest true gap is 1,950 characters, so the window is
+    capped just above that: a structure introduced pages earlier introduces
+    nothing.
+
+    The caller must apply this ONLY to tables already identified as
+    substituent tables. Every patent says "formula I" somewhere near a table,
+    and reading that as a scaffold for an ordinary assay table would attach a
+    core to rows that never wanted one.
+    """
+    out: dict[str, str] = {}
+    prev_end = 0
+    for tb in re.finditer(r'<tables id="([^"]+)"', xml):
+        window = xml[max(prev_end, tb.start() - _INTRO_WINDOW):tb.start()]
+        prev_end = tb.start()
+        ids = _CHEM_ID.findall(window)
+        if len(ids) == 1 and _FORMULA_LABEL.search(window):
+            out[tb.group(1)] = ids[0]
     return out
 
 
@@ -1067,6 +1164,7 @@ def _resolve(xml: str, patent_id: str = "") -> tuple[list[NamedCompound], Stats]
     gp_urls = _gp_image_urls(patent_id)
     markush = _markush_cids(xml)
     scaffolds = _header_scaffolds(xml)
+    intro = _intro_scaffolds(xml)
     for cid in searchable:
         if cid in resolved_cids or cid not in refs:
             continue
@@ -1093,13 +1191,24 @@ def _resolve(xml: str, patent_id: str = "") -> tuple[list[NamedCompound], Stats]
             # pointing at a fragment and calling it the structure. The row is
             # still emitted, carrying the reason: this compound exists only as
             # a scaffold plus substituents that nothing in this tree composes.
+            #
+            # The scaffold half is attached HERE when the introducing paragraph
+            # drew it (`_intro_scaffolds`), and only for a table `_markush_cids`
+            # has already called a substituent table. Without it these rows
+            # carried a fragment and nothing to join it to, which is why 644 of
+            # the 673 assemblable rows could not be assembled.
+            tid = markush[cid]
+            scaf = intro.get(tid, "")
+            parts = f"fragment={ref};fragment_file={chem_files.get(ref, '')}"
+            if scaf:
+                parts = (f"scaffold={scaf};"
+                         f"scaffold_file={chem_files.get(scaf, '')};" + parts)
             out.append(NamedCompound(
                 patent_id=patent_id, name="", smiles="", inchikey="",
                 start=-1, source=SOURCE, cid=cid,
                 markush=True, markush_kind="substituent_table",
-                markush_reason=f"substituent_table:{markush[cid]}",
-                markush_parts=(f"fragment={ref};"
-                               f"fragment_file={chem_files.get(ref, '')}")))
+                markush_reason=f"substituent_table:{tid}",
+                markush_parts=parts))
             st.markush_marked += 1
             continue
         out.append(NamedCompound(

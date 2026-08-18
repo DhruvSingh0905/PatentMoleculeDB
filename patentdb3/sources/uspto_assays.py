@@ -167,6 +167,14 @@ _CID_CORE = (
 )
 _CID_PAT = re.compile(rf"^\s*(?:{_CID_LABEL.pattern[2:]})?{_CID_CORE}\s*$", re.I)
 
+# How much of a column must read as a compound id before the header-less
+# fallback in `build_columns` will call it one. Not a tuning knob: a real id
+# column is spoiled only by footnote rows, and US10253019's `Ex.` column sits
+# at 0.9984 because of exactly one (`*nd: no data`). Anything that needs this
+# lowered is a column the values do not support, and lowering it would hide
+# that rather than fix it.
+_CID_FALLBACK_MIN = 0.7
+
 
 # The shape `normalize_cid` strips padding zeros out of, compiled once. It ran
 # 204k times over a 137-patent sweep as an inline literal, paying a pattern-cache
@@ -225,9 +233,17 @@ def normalize_cid(text: str) -> str:
 _HEADER_CID = re.compile(
     r"\b(compound|cpd|example|ex#|entry|structure\s*no|no\.?|number|id)\b", re.I)
 _HEADER_NMR = re.compile(r"\bnmr\b|δ\s*\(?ppm|chemical\s+shift", re.I)
+# `esi` CARRIED NO WORD BOUNDARY AND MATCHED INSIDE "SYNTHESIS". US10207999
+# heads four tables `Chemical Synthesis Example No.` and every one classified
+# as a mass-spectrum column, so the compound number was typed as an exclusion
+# and no value in those tables could be attributed. It stayed invisible while
+# the id-column fallback was free to overwrite a named column — the fallback
+# quietly picked column 0 back up. Once the fallback stopped overwriting named
+# columns, the misclassification underneath surfaced as 26 tables losing their
+# id column. That is the same shape as `open` matching `open_count`.
 _HEADER_MS = re.compile(
     r"\bms\b|\bm/z\b|\[m\s*[+±]|\bm\s*\+\s*h\b|lc[- ]?ms|hrms|mass\s+spec|"
-    r"\bfound\b|\bobs(?:erved)?\b|esi", re.I)
+    r"\bfound\b|\bobs(?:erved)?\b|\besi\b", re.I)
 _HEADER_MW = re.compile(r"\bmw\b|molecular\s+weight|\bcalc(?:d|ulated)?\b|exact\s+mass", re.I)
 _HEADER_RT = re.compile(r"\brt\b|retention\s+time|\bt_?r\b|\bmethod\b|\bpurity\b", re.I)
 _HEADER_STRUCT = re.compile(r"\bstructure\b|\bstruct\.?\b", re.I)
@@ -1247,9 +1263,37 @@ def build_columns(table: Table, inherited: list[str] | None = None,
 
     # Exactly one id column. If the header didn't name one, take the leftmost
     # column whose values actually look like compound ids.
+    #
+    # THE CODE USED TO SAY `if score > best_score` AND TAKE THE MAXIMUM, WHICH
+    # IS NOT WHAT THE LINE ABOVE PROMISES. US10253019 TABLE-US-00003 heads
+    # `Ex. | Structure | TBK1 IC50 | IKKe IC50 | JAK2 IC50 | Name`. `_HEADER_CID`
+    # wants the spelled-out `example` and this patent abbreviates, so no header
+    # named an id and the fallback ran. `Ex.` scored 0.9984 — one footnote row
+    # (`*nd: no data`) breaks its integer run — while `TBK1 IC50`, an assay
+    # column of whole-number nM values, scored a perfect 1.0000 and won the id
+    # role by 0.0016. Every name in a 620-row table was then joined to an IC50
+    # value instead of an example number, and 104 rows shipped stamped `cid=2`.
+    #
+    # Two things are wrong and both are fixed here.
+    #
+    # A column whose HEADER already named it is not a candidate. The fallback
+    # exists for "the header didn't name an id"; letting it overwrite a column
+    # the header DID name is the fallback answering a question that was already
+    # answered. A header saying `IC50 (nM)` states the column is a measurement,
+    # and no arrangement of its digits makes it a compound number.
+    #
+    # And among what is left, LEFTMOST wins, as promised. A compound number is
+    # the first column of a patent table by near-universal convention, and a
+    # comparison by hundredths of a percent between two columns that both look
+    # like integers is not a judgement — it is a coin toss with a tie-break
+    # nobody chose.
     if not any(c.kind == CID for c in cols):
-        best, best_score = None, 0.0
+        named = {c.index for c in cols
+                 if c.kind not in (UNKNOWN, SUBSTITUENT) and (c.header or "").strip()}
+        best = None
         for c in cols:
+            if c.index in named:
+                continue
             # `r[c.index].text` was indexed and re-read three times per row,
             # and `.strip()` allocated a copy of every cell only to test it for
             # emptiness. Same rows, same order, same predicate.
@@ -1262,10 +1306,10 @@ def build_columns(table: Table, inherited: list[str] | None = None,
                         vals.append(t)
             if not vals:
                 continue
-            score = _count_matching(_CID_PAT, vals) / len(vals)
-            if score > best_score:
-                best, best_score = c, score
-        if best is not None and best_score >= 0.7:
+            if _count_matching(_CID_PAT, vals) / len(vals) >= _CID_FALLBACK_MIN:
+                best = c
+                break                      # LEFTMOST, as the comment promises
+        if best is not None:
             best.kind = CID
             best.assay_name = None
 
