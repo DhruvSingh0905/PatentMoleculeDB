@@ -159,7 +159,8 @@ def measure(gap, assembled: dict) -> MarkushOutcome:
         want = gap.printed_mass.get(cid)
         if want is None:
             continue
-        got = ExactMolWt(m) + mass_gate.PROTON
+        # The row's OWN adduct, never a default. See `MarkushGap.printed_shift`.
+        got = ExactMolWt(m) + gap.printed_shift.get(cid, mass_gate.PROTON)
         if abs(got - want) <= mass_gate.tolerance(want):
             oc.mass_agrees += 1
             oc.confirmed.add(cid)

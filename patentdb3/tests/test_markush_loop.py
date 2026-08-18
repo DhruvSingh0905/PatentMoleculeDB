@@ -89,6 +89,32 @@ def test_a_bad_row_no_longer_condemns_its_neighbours():
     assert "4" not in rep.structures
 
 
+def test_the_rows_own_adduct_is_used_not_a_default():
+    """A PRINTED m/z MEANS NOTHING WITHOUT THE ADDUCT IT WAS MEASURED UNDER.
+
+    `measure` used to add a proton unconditionally. On US9718825 — which
+    prints `(M - H)` in round parentheses, a shape `_ADDUCT_MINUS` could not
+    see — that made 28 correctly assembled molecules read as contradicting
+    their own patent by exactly 2 x PROTON. Re-weighed with the sign the row
+    prints, 30 of 30 agreed, worst residual 0.27 Da.
+
+    Toluidine is 107.073 neutral: 108.08 as [M+H], 106.07 as [M-H]. Under the
+    wrong sign each looks like the other contradicting by ~2 Da.
+    """
+    from patentdb3.sources import mass_gate
+
+    rows = [_row("1", "CH3", "NH2"), _row("2", "CH3", "NH2")]
+    gap = _gap(rows, masses={"1": 108, "2": 106})
+    gap.printed_shift = {"1": mass_gate.PROTON, "2": -mass_gate.PROTON}
+    rep = ML.repair_table(gap, {SCAF_REF: SCAFFOLD})
+    assert rep.outcome.mass_agrees == 2, "the row's own adduct was ignored"
+    assert rep.outcome.mass_contradicts == 0
+
+    gap.printed_shift = {}                 # forget it, and row 2 now "fails"
+    rep = ML.repair_table(gap, {SCAF_REF: SCAFFOLD})
+    assert rep.outcome.mass_contradicts == 1
+
+
 def test_a_row_nothing_weighed_is_not_adopted_either():
     """The plan being right does not make an unchecked molecule right."""
     rows = [_row(c, "CH3", "NH2") for c in ("1", "2")] + [_row("3", "CH3", "F")]

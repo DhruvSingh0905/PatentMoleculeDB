@@ -62,6 +62,12 @@ class MarkushGap:
     headings: list = field(default_factory=list)      # slot column headings
     names: dict = field(default_factory=dict)         # slot text -> OPSIN smiles
     printed_mass: dict = field(default_factory=dict)  # cid -> m/z the row prints
+    # THE SIGN TRAVELS WITH THE NUMBER. A printed m/z means nothing without
+    # the adduct it was measured under: weighing a protonated structure
+    # against a deprotonated value is wrong by 2 x PROTON on every row, and
+    # reads as 28 correctly assembled molecules contradicting their own
+    # patent. Carried here so `markush_outcome.measure` cannot forget to ask.
+    printed_shift: dict = field(default_factory=dict)  # cid -> +/-PROTON
     held_out: dict = field(default_factory=dict)      # cid -> the row's own name
     n_rows: int = 0
 
@@ -124,6 +130,7 @@ def find_gaps(patent_id: str, xml: str) -> list[MarkushGap]:
     if not markush_tables:
         return []
     masses = mass_gate.reported_masses(xml)
+    shifts = mass_gate.reported_shifts(xml)
     out: list[MarkushGap] = []
     for t in assemble_blocks(parse_tables(xml)):
         if t.table_id not in markush_tables:
@@ -137,6 +144,8 @@ def find_gaps(patent_id: str, xml: str) -> list[MarkushGap]:
         scaf, where = _scaffold_of(xml, t.table_id)
         held = _held_out_names(t)
         printed = {r.cid: masses[r.cid] for r in rows if r.cid in masses}
+        shift = {r.cid: shifts.get(r.cid, mass_gate.PROTON)
+                 for r in rows if r.cid in masses}
         sig = layout_signature(
             headings, len(headings),
             any(r.fragment_ref for r in rows), bool(printed), where)
@@ -144,7 +153,8 @@ def find_gaps(patent_id: str, xml: str) -> list[MarkushGap]:
             patent_id=patent_id, table_id=t.table_id,
             fingerprint=hashlib.sha1(sig.encode()).hexdigest()[:12],
             signature=sig, scaffold_ref=scaf, rows=rows, headings=headings,
-            names=names, printed_mass=printed, held_out=held, n_rows=len(rows)))
+            names=names, printed_mass=printed, printed_shift=shift,
+            held_out=held, n_rows=len(rows)))
     return out
 
 

@@ -133,8 +133,22 @@ PROTON = 1.00728
 # those, and it may sit inside a `<sup>` tag. So this is matched against the
 # RAW markup, not a tag-stripped string — the same reason `cid_first`
 # `_drawing_refs` reads raw XML.
+# AND THE BRACKET IS NOT ALWAYS SQUARE. This spelled four ways to write a
+# minus sign and exactly one way to write a bracket. US9718825 prints its
+# adduct in ROUND parentheses — `(M &#x2212; H)` 30 times, `(M&#x2212;H)` 5
+# times, square brackets zero times — so the gate saw no negative-mode row in
+# that document at all, added a proton to every one, and reported 28 correctly
+# assembled molecules as contradicting by exactly 2 x PROTON. Re-weighed with
+# the sign it prints, 30 of 30 agree, worst residual 0.27 Da.
+#
+# Corpus-wide the old pattern read 278 of 688 negative-mode occurrences: 40%.
+# No document mixes the two styles, so a patent is invisible or it is not.
+#
+# Same family as `\besi\b` matching "Synthesis" and `REPORTED` requiring the
+# literal `MS (ESI`: a pattern that enumerates one axis of variation
+# exhaustively and freezes another without noticing it had one.
 _ADDUCT_MINUS = re.compile(
-    r"\[\s*M\s*(?:&#x2212;|&#8722;|&minus;|[-−–])\s*H\s*\]", re.I)
+    r"[\[(]\s*M\s*(?:&#x2212;|&#8722;|&minus;|[-−–])\s*H\s*[\])]", re.I)
 
 
 def _shift(row_markup: str) -> float:
