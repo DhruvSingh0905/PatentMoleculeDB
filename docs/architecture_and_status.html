@@ -189,6 +189,7 @@ that compound's own row. It is the one independent check.</figcaption>
 <tr><td>Structures the patent contradicts</td><td class="n">109</td><td>across 23 patents; demoted, not deleted</td></tr>
 <tr><td>Markush compounds built</td><td class="n">599</td><td>these have no name anywhere in the document</td></tr>
 <tr><td>Markush compounds verified</td><td class="n">555</td><td><strong>98.9% of those built</strong>; 38 unverified, 6 dropped</td></tr>
+<tr><td>Assay values checked against BindingDB</td><td class="n">96.2%</td><td>8,725 of 9,072 agree to within 1%, over 18 patents BDB cites</td></tr>
 <tr><td>Image reading, corpus sample</td><td class="n">166</td><td>drawings over 33 patents, capped per patent</td></tr>
 <tr><td>&nbsp;&nbsp;per-patent median agreement</td><td class="n">100%</td><td>pooled figure is 77.9%</td></tr>
 <tr><td>&nbsp;&nbsp;patents at or above 90%</td><td class="n">15 of 29</td><td>4 patents fall below 50%</td></tr>
@@ -196,6 +197,19 @@ that compound's own row. It is the one independent check.</figcaption>
 
 <p>Quote the median, not the pooled figure. Compounds inside one document share a scaffold and
 a draughtsman, so the sample counts documents rather than compounds.</p>
+
+<div class="note">
+<p><strong>What the BindingDB figure does and does not say.</strong> It compares our value
+against theirs where both hold a measurement for the same compound. On that overlap we agree
+on 96.2% at a 1% tolerance, and 99.6% once BindingDB's own rounding to two significant figures
+is allowed for. That tests the assay reader, and it passes.</p>
+<p>It is not a coverage number and it is not a correctness benchmark. Coverage against
+BindingDB is not yet meaningful: the drawn compounds are not enumerated, so a coverage figure
+today measures unfinished work. BindingDB and ChEMBL also aggregate from sources outside the
+patent, so a row we do not hold is not automatically a miss. And identity here is gated by
+OPSIN, which either parses a name to a structure or refuses — so a compound we report is a
+compound the nomenclature supports, independent of any reference.</p>
+</div>
 
 <div class="note">
 <p><strong>4,475 compounds cannot be reached by any route.</strong> The document gives nothing
@@ -226,7 +240,7 @@ that appears nowhere else. Leave them out of any coverage denominator, and say s
 <tr><td>Tables no identity route reaches</td><td class="n">877 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing. It is traced and not yet built. This is an upper bound. Two blocks are confirmed; the rest is <strong>not determined</strong>.</td></tr>
 <tr><td>Three table layouts</td><td class="n">385 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing. Not yet built.</td></tr>
 <tr><td>Misread drawings</td><td class="n">4 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing yet. They are 8.9 to 18 Da off and share no pattern.</td></tr>
-<tr><td>Names dropped in text extraction</td><td class="n">not determined</td><td class="s"><span class="tag t-bad">open</span></td><td>A count. Nobody has measured it.</td></tr>
+<tr><td>Names dropped in text extraction</td><td class="n">~1,800</td><td class="s"><span class="tag t-warn">sized</span></td><td>Measured: 1,752 compounds carry a name-like string that never became a structure, range 1,450–2,100. Four patents hold 55% of it.</td></tr>
 <tr><td>Five patents scored zero</td><td class="n">5 patents</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. Our own mass check was wrong on one patent, and four were sampled before an earlier fix.</td></tr>
 </tbody></table>
 
@@ -238,11 +252,13 @@ item by a wide margin. It needs no new method.</li>
 <li><strong>Build the route for the tables no identity route reaches.</strong> Up to 877 rows.
 The cause is traced and nothing blocks the work.</li>
 <li><strong>Build the three table layouts.</strong> 385 rows. Nothing blocks the work.</li>
+<li><strong>Recover the dropped names.</strong> About 1,800, and more than half sit in four
+patents, so it is a small number of document defects rather than a broad weakness.</li>
 <li><strong>Build the loop that reads a patent's drawing convention.</strong> It unblocks the
 968 wavy cut bond rows, and it is the general answer to a convention we have not seen
 before.</li>
 </ol>
 
 <footer>
-patentdb3 · 137 patents · corpus dump 2026-08-17T23:55 · 420 tests passing
+patentdb3 · 137 patents · corpus dump 2026-08-17T23:55 · runs end to end
 </footer>

@@ -61,7 +61,7 @@ worth the build cost today. Date: **2026-08-17**.
 |---|---|---|
 | IUPAC locant to atom | **8 rows corpus-wide** | Procedure is known and verified safe for a monosubstituted ring: position 1 is the atom bonded to the scaffold, and 2/6 and 3/5 are symmetry-equivalent so direction cannot produce a wrong molecule. Breaks on a second substituent, a ring heteroatom or a fused ring. Worth 8 rows. |
 | three table layouts | 385 rows | Split headers, repeated column groups, vertical records. |
-| unknown dropped IUPACs | not sized | Text extraction drops names nobody has counted. Sits beside these as future gain. |
+| dropped IUPAC names | **~1,800**, sized 2026-08-18 | 1,752 (patent, cid) pairs carry a name-like string that never became a structure; range 1,450-2,100. Four patents hold 55% — US12011444 (393), US9745328 (285), US8957068 (183), US10172859 (135), two of which are already the named next fix. **83% of drop events write nothing to the loss log**: `cid_first`'s OPSIN rejections and `table_names`' losing candidates are both silent, so the log undercounts by design. Read `loss_counts` from the manifest, never from `loss_log.jsonl` — the file truncates per process. |
 | wavy cut bond | 968 rows in 6 patents | **Deliberately last. Do not work on it directly.** No recogniser reads a squiggle across a bond. Its FORMAL meaning in molfile is unspecified stereochemistry (flag 4), not attachment — the patent use is a drawing convention with no format backing. MolScribe does not drop the mark, it INVENTS a group there, returning a terminal isopropyl or tert-butyl, which is why a fragment read is never a substructure of the truth. See the note below for why hand-writing a splicer is the wrong move. |
 
 **The wavy bond is a TEST OF THE LOOP, not a task.** US9718825 states the
@@ -156,6 +156,7 @@ patentdb3/
   data/              assay_vocabulary.json + layout_rules.json (both TRACKED)
   tests/             269 tests, 13 files
   out/               dump, structures, manifest, loss log — gitignored
+  cli.py             front door: `setup` and `run`. Wraps verify, adds nothing.
   verify.py          functional check and the --dump entry point
 output_v3/           v3 cache, fetched XML, journals. Shares nothing with v2.
 ```
@@ -166,6 +167,8 @@ output_v3/           v3 cache, fetched XML, journals. Shares nothing with v2.
 source venv/bin/activate
 pip install py2opsin openpyxl        # requirements.txt is stale; both needed
 
+python3 -m patentdb3 setup                       # keys + switches -> .env
+python3 -m patentdb3 run US8952177 --dump        # front door: read + resolve
 python3 -m patentdb3.verify US8952177            # one patent, printed
 python3 -m patentdb3.verify US8952177 --dump     # + repair loop, writes out/
 python3 -m patentdb3.verify US8952177 --dump --no-heal   # reader only, $0

@@ -59,6 +59,24 @@ def _load() -> tuple[list[dict], dict]:
     return rows, man
 
 
+# What one printed value is worth in nM, the unit BindingDB publishes in.
+# Anything not here is not comparable and is left out rather than guessed at —
+# a pIC50 or a bare percentage is not a concentration.
+_TO_NM = {"nM": 1.0, "uM": 1e3, "mM": 1e6, "M": 1e9, "mol/L": 1e9,
+          "pM": 1e-3, "nmol/L": 1.0, "umol/L": 1e3}
+
+
+def _to_nM(value, unit):
+    """`value` in `unit` as nanomolar, or None when it is not a concentration."""
+    f = _TO_NM.get((unit or "").strip())
+    if f is None or not value:
+        return None
+    try:
+        return float(value) * f
+    except (TypeError, ValueError):
+        return None
+
+
 def _bdb(pids: set[str]) -> dict[tuple[str, str], set[float]]:
     """Reference points as {(patent, cid) -> {value_nM}}.
 
@@ -138,9 +156,20 @@ def main(argv: list[str]) -> int:
     if "--no-bdb" not in argv:
         ref = _bdb(pids)
         ours = collections.defaultdict(set)
+        # EVERY UNIT WE CAN CONVERT, NOT JUST uM. This read
+        # `r["unit"] == "uM"` and BindingDB publishes in nM — so the filter
+        # threw away the exact column BDB cites (41,959 nM rows against 40,893
+        # uM) and compared whatever micromolar column the patent also printed.
+        # US10004738 scored 0 of 49 because BDB cites `BACE1 Ki (nM)` — cid 1
+        # prints 83.0 and BDB says 83 — while this compared `at 10 uM (%)`, a
+        # percent-inhibition column. Agreement on the overlap read 67.5%; with
+        # nM included and nothing else changed it is 96.2%.
+        #
+        # The docstring said this judged assay agreement. It judged one unit.
         for r in rows:
-            if r["value_numeric"] and r["unit"] == "uM":
-                ours[(r["patent_id"], r["cid"])].add(float(r["value_numeric"]) * 1000)
+            nm = _to_nM(r.get("value_numeric"), r.get("unit"))
+            if nm is not None:
+                ours[(r["patent_id"], r["cid"])].add(nm)
         sb = wb.create_sheet("bindingdb")
         sb.append(["patent_id", "cid", "bdb_nM", "ours_nM", "agrees_1pct", "note"])
         hit = tot = 0
