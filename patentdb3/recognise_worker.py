@@ -34,12 +34,20 @@ import sys
 import traceback
 from pathlib import Path
 
-FIELDS = ("chemistry_id", "image_file", "smiles", "confidence",
+FIELDS = ("chemistry_id", "image_file", "smiles", "molfile", "confidence",
           "recogniser", "error")
 
 
 def load_molscribe():
-    """MolScribe. Returns `predict(path) -> (smiles, confidence)`."""
+    """MolScribe. Returns `predict(path) -> (smiles, molfile, confidence)`.
+
+    THE MOLFILE IS THE POINT, NOT A BONUS. A drawing writes `Ar` beside one
+    bond stub and `R1` beside another. MolScribe reads both: a label of the
+    form `R<digit>` becomes an isotope, and everything else becomes a dummy
+    carrying its text as an atom alias. SMILES has nowhere to put an atom
+    alias, so keeping only the SMILES column discarded every label that was
+    not already a number — which is exactly the set the assembly tier needed.
+    """
     import torch
     from molscribe import MolScribe
     from huggingface_hub import hf_hub_download
@@ -50,7 +58,7 @@ def load_molscribe():
 
     def predict(path: str):
         r = model.predict_image_file(path)
-        return r.get("smiles", ""), r.get("confidence", "")
+        return r.get("smiles", ""), r.get("molfile", ""), r.get("confidence", "")
     return predict
 
 
@@ -67,6 +75,9 @@ def load_decimer():
 
     def predict(path: str):
         out = predict_SMILES(path, confidence=True)
+        # DECIMER returns SMILES only — no molfile, so no atom aliases and no
+        # labels. That is a real difference from MolScribe for this tier, not
+        # an oversight here.
         if isinstance(out, tuple) and len(out) == 2:
             smi, toks = out
             try:
@@ -74,10 +85,10 @@ def load_decimer():
                 # numpy.float32, for which isinstance is False, and a filter
                 # written that way silently discards every score.
                 vals = [float(t[1]) for t in toks]
-                return smi, (sum(vals) / len(vals) if vals else "")
+                return smi, "", (sum(vals) / len(vals) if vals else "")
             except Exception:
-                return smi, ""
-        return out, ""
+                return smi, "", ""
+        return out, "", ""
     return predict
 
 
@@ -116,11 +127,13 @@ def main(argv: list[str] | None = None) -> int:
             path = a.job_dir / item["file"]
             row = {"chemistry_id": item["id"],
                    "image_file": Path(item["file"]).name,
-                   "smiles": "", "confidence": "", "recogniser": name,
-                   "error": ""}
+                   "smiles": "", "molfile": "", "confidence": "",
+                   "recogniser": name, "error": ""}
             try:
-                smi, conf = predict(str(path))
+                smi, molfile, conf = predict(str(path))
                 row["smiles"] = smi or ""
+                # Newlines would break the TSV row. Restored on read.
+                row["molfile"] = (molfile or "").replace("\n", "\\n")
                 row["confidence"] = "" if conf == "" else f"{float(conf):.4f}"
                 if not smi:
                     row["error"] = "empty prediction"

@@ -61,8 +61,13 @@ LABELS_NAME = "labels.tsv"
 # The columns a worker must write. A subset of `images.RESULT_FIELDS` — the
 # rest (`cid`, `n_segments`) are ours to fill in on ingest, and asking a remote
 # worker for them would couple it to our work list.
-WORKER_FIELDS = ("chemistry_id", "image_file", "smiles", "confidence",
-                 "recogniser", "error")
+# `molfile` IS NOT OPTIONAL DETAIL. It is where the drawing's own labels
+# survive: MolScribe writes an unnumbered R-group as a dummy carrying its text
+# as an atom alias (`Chem.SetAtomAlias(atom, symbol)` plus `molFileAlias`), and
+# SMILES has nowhere to put an atom alias. Keeping only the SMILES threw away
+# the answer to the one question this tier could not otherwise answer.
+WORKER_FIELDS = ("chemistry_id", "image_file", "smiles", "molfile",
+                 "confidence", "recogniser", "error")
 
 # WHAT A DRAWING SAYS THAT ITS STRUCTURE DOES NOT.
 #
@@ -135,17 +140,87 @@ def read_results(patent_id: str, path: Path | None = None) -> dict[str, str]:
     empty structure: "the model failed" and "the model says this drawing is
     nothing" must not become the same blank downstream.
     """
+    return {k: v for k, v, _lab in _rows(patent_id, path)}
+
+
+def _rows(patent_id: str, path: Path | None = None):
+    """`(chemistry_id, smiles, {point -> label})` for each usable result row.
+
+    The molfile wins when there is one, because it carries the labels and the
+    SMILES column does not. Falling back to the SMILES column keeps every
+    results file written before `molfile` existed readable — it simply has no
+    labels, which `deterministic_plan` reports rather than papers over.
+    """
     p = path or (job_dir(patent_id) / RESULTS_NAME)
     if not p.exists():
-        return {}
-    out: dict[str, str] = {}
+        return
     with p.open(newline="") as fh:
         for row in csv.DictReader(fh, delimiter="\t"):
-            smi = (row.get("smiles") or "").strip()
             chem = (row.get("chemistry_id") or "").strip()
-            if chem and smi:
-                out[chem] = smi
-    return out
+            if not chem:
+                continue
+            smi, labels = from_molfile(
+                (row.get("molfile") or "").replace("\\n", "\n"))
+            if not smi:
+                smi, labels = (row.get("smiles") or "").strip(), {}
+            if smi:
+                yield chem, smi, labels
+
+
+def from_molfile(molfile: str) -> tuple[str, dict]:
+    """A recogniser's molfile -> `(numbered SMILES, {point number -> label})`.
+
+    THE TWO ANSWERS COME OUT OF ONE PASS, and they have to. The point numbers
+    must mean the same thing in the structure and in the labels, and they only
+    do if one traversal assigns both. Numbering the dummies from a re-parsed
+    SMILES and reading the labels from the molfile would look right and drift
+    apart the first time RDKit canonicalised the atoms differently — a silent
+    swap of `Ar` and `R1` that builds two clean, wrong molecules.
+
+    So the dummies are numbered here, in molfile atom order, and the isotopes
+    are written INTO the SMILES. `markush.number_open_points` then sees a
+    scaffold that is already numbered and leaves it alone.
+
+    An empty molfile, or one that will not parse, returns `("", {})` — the
+    caller falls back to the plain SMILES column and simply has no labels.
+    """
+    from rdkit import Chem, RDLogger
+    RDLogger.DisableLog("rdApp.*")
+
+    if not molfile or not molfile.strip():
+        return "", {}
+    m = Chem.MolFromMolBlock(molfile, sanitize=False)
+    if m is None:
+        return "", {}
+    try:
+        Chem.SanitizeMol(m)
+    except Exception:
+        return "", {}
+    # AN ISOTOPE THE RECOGNISER ALREADY SET IS AN ANSWER, NOT A SLOT TO FILL.
+    # MolScribe turns `R1` into isotope 1 and leaves `Ar` at isotope 0 with an
+    # alias. Renumbering everything 1..N in atom order overwrote that: `Ar`
+    # took isotope 1, while `build_text_group` still reads heading `R1` as
+    # point 1 — two different columns resolving to one atom, and two clean
+    # wrong molecules with nothing to flag them. Existing numbers are kept and
+    # the unnumbered points take the numbers left over.
+    dummies = [a for a in m.GetAtoms() if a.GetAtomicNum() == 0]
+    if not dummies:
+        return Chem.MolToSmiles(m), {}
+    taken = {a.GetIsotope() for a in dummies if a.GetIsotope()}
+    labels: dict = {i: f"R{i}" for i in taken}      # the recogniser's own read
+    nxt = 1
+    for a in dummies:
+        if a.GetIsotope():
+            continue
+        while nxt in taken:
+            nxt += 1
+        taken.add(nxt)
+        a.SetIsotope(nxt)
+        alias = Chem.GetAtomAlias(a) or (a.GetProp("molFileAlias")
+                                         if a.HasProp("molFileAlias") else "")
+        if alias:
+            labels[nxt] = alias
+    return Chem.MolToSmiles(m), labels
 
 
 def read_labels(patent_id: str, path: Path | None = None) -> dict:
@@ -157,10 +232,16 @@ def read_labels(patent_id: str, path: Path | None = None) -> dict:
     apart, the same way `read_results` keeps a failed drawing out of the
     structures.
     """
+    # THE RECOGNISER'S OWN OUTPUT FIRST. `labels.tsv` exists for a label no
+    # recogniser could read — a hand transcription, an OCR pass, a vision
+    # model — and is the exception, not the route. MolScribe already reads
+    # `Ar` and `-Z-R3` off the drawing and keeps them as atom aliases, so for
+    # every drawing it handled there is nothing to transcribe and nothing to
+    # pay for.
+    out: dict = {chem: lab for chem, _smi, lab in _rows(patent_id) if lab}
     p = path or (job_dir(patent_id) / LABELS_NAME)
     if not p.exists():
-        return {}
-    out: dict = {}
+        return out
     with p.open(newline="") as fh:
         for row in csv.DictReader(fh, delimiter="\t"):
             chem = (row.get("chemistry_id") or "").strip()

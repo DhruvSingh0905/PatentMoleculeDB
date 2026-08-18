@@ -89,6 +89,69 @@ def test_a_failed_drawing_is_not_stored_as_an_empty_structure(job, monkeypatch, 
     assert "CHEM-1" not in got
 
 
+def _molscribe_shaped(spec):
+    """A molblock exactly as MolScribe emits one.
+
+    `R<digit>` becomes an isotope; anything else becomes a dummy carrying its
+    text as an atom alias. `spec` is `[(ring position, label, isotope)]`.
+    """
+    from rdkit import Chem, RDLogger
+    RDLogger.DisableLog("rdApp.*")
+    rw = Chem.RWMol(Chem.MolFromSmiles("c1ccccc1"))
+    for pos, lab, iso in spec:
+        a = Chem.Atom("*")
+        if iso:
+            a.SetIsotope(iso)
+        else:
+            Chem.SetAtomAlias(a, lab)
+            a.SetProp("molFileAlias", lab)
+        i = rw.AddAtom(a)
+        rw.AddBond(pos, i, Chem.BondType.SINGLE)
+    m = rw.GetMol()
+    Chem.SanitizeMol(m)
+    return Chem.MolToMolBlock(m), Chem.MolToSmiles(m)
+
+
+def test_the_label_survives_in_the_molfile_and_not_in_the_smiles():
+    """WHY `molfile` IS A COLUMN. The drawing writes `Ar` beside a bond stub;
+    MolScribe keeps it as an atom alias; SMILES has nowhere to put one. Keeping
+    only the SMILES discarded every label that was not already a number."""
+    mb, smiles = _molscribe_shaped([(0, "Ar", 0), (3, "-Z-R3", 0)])
+    assert "Ar" not in smiles and "Z-R3" not in smiles
+    _smi, labels = R.from_molfile(mb)
+    assert sorted(labels.values()) == ["-Z-R3", "Ar"]
+
+
+def test_an_isotope_the_recogniser_already_set_is_never_overwritten():
+    """THE COLLISION THIS ALMOST SHIPPED.
+
+    MolScribe turns `R1` into isotope 1 and leaves `Ar` at isotope 0 with an
+    alias. Renumbering every dummy 1..N in atom order gave `Ar` isotope 1,
+    while `build_text_group` still resolves the heading `R1` to point 1 — two
+    columns, one atom, two clean wrong molecules and nothing to flag them.
+    """
+    mb, _ = _molscribe_shaped([(0, "Ar", 0), (3, "R1", 1)])
+    smi, labels = R.from_molfile(mb)
+    assert labels[1] == "R1", "the recogniser's own number was overwritten"
+    assert labels[2] == "Ar"
+    assert "[1*]" in smi and "[2*]" in smi
+
+
+def test_labels_come_from_the_recogniser_before_any_transcription(job, monkeypatch, tmp_path):
+    """`labels.tsv` is the exception, not the route: for every drawing MolScribe
+    handled there is nothing to transcribe and nothing to pay for."""
+    monkeypatch.setattr(config, "RECOGNISER_BACKEND", "file")
+    mb, smiles = _molscribe_shaped([(0, "Ar", 0), (3, "R1", 1)])
+    out = tmp_path / "results.tsv"
+    _worker_writes(out, [{"chemistry_id": "CHEM-1", "image_file": "a.png",
+                          "smiles": smiles, "molfile": mb.replace("\n", "\\n"),
+                          "confidence": "", "recogniser": "molscribe",
+                          "error": ""}])
+    R.ingest("USTEST", out)
+    assert not (R.job_dir("USTEST") / R.LABELS_NAME).exists()
+    assert R.read_labels("USTEST")["CHEM-1"][2] == "Ar"
+
+
 def test_the_worker_imports_nothing_from_this_package():
     """THE DECOUPLING, asserted rather than intended.
 
