@@ -108,6 +108,41 @@ def test_an_unrecognised_scaffold_blocks_rather_than_guesses():
     assert not rep.structures
 
 
+def test_the_drawings_labels_make_the_mapping_deterministic():
+    """THE POINT OF `recognise.LABEL_FIELDS`.
+
+    A structure recogniser returns the atoms and discards the writing, so the
+    scaffold arrives with anonymous attachment points while the table's columns
+    are named. Asked to bridge that with chemistry, a model declined 24 times
+    out of 24 — correctly, the answer was in no part of its input. Transcribed
+    back as data, the same mapping is a dictionary lookup and costs nothing.
+    """
+    row = MarkushRow(cid="1", route=ROUTE_TEXT_ONLY,
+                     slots={"Ar": "phenyl", "R2": "NH2"},
+                     varying={"Ar": (None, "phenyl"), "R2": (None, "NH2")})
+    gap = _gap([row], masses={"1": 171})
+    gap.headings = ["Ar", "R2"]
+    gap.names = {"phenyl": "*c1ccccc1"}
+
+    without = ML.deterministic_plan(gap)
+    assert without.slot_map == {}
+    assert "Ar" in without.note
+
+    labels = {SCAF_REF: {1: "Ar", 2: "R2"}}
+    rep = ML.repair_table(gap, {SCAF_REF: SCAFFOLD}, labels=labels)
+    assert rep.adopted
+    assert rep.plan.source == "deterministic"   # NOT bought
+    assert rep.attempts == 0
+    assert rep.structures["1"] == "Nc1ccc(-c2ccccc2)cc1"   # 4-aminobiphenyl
+
+
+def test_a_label_matches_a_heading_on_what_it_says_not_how_it_is_set():
+    """`-Z-R3` and `Z-R3`, `R 1` and `R1`: one name, several typesettings."""
+    assert ML._norm("-Z-R3") == ML._norm("Z-R3") == "ZR3"
+    assert ML._norm("R 1") == ML._norm("R-1") == "R1"
+    assert ML._norm("Ar") == "AR"
+
+
 def test_a_heading_with_no_number_is_not_guessed_at():
     """`Ar` names a position the drawing marks some other way. Refusing is the
     point: a guessed join builds a clean-looking wrong molecule."""
@@ -131,7 +166,7 @@ def test_a_plan_supplies_what_the_heading_does_not():
     gap.headings = ["Ar", "R2"]
     gap.names = {"phenyl": "*c1ccccc1"}
 
-    def propose(_gap, _feedback):
+    def propose(_gap, _structures, _feedback):
         return ML.Plan(slot_map={"Ar": 1}, source="model")
 
     rep = ML.repair_table(gap, {SCAF_REF: SCAFFOLD}, propose=propose)
@@ -145,7 +180,7 @@ def test_the_loop_stops_after_max_attempts():
     gap = _gap([row], masses={"1": 999})       # can never agree
     calls = []
 
-    def propose(_gap, feedback):
+    def propose(_gap, _structures, feedback):
         calls.append(feedback)
         return ML.Plan(slot_map={}, source="model")
 
@@ -162,7 +197,7 @@ def test_the_free_plan_runs_first_and_costs_nothing():
     gap = _gap(rows, masses={"1": 108, "2": 111})
     called = []
     rep = ML.repair_table(gap, {SCAF_REF: SCAFFOLD},
-                          propose=lambda g, f: called.append(f))
+                          propose=lambda g, s, f: called.append(f))
     assert rep.adopted
     assert rep.plan.source == "deterministic"
     assert called == []

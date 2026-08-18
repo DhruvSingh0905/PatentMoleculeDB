@@ -38,6 +38,7 @@ is reported as blocked, by name, rather than assembled from a guess.
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -61,8 +62,23 @@ BLOCK_NO_REFEREE = "nothing_in_the_document_can_check_this"
 
 @dataclass
 class Plan:
-    """Which column fills which attachment point on the scaffold."""
-    slot_map: dict = field(default_factory=dict)     # heading -> isotope
+    """How to turn one table's rows into molecules. Two answers, both proposed.
+
+    `slot_map`   heading -> which numbered attachment point on the scaffold it
+                 fills. Needed only for a heading that carries no number of its
+                 own, like `Ar`; the points are numbered by
+                 `markush.number_open_points` in the recogniser's atom order,
+                 which is stable for one image and meaningless across images.
+
+    `fragment_cut`  SMARTS for the group the recogniser INVENTED where a wavy
+                 cut mark was, to be removed and replaced by an attachment
+                 point. Empty means the fragment is taken as read.
+
+    Neither is a correction and neither is defaulted. Both are judged only by
+    what the assembled molecules weigh against the masses the patent prints.
+    """
+    slot_map: dict = field(default_factory=dict)     # heading -> point number
+    fragment_cut: str = ""
     source: str = "deterministic"                    # or "model"
     note: str = ""
 
@@ -85,18 +101,56 @@ class TableReport:
     refusals: dict = field(default_factory=dict)
 
 
-def deterministic_plan(gap: MarkushGap) -> Plan:
-    """The plan the headings already state. `slot_map` covers only what is certain.
+def _norm(s: str) -> str:
+    """A label and a column heading compared on what they say, not how set.
 
-    A heading carrying a number needs no entry — `markush.build_text_group`
-    reads it from the heading itself. This exists to say, explicitly, that a
-    heading WITHOUT one is not being guessed at.
+    `R 1`, `R1` and `R-1` are one heading typeset three ways; `-Z-R3` and
+    `Z-R3` are one label with and without its leading bond. Anything that is
+    not a letter or a digit is punctuation of the page, never of the name.
     """
-    unnumbered = [h for h in gap.headings if not MK._SLOT_NUMBER.match(h)]
-    return Plan(slot_map={}, source="deterministic",
-                note=("every slot heading carries its own number"
-                      if not unnumbered
-                      else f"no attachment point stated for: {', '.join(unnumbered)}"))
+    return re.sub(r"[^A-Za-z0-9]", "", s or "").upper()
+
+
+def deterministic_plan(gap: MarkushGap, labels: dict | None = None) -> Plan:
+    """The plan the document already states. No chemistry is decided here.
+
+    Three sources, all of them transcription:
+
+      - a heading that carries its own number (`R2`) states its point, because
+        a recogniser writes `R2` in a drawing as the dummy `[2*]`.
+      - a LABEL read off the scaffold drawing (`labels`, see
+        `recognise.LABEL_FIELDS`) states it for a heading that does not, which
+        is the whole reason that file exists.
+      - anything left is not guessed. `slot_map` omits it and
+        `build_text_group` refuses the row.
+
+    THIS IS THE STEP THE MODEL WAS WRONGLY DOING. Asked "which attachment
+    point does `Ar` fill", given only `[1*]...[2*]...[3*]`, a model declined 24
+    times out of 24 across two runs — correctly, because the labels had been
+    discarded by the recogniser and the answer was in no part of its input.
+    Once they are transcribed back, the mapping is a dictionary lookup and
+    nothing is being reasoned about at all.
+    """
+    by_label = {_norm(v): k
+                for k, v in (labels or {}).get(gap.scaffold_ref, {}).items()}
+    slot_map: dict = {}
+    unresolved = []
+    for h in gap.headings:
+        if MK._SLOT_NUMBER.match(h):
+            continue                      # the heading states its own point
+        n = by_label.get(_norm(h))
+        if n is None:
+            unresolved.append(h)
+        else:
+            slot_map[h] = n
+    if unresolved:
+        note = ("no attachment point stated for: " + ", ".join(unresolved)
+                + ("" if labels else " (no labels transcribed for this scaffold)"))
+    elif slot_map:
+        note = f"mapped from the drawing's own labels: {slot_map}"
+    else:
+        note = "every slot heading carries its own number"
+    return Plan(slot_map=slot_map, source="deterministic", note=note)
 
 
 def apply_plan(gap: MarkushGap, plan: Plan,
@@ -116,12 +170,20 @@ def apply_plan(gap: MarkushGap, plan: Plan,
     if not scaf:
         why[BLOCK_NO_SCAFFOLD] = len(gap.rows)
         return {}, why
+    # Numbered so a plan can refer to a point at all. A scaffold whose points
+    # are already numbered is untouched.
+    scaf = MK.number_open_points(scaf)
     out: dict[str, str] = {}
     for row in gap.rows:
         frag = structures.get(row.fragment_ref, "") if row.fragment_ref else ""
         if row.fragment_ref and not frag:
             why[BLOCK_NO_FRAGMENT] += 1
             continue
+        if frag and plan.fragment_cut:
+            frag, err = MK.open_cut_bond(frag, plan.fragment_cut)
+            if err:
+                why[err.split(":")[0].strip()[:60]] += 1
+                continue
         if row.route == MK.ROUTE_IMAGE_ONLY and not row.varying:
             smi, err = MK.build_image_only(scaf, frag)
         else:
@@ -139,8 +201,15 @@ def apply_plan(gap: MarkushGap, plan: Plan,
 
 
 def repair_table(gap: MarkushGap, structures: dict, *,
-                 propose=None) -> TableReport:
-    """One table, start to finish. `propose(gap, feedback)` may return a Plan."""
+                 propose=None, labels: dict | None = None) -> TableReport:
+    """One table, start to finish.
+
+    `propose(gap, structures, feedback)` may return a `Plan`. It is handed the
+    structures because the question it answers — which point does `Ar` fill,
+    and what did the recogniser invent at the cut bond — is unanswerable
+    without seeing the scaffold and a few fragment reads. `None` from it ends
+    the loop for this table; it is not an error.
+    """
     rep = TableReport(patent_id=gap.patent_id, table_id=gap.table_id,
                       fingerprint=gap.fingerprint, n_rows=gap.n_rows)
     if gap.scaffold_ref not in structures:
@@ -152,7 +221,7 @@ def repair_table(gap: MarkushGap, structures: dict, *,
         rep.blocked = BLOCK_NO_REFEREE
         return rep
 
-    plan = deterministic_plan(gap)
+    plan = deterministic_plan(gap, labels)
     feedback = ""
     for attempt in range(MAX_ATTEMPTS + 1):
         rep.attempts = attempt
@@ -169,7 +238,7 @@ def repair_table(gap: MarkushGap, structures: dict, *,
                     gap.patent_id, gap.table_id, attempt, feedback)
         if propose is None or attempt >= MAX_ATTEMPTS:
             break
-        nxt = propose(gap, feedback)
+        nxt = propose(gap, structures, feedback)
         if nxt is None:
             break
         plan = nxt
@@ -177,7 +246,7 @@ def repair_table(gap: MarkushGap, structures: dict, *,
 
 
 def repair_patent(patent_id: str, xml: str, structures: dict | None = None,
-                  *, propose=None) -> list[TableReport]:
+                  *, propose=None, labels: dict | None = None) -> list[TableReport]:
     """Every substituent table in one patent.
 
     `structures` defaults to whatever `recognise` already has for this patent —
@@ -187,10 +256,13 @@ def repair_patent(patent_id: str, xml: str, structures: dict | None = None,
     """
     if not config.MARKUSH_ASSEMBLY:
         return []
-    if structures is None:
-        from ..recognise import structures as _recognised
-        structures = _recognised(patent_id)
-    return [repair_table(g, structures, propose=propose)
+    if structures is None or labels is None:
+        from .. import recognise as _R
+        if structures is None:
+            structures = _R.structures(patent_id)
+        if labels is None:
+            labels = _R.read_labels(patent_id)
+    return [repair_table(g, structures, propose=propose, labels=labels)
             for g in find_gaps(patent_id, xml)]
 
 

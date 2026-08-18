@@ -55,12 +55,38 @@ logger = logging.getLogger(__name__)
 # images so a whole job is one directory to copy.
 MANIFEST_NAME = "manifest.json"
 RESULTS_NAME = "results.tsv"
+# The second thing a drawing carries and a structure recogniser discards.
+LABELS_NAME = "labels.tsv"
 
 # The columns a worker must write. A subset of `images.RESULT_FIELDS` — the
 # rest (`cid`, `n_segments`) are ours to fill in on ingest, and asking a remote
 # worker for them would couple it to our work list.
 WORKER_FIELDS = ("chemistry_id", "image_file", "smiles", "confidence",
                  "recogniser", "error")
+
+# WHAT A DRAWING SAYS THAT ITS STRUCTURE DOES NOT.
+#
+# A scaffold drawing writes `Ar` beside one bond and `R1` beside another. A
+# structure recogniser returns the atoms and drops the writing:
+#
+#     drawing   ...Ar on one stub, R1 on another, -Z-R3 on a third
+#     MolScribe [1*]c1nc(-c2ccc(NS([2*])(=O)=O)cc2)nc2[nH]nc([3*])c12
+#
+# Three holes, all anonymous. The table's columns are named. Nothing left in
+# the structure says which column fills which hole, and no amount of chemical
+# reasoning recovers it — the information was on the page and is now gone.
+#
+# So it is read back as ITS OWN RECORD, in this shape, and nothing downstream
+# has to interpret prose. One row per attachment point:
+#
+#     chemistry_id     point_number   label
+#     CHEM-US-00020    1              Ar
+#     CHEM-US-00020    2              R1
+#     CHEM-US-00020    3              -Z-R3
+#
+# `point_number` is the numbering `markush.number_open_points` assigns, so the
+# two files join exactly. A transcription is checkable; a paragraph is not.
+LABEL_FIELDS = ("chemistry_id", "point_number", "label")
 
 BACKENDS = ("off", "file", "colab")
 
@@ -120,6 +146,48 @@ def read_results(patent_id: str, path: Path | None = None) -> dict[str, str]:
             if chem and smi:
                 out[chem] = smi
     return out
+
+
+def read_labels(patent_id: str, path: Path | None = None) -> dict:
+    """`{chemistry_id -> {point number -> label}}`. `{}` when none was read.
+
+    Absent is not empty-and-fine: a scaffold with no labels file simply has
+    not been transcribed, and `deterministic_plan` then refuses the mapping
+    rather than guessing it. Missing evidence and evidence of nothing are kept
+    apart, the same way `read_results` keeps a failed drawing out of the
+    structures.
+    """
+    p = path or (job_dir(patent_id) / LABELS_NAME)
+    if not p.exists():
+        return {}
+    out: dict = {}
+    with p.open(newline="") as fh:
+        for row in csv.DictReader(fh, delimiter="\t"):
+            chem = (row.get("chemistry_id") or "").strip()
+            lab = (row.get("label") or "").strip()
+            try:
+                n = int((row.get("point_number") or "").strip())
+            except ValueError:
+                continue
+            if chem and lab:
+                out.setdefault(chem, {})[n] = lab
+    return out
+
+
+def write_labels(patent_id: str, labels: dict) -> Path:
+    """`{chemistry_id -> {point -> label}}` -> the canonical labels file."""
+    d = job_dir(patent_id)
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / LABELS_NAME
+    with p.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, LABEL_FIELDS, delimiter="\t",
+                           extrasaction="ignore")
+        w.writeheader()
+        for chem in sorted(labels):
+            for n in sorted(labels[chem]):
+                w.writerow({"chemistry_id": chem, "point_number": n,
+                            "label": labels[chem][n]})
+    return p
 
 
 def structures(patent_id: str) -> dict[str, str]:

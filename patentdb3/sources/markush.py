@@ -331,6 +331,112 @@ def strip_open_points(mol, keep: int = 1):
     return rw.GetMol(), dropped + (len(dummies) - keep)
 
 
+def number_open_points(smiles: str) -> str:
+    """Give every unnumbered attachment point an isotope, in atom order.
+
+    A recogniser writes `R2` as `[2*]`, and `build_text_group` reads that
+    number as the whole correspondence between a column and an atom. But a
+    scaffold drawn with plain bond stubs comes back with BARE dummies —
+    US9718825's is `**c1nc(-c2ccc(NS(*)(=O)=O)cc2)nc2[nH]nc(*)c12`, four
+    points all at isotope 0 — and four columns cannot be mapped onto one key.
+
+    So the points are numbered 1..N here, in the recogniser's own atom order,
+    and a plan then refers to them by that number. The order carries NO
+    meaning: it is stable for one image and arbitrary across images, which is
+    exactly why the mapping has to be proposed and measured rather than
+    assumed. Numbering only makes the question askable.
+
+    A DUMMY BONDED ONLY TO ANOTHER DUMMY IS DROPPED FIRST, and this is a fact
+    rather than a preference: an attachment point must attach to the molecule.
+    US9718825's scaffold read back as
+    `[1*][2*]c1nc(-c2ccc(NS([3*])(=O)=O)cc2)nc2[nH]nc([4*])c12`, in which the
+    first dummy's only neighbour is the second. Offered as four points, three
+    real and one that cannot be filled, a model asked to map three columns onto
+    them declined — correctly, twelve times over. Numbering a point that is not
+    one does not ask a harder question, it asks an unanswerable one.
+    """
+    from rdkit import Chem
+
+    m = Chem.MolFromSmiles(smiles) if smiles else None
+    if m is None:
+        return smiles
+    stray = [a.GetIdx() for a in m.GetAtoms()
+             if a.GetAtomicNum() == 0
+             and all(nb.GetAtomicNum() == 0 for nb in a.GetNeighbors())
+             and a.GetDegree() > 0]
+    if stray:
+        rw = Chem.RWMol(m)
+        for i in sorted(stray, reverse=True):
+            rw.RemoveAtom(i)
+        m = rw.GetMol()
+        try:
+            Chem.SanitizeMol(m)
+        except Exception:
+            return smiles                 # leave it alone rather than damage it
+    n = 0
+    for a in m.GetAtoms():
+        if a.GetAtomicNum() == 0 and not a.GetIsotope():
+            n += 1
+            a.SetIsotope(n)
+    return Chem.MolToSmiles(m) if n or stray else smiles
+
+
+def open_cut_bond(fragment_smiles: str, cut_smarts: str) -> tuple[str, str]:
+    """Undo a recogniser's invented group at a cut bond. `(smiles, error)`.
+
+    THE MEASUREMENT THIS EXISTS FOR. A wavy line drawn across a bond means
+    "cut here" in patent drawings and has no such meaning in any molfile — its
+    formal reading is unspecified stereochemistry. MolScribe does not drop the
+    mark, it reads the stub as a real bond and CAPS it. Measured over both
+    markush patents, 705 of 707 fragment drawings came back carrying a
+    tert-butyl (or, 3 times, an isopropyl) at exactly the position the mark
+    occupied, and 644 of 644 on US9718825 with no exceptions at all.
+
+    So the group is removable: delete the matched atoms and put the attachment
+    point on whatever they were bonded to.
+
+    THIS IS A PROPOSAL, NOT A CORRECTION. A real compound may genuinely carry
+    a tert-butyl, and stripping one that belongs there builds a wrong molecule
+    that looks perfectly clean. Nothing here decides that — `cut_smarts` comes
+    from a plan, and the plan is judged by whether the assembled molecules
+    match the masses the patent itself prints. Do not promote this to a
+    default.
+    """
+    from rdkit import Chem
+
+    m = Chem.MolFromSmiles(fragment_smiles) if fragment_smiles else None
+    if m is None:
+        return "", "fragment did not parse"
+    patt = Chem.MolFromSmarts(cut_smarts) if cut_smarts else None
+    if patt is None:
+        return "", f"cut pattern is not valid SMARTS: {cut_smarts!r}"
+    hits = m.GetSubstructMatches(patt)
+    if not hits:
+        return "", f"no cut group matching {cut_smarts!r}"
+    if len(hits) > 1:
+        # WHICH tert-butyl is the invented one is not answerable from the
+        # picture, and picking either builds a clean-looking wrong molecule.
+        return "", f"{len(hits)} candidate cut groups — ambiguous"
+    grp = set(hits[0])
+    anchors = {nb.GetIdx() for i in grp for nb in m.GetAtomWithIdx(i).GetNeighbors()
+               if nb.GetIdx() not in grp}
+    if len(anchors) != 1:
+        return "", (f"cut group touches {len(anchors)} atoms, expected 1"
+                    if anchors else
+                    "the whole fragment IS the cut group — nothing was drawn")
+    rw = Chem.RWMol(m)
+    star = rw.AddAtom(Chem.Atom(0))
+    rw.AddBond(anchors.pop(), star, Chem.BondType.SINGLE)
+    for i in sorted(grp, reverse=True):
+        rw.RemoveAtom(i)
+    out = rw.GetMol()
+    try:
+        Chem.SanitizeMol(out)
+    except Exception as e:
+        return "", f"cut fragment does not sanitize: {e!r}"[:120]
+    return Chem.MolToSmiles(out), ""
+
+
 def build_image_only(scaffold_smiles: str, fragment_smiles: str):
     """The `image_only` route. `(smiles, error)` — one of the two is empty.
 
