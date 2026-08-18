@@ -45,7 +45,13 @@ def _load() -> tuple[list[dict], dict]:
     if not MANIFEST_PATH.exists():
         sys.exit(f"no manifest at {MANIFEST_PATH} — run `python3 -m patentdb3.verify <PID> --dump` first")
     man = json.loads(MANIFEST_PATH.read_text())
+    # The manifest records an ABSOLUTE path, which is right as a record and
+    # useless as a lookup once the checkout moves. Same precedence as
+    # `images.emit`: the recorded path wins when it exists, and the configured
+    # location is reached for only when it has gone away.
     dump = Path(man["dump"])
+    if not dump.exists() and Path(config.DUMP).exists():
+        dump = Path(config.DUMP)
     if not dump.exists():
         sys.exit(f"manifest names {dump}, which does not exist")
     with dump.open() as fh:
@@ -126,6 +132,9 @@ def main(argv: list[str]) -> int:
     sm.freeze_panes = "A2"
     sm.column_dimensions["B"].width = 42
 
+    _joined_sheet(wb, rows, man)
+    _trail_sheets(wb, man)
+
     if "--no-bdb" not in argv:
         ref = _bdb(pids)
         ours = collections.defaultdict(set)
@@ -155,6 +164,176 @@ def main(argv: list[str]) -> int:
     print(f"{len(rows):,} records from {man['written_at']} ({', '.join(sorted(pids))})")
     print(f"-> {XLSX_PATH}")
     return 0
+
+
+def _joined_sheet(wb, dump_rows, man) -> None:
+    """THE DELIVERABLE. One row per compound: identity joined to its assays.
+
+    Everything else in this workbook is working material — the raw records,
+    the per-route trail, the reference comparison. This sheet is the thing the
+    pipeline exists to produce, and it is the only one that answers "what did
+    you get out of this patent" without the reader assembling it themselves.
+
+    WIDE, not long: one row per compound, with each assay as its own column
+    triple. A chemist reading a long-format table has to pivot it before it
+    means anything, and pivoting is where a value silently lands against the
+    wrong compound.
+    """
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    src = Path(man.get("structures") or "")
+    if not src.exists():
+        src = Path(config.STRUCTURES)
+    if not src.exists():
+        return
+    csv.field_size_limit(10 ** 8)
+    with src.open(newline="") as fh:
+        st = list(csv.DictReader(fh, delimiter="\t"))
+
+    # identity, best row per (patent, cid): a confirmed one beats an unchecked
+    # one, and any resolved one beats a blank.
+    def rank(r):
+        return (r.get("mass_check") == "agrees", bool(r.get("inchikey")))
+    ident: dict = {}
+    for r in st:
+        k = (r["patent_id"], r.get("cid") or "")
+        if not k[1]:
+            continue
+        if k not in ident or rank(r) > rank(ident[k]):
+            ident[k] = r
+
+    assays = collections.defaultdict(dict)
+    names: dict = {}
+    for r in dump_rows:
+        k = (r["patent_id"], r.get("cid") or "")
+        a = (r.get("assay_name") or "").strip()
+        if not k[1] or not a:
+            continue
+        names[a] = names.get(a, 0) + 1
+        cell = assays[k].setdefault(a, {"v": [], "q": set(), "n": set(), "u": set()})
+        if r.get("value_numeric"):
+            cell["v"].append(r["value_numeric"])
+        elif r.get("letter_grade"):
+            cell["v"].append(r["letter_grade"])
+        if r.get("qualifier"):
+            cell["q"].add(r["qualifier"])
+        if r.get("n_runs"):
+            cell["n"].add(r["n_runs"])
+        if r.get("unit"):
+            cell["u"].add(r["unit"])
+
+    top = [a for a, _ in sorted(names.items(), key=lambda kv: -kv[1])[:40]]
+    head = ["patent_id", "cid", "verdict", "inchikey", "smiles", "name"]
+    for a in top:
+        head += [f"{a} value", f"{a} qualifier", f"{a} n", f"{a} unit"]
+
+    ws = wb.create_sheet("compounds")
+    ws.append(head)
+    for k in sorted(set(ident) | set(assays)):
+        r = ident.get(k, {})
+        v = ("confirmed" if r.get("mass_check") == "agrees" else
+             "DISPUTED" if r.get("mass_check") == "contradicts" else
+             "resolved" if r.get("inchikey") else
+             "markush" if r.get("markush") == "True" else "unresolved")
+        row = [k[0], k[1], v, r.get("inchikey", ""),
+               (r.get("smiles") or "")[:400], (r.get("name") or "")[:300]]
+        for a in top:
+            c = assays.get(k, {}).get(a)
+            row += ["; ".join(c["v"]) if c else "",
+                    "; ".join(sorted(c["q"])) if c else "",
+                    "; ".join(sorted(c["n"])) if c else "",
+                    "; ".join(sorted(c["u"])) if c else ""]
+        ws.append(row)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    ws.freeze_panes = "D2"
+    ws.auto_filter.ref = ws.dimensions
+    for i, c in enumerate(head, 1):
+        ws.column_dimensions[get_column_letter(i)].width = (
+            46 if c in ("smiles", "name") else max(10, min(26, len(c) + 4)))
+    print(f"compounds: {ws.max_row - 1:,} rows, {len(top)} assays as columns")
+
+
+def _trail_sheets(wb, man) -> None:
+    """One sheet per identity route: compound id in, structure and evidence out.
+
+    THE POINT IS TO BE CHECKABLE BY HAND. `structures.tsv` already holds the
+    whole trail in 28 columns, but 38,871 rows of it in one file answers no
+    question. Split by the route that produced the row, a chemist can take a
+    compound number, see which route claimed it, what text or picture it was
+    claimed from, and whether the patent's own mass agrees — without reading
+    any code.
+
+    `verdict` is the column to sort on. It is the only one that is not our
+    own opinion: it is what the patent printed.
+    """
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    src = Path(man.get("structures") or "")
+    if not src.exists():
+        src = Path(config.STRUCTURES)
+    if not src.exists():
+        print("no structures.tsv — trail sheets skipped")
+        return
+
+    csv.field_size_limit(10 ** 8)
+    with src.open(newline="") as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+
+    # Only two sources exist in the dump — `table` and `cid_first` — so the
+    # split that answers a question is by WHAT HAPPENED, not by which module
+    # ran. `unresolved` is deliberately its own sheet: it is the work queue.
+    ROUTES = {
+        "trail_confirmed":  lambda r: r.get("mass_check") == "agrees",
+        "trail_disputed":   lambda r: r.get("mass_check") == "contradicts",
+        "trail_markush":    lambda r: r.get("markush") == "True",
+        "trail_resolved":   lambda r: bool(r.get("inchikey")),
+        "trail_unresolved": lambda r: True,
+    }
+    COLS = ["patent_id", "cid", "verdict", "inchikey", "smiles", "name",
+            "source", "reason", "mass_check", "mass_delta",
+            "markush_kind", "markush_reason", "markush_parts",
+            "drawn_ref", "drawn_file", "repair", "heading_transform",
+            "dewrap", "raw_cell", "table_id", "row_index", "column_signal"]
+
+    def _verdict(r):
+        if r.get("mass_check") == "agrees":
+            return "confirmed by printed mass"
+        if r.get("mass_check") == "contradicts":
+            return "CONTRADICTED by printed mass"
+        if r.get("inchikey"):
+            return "resolved, nothing to check against"
+        if r.get("markush") == "True":
+            return "markush — no single structure"
+        if r.get("drawn_ref"):
+            return "drawn only — needs image recognition"
+        return "not resolved"
+
+    used = set()
+    for title, keep in ROUTES.items():
+        sel = [r for r in rows if keep(r) and id(r) not in used]
+        used.update(id(r) for r in sel)
+        ws = wb.create_sheet(title)
+        ws.append(COLS)
+        for r in sel:
+            r = {**r, "verdict": _verdict(r)}
+            ws.append([(r.get(c) or "")[:400] if isinstance(r.get(c), str)
+                       else r.get(c) for c in COLS])
+        for c in ws[1]:
+            c.font = Font(bold=True)
+        ws.freeze_panes = "C2"
+        ws.auto_filter.ref = ws.dimensions
+        for i, c in enumerate(COLS, 1):
+            ws.column_dimensions[get_column_letter(i)].width = (
+                46 if c in ("smiles", "name", "raw_cell", "markush_parts")
+                else max(11, min(30, len(c) + 6)))
+        print(f"{title}: {len(sel):,} rows")
+
+    left = [r for r in rows if id(r) not in used]
+    if left:
+        print(f"  (+{len(left):,} rows in no route sheet — check ROUTES)")
 
 
 if __name__ == "__main__":
