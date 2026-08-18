@@ -509,6 +509,129 @@ def colab_run(patent_id: str, session: str, *, tries: int = 80,
     return 0
 
 
+SAMPLE_ID = "_sample"
+
+
+def sample(n: int = 300, *, per_patent: int = 8, job: str = "RECOVER",
+           seed: int = 0) -> dict:
+    """A stratified sample of work-list rows the PATENT ITSELF can score.
+
+    THE POINT: NO GROUND TRUTH IS NEEDED. A RECOVER row is one with no known
+    answer — that is what makes 13,054 of them unmeasurable and why the only
+    accuracy figure this project has comes from VALIDATE rows, which are a
+    different and easier population. But 6,626 of those RECOVER rows print
+    their own m/z, and a printed mass scores a structure without anyone
+    knowing what the structure should be.
+
+    So this samples rows that carry a mass, and `score_sample` weighs whatever
+    comes back. The result is an end-to-end estimate — fetch, recognise, join
+    to the right compound — over the population that actually matters, at a
+    few hundred images rather than 13,054.
+
+    CAPPED PER PATENT ON PURPOSE. Compounds inside one document share a
+    scaffold and a draughtsman, so 300 images from three patents measures
+    three patents. `per_patent` is what buys breadth; `n` only buys precision.
+    """
+    import random
+
+    from .sources import mass_gate
+
+    work = [w for w in IM.read_worklist() if w.job == job]
+    by_pat: dict[str, list] = {}
+    for w in work:
+        by_pat.setdefault(w.patent_id, []).append(w)
+
+    rng = random.Random(seed)
+    picked: list = []
+    for pid in sorted(by_pat):
+        p = config.XML_INPUT_DIR / f"{pid}.xml"
+        if not p.exists():
+            continue
+        ms = mass_gate.reported_masses(p.read_text(errors="replace"))
+        have = [w for w in by_pat[pid] if w.cid in ms]
+        if not have:
+            continue
+        rng.shuffle(have)
+        picked.extend(have[:per_patent])
+    rng.shuffle(picked)
+    picked = picked[:n]
+
+    drawings, expected = {}, {}
+    for w in picked:
+        got = IM.fetch(w)
+        if got:
+            drawings[f"{w.patent_id}|{w.cid}"] = got
+            expected[f"{w.patent_id}|{w.cid}"] = w.cid
+    write_manifest(SAMPLE_ID, drawings)
+    logger.info("sample: %d row(s) from %d patent(s), %d fetched",
+                len(picked), len({w.patent_id for w in picked}), len(drawings))
+    return {"picked": len(picked), "fetched": len(drawings),
+            "patents": len({w.patent_id for w in picked})}
+
+
+def score_sample() -> str:
+    """Weigh the sample's recognised structures against the printed masses.
+
+    Reports PER PATENT as well as pooled, because compounds inside one
+    document are near-identical and a pooled figure claims a sample size the
+    data has not earned — the same reason `images.score_by_patent` exists.
+    """
+    import collections
+
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem.Descriptors import ExactMolWt
+    RDLogger.DisableLog("rdApp.*")
+
+    from .sources import mass_gate
+
+    got = read_results(SAMPLE_ID)
+    if not got:
+        return f"no results at {job_dir(SAMPLE_ID) / RESULTS_NAME}"
+    per = collections.defaultdict(collections.Counter)
+    masses: dict[str, dict] = {}
+    shifts: dict[str, dict] = {}
+    for key, smi in got.items():
+        pid, cid = key.split("|", 1)
+        if pid not in masses:
+            p = config.XML_INPUT_DIR / f"{pid}.xml"
+            xml = p.read_text(errors="replace") if p.exists() else ""
+            masses[pid] = mass_gate.reported_masses(xml) if xml else {}
+            shifts[pid] = mass_gate.reported_shifts(xml) if xml else {}
+        want = masses[pid].get(cid)
+        m = Chem.MolFromSmiles(smi) if smi else None
+        if want is None:
+            per[pid]["no mass"] += 1
+        elif m is None:
+            per[pid]["unreadable"] += 1
+        else:
+            d = ExactMolWt(m) + shifts[pid].get(cid, mass_gate.PROTON) - want
+            per[pid]["agrees" if abs(d) <= mass_gate.tolerance(want)
+                     else "contradicts"] += 1
+
+    rates = []
+    lines = [f"{'patent':<17}{'n':>5}{'agree':>7}{'contra':>8}{'rate':>8}"]
+    for pid in sorted(per):
+        c = per[pid]
+        n = c["agrees"] + c["contradicts"]
+        if not n:
+            continue
+        rates.append(c["agrees"] / n)
+        lines.append(f"{pid:<17}{n:>5}{c['agrees']:>7}{c['contradicts']:>8}"
+                     f"{100*c['agrees']/n:>7.0f}%")
+    tot_a = sum(c["agrees"] for c in per.values())
+    tot_c = sum(c["contradicts"] for c in per.values())
+    lines.append("")
+    lines.append(f"{len(rates)} patents scored, {tot_a + tot_c} structures weighed")
+    if rates:
+        rates.sort()
+        med = rates[len(rates) // 2]
+        lines.append(f"PER-PATENT median {100*med:.0f}%   "
+                     f"min {100*min(rates):.0f}%   max {100*max(rates):.0f}%")
+    lines.append(f"pooled {100*tot_a/max(1, tot_a+tot_c):.1f}% "
+                 f"— do not quote alone, see `images.score_by_patent`")
+    return "\n".join(lines)
+
+
 def ingest(patent_id: str, src: Path) -> str:
     """Copy a worker's results into this patent's job directory."""
     if not src.exists():
@@ -534,6 +657,14 @@ def main(argv: list[str] | None = None) -> int:
                         "A shared scaffold is never in the image work list, "
                         "so without this the tier's most important drawing is "
                         "always missing.")
+
+    p = sub.add_parser("sample", help="stage a corpus sample the patents can score")
+    p.add_argument("-n", type=int, default=300)
+    p.add_argument("--per-patent", type=int, default=8)
+    p.add_argument("--job", default="RECOVER", choices=("RECOVER", "VALIDATE"))
+    p.add_argument("--seed", type=int, default=0)
+
+    p = sub.add_parser("score", help="weigh the sample against the printed masses")
 
     p = sub.add_parser("run", help="drive a Colab session over the manifest")
     p.add_argument("patent_id")
@@ -566,6 +697,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"staged {len(drawings)} drawing(s) -> {m.parent}")
         print("run any recogniser over it, then:")
         print(f"  python3 -m patentdb3.recognise ingest {a.patent_id} <results.tsv>")
+        return 0
+
+    if a.cmd == "sample":
+        r = sample(a.n, per_patent=a.per_patent, job=a.job, seed=a.seed)
+        print(f"sampled {r['picked']} {a.job} row(s) from {r['patents']} patent(s); "
+              f"{r['fetched']} fetched -> {job_dir(SAMPLE_ID)}")
+        print(f"  python3 -m patentdb3.recognise run {SAMPLE_ID} -s <session>")
+        print(f"  python3 -m patentdb3.recognise score")
+        return 0
+
+    if a.cmd == "score":
+        print(score_sample())
         return 0
 
     if a.cmd == "run":

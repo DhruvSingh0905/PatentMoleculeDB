@@ -79,3 +79,35 @@ patentdb/data/ref_ik_cache.json
 # ── v2, retired. Kept ON DISK for reference (see CLAUDE.md) but never
 # published: it is not the live package and must not be added to.
 /patentdb_v2/
+
+# ── Throwaway: measurement scripts, run logs, one-off dumps ──────
+# EVERY PATTERN HERE IS ROOT-ANCHORED, and that is load-bearing. A bare
+# `test_*.py` would hide `patentdb3/tests/`, and a bare `*.json` would hide
+# `patentdb3/data/layout_rules.json` — 172 bought rules with no undo. The
+# package lives in `patentdb3/`, `docs/` holds the tracked prose, and the only
+# tracked files at the root are this file, the three markdown documents and
+# `requirements.txt`. So anything else appearing at the root is scratch by
+# construction.
+#
+# Scratch belongs OUTSIDE the repo anyway — this session's went to the job
+# directory and `/tmp` — but a diagnostic written in a hurry lands wherever the
+# shell happens to be, and one committed by accident is a file the next reader
+# has to decide about.
+/*.py
+/*.ipynb
+/*.log
+/*.json
+/*.tsv
+/*.csv
+/*.txt
+!/requirements.txt
+/*.html
+/*.xlsx
+/*.tar
+/*.xml
+
+# Whole directories that only ever hold output
+/_rerun_logs/
+/graphify-out/
+/scratch/
+/mineru_output/
