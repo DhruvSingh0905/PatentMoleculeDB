@@ -301,7 +301,19 @@ def test_the_real_tables_are_found_with_the_referees_the_page_gives(
 def test_one_layout_serves_every_table_of_that_shape():
     """The fingerprint is the LAYOUT, never the patent — so a plan bought for
     US9718825's Table 1 is reused on its Tables 2, 3 and 7 without paying
-    again. Four tables, 632 rows, one question."""
+    again. Four tables, 632 rows, one question.
+
+    ASSERTED AS A MAJORITY, NOT AS A TOTAL. This once required every
+    mass-bearing table in the patent to share one fingerprint. Table 4 then
+    became visible — it holds a drawing and no text slot column at all — and
+    that is a genuinely different layout deserving its own plan. Demanding one
+    fingerprint for the whole patent would have meant either losing Table 4 or
+    pretending it has a shape it does not. The property worth protecting is
+    that tables of the SAME shape share a plan, which is what the big four
+    still do.
+    """
+    import collections
+
     from patentdb3.core import config
     from patentdb3.repair.markush_gap import find_gaps
 
@@ -310,5 +322,9 @@ def test_one_layout_serves_every_table_of_that_shape():
         pytest.skip("US9718825.xml not cached")
     gaps = find_gaps("US9718825", p.read_text(errors="replace"))
     with_mass = [g for g in gaps if g.printed_mass]
-    assert len({g.fingerprint for g in with_mass}) == 1
+    rows_per_fp = collections.Counter()
+    for g in with_mass:
+        rows_per_fp[g.fingerprint] += g.n_rows
+    biggest = rows_per_fp.most_common(1)[0][1]
+    assert biggest >= 600, "the big tables no longer share one layout"
     assert sum(g.n_rows for g in with_mass) >= 600

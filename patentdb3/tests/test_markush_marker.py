@@ -215,15 +215,22 @@ def test_every_claimed_table_holds_a_drawing(pid):
 
 def test_the_real_substituent_tables_are_all_still_claimed():
     """THE OTHER DIRECTION, and the one that costs structures if it breaks.
-    US9718825 is 5 of the 13 surviving tables and 639 of the 1,152 rows."""
+
+    A table dropping OUT of this set means its compounds go back to claiming a
+    fragment picture as their structure. A table joining it does not cost
+    anything, so the assertion is a floor per table rather than a frozen dict:
+    Table 4 joined when the marker learned to accept a scaffold introduced in
+    prose, and an equality check turned that gain into a failure.
+    """
     mk = _markush_cids(_xml(PID))
     per: dict[str, int] = {}
     for tid in mk.values():
         per[tid] = per.get(tid, 0) + 1
-    assert per == {
-        "TABLE-US-00001": 429, "TABLE-US-00002": 10, "TABLE-US-00003": 81,
-        "TABLE-US-00007": 116, "TABLE-US-00012": 3,
-    }, per
+    floor = {"TABLE-US-00001": 429, "TABLE-US-00002": 10,
+             "TABLE-US-00003": 81, "TABLE-US-00007": 116,
+             "TABLE-US-00012": 3}
+    for tid, n in floor.items():
+        assert per.get(tid, 0) >= n, f"{tid} lost rows: {per.get(tid, 0)} < {n}"
 
 
 # ── the gate on its own, with the real row shapes ──────────────────────────

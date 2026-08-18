@@ -1,0 +1,248 @@
+<meta charset="utf-8">
+<title>patentdb3 — Architecture and Status</title>
+<style>
+  @page { size: A4; margin: 16mm 15mm 14mm; }
+  :root{
+    --ink:#14171a; --ink2:#3f464e; --ink3:#767d86;
+    --rule:#d4d7dc; --rule2:#e8eaee;
+    --accent:#7a3b12; --accent-bg:#f6efe8;
+    --good:#1f5c3d; --bad:#8c2b21; --warn:#8a6410;
+    --mono:"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;color:var(--ink);background:#fff;
+       font:10.4pt/1.5 "Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;}
+  h1{font-size:22pt;line-height:1.12;margin:0 0 2mm;letter-spacing:-.02em}
+  .sub{color:var(--ink2);font-size:10.5pt;margin:0 0 1mm}
+  .stamp{font:8.2pt/1.4 var(--mono);color:var(--ink3);margin:0}
+  header{border-bottom:2.5px solid var(--ink);padding-bottom:3.5mm;margin-bottom:5mm}
+  h2{font-size:13pt;margin:7mm 0 2.5mm;padding-top:2.5mm;
+     border-top:1px solid var(--rule);letter-spacing:-.01em;break-after:avoid}
+  h2:first-of-type{border-top:none;padding-top:0}
+  p{margin:0 0 2.2mm;color:var(--ink2)}
+  strong{color:var(--ink);font-weight:600}
+  table{border-collapse:collapse;width:100%;margin:2.5mm 0;font-size:9pt;
+        font-family:-apple-system,"Helvetica Neue",sans-serif;break-inside:avoid}
+  th{text-align:left;font:600 7.4pt var(--mono);letter-spacing:.05em;
+     text-transform:uppercase;color:var(--ink3);border-bottom:1.2px solid var(--rule);
+     padding:1.4mm 2mm}
+  td{padding:1.4mm 2mm;border-bottom:.6px solid var(--rule2);color:var(--ink2);
+     vertical-align:top}
+  td.n{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);
+       font-size:8.4pt;color:var(--ink);white-space:nowrap}
+  td.s{white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  .lede{font-size:10.6pt;color:var(--ink);border-left:2.5px solid var(--accent);
+        padding-left:3.5mm;margin:0 0 4mm}
+  .kpi{display:flex;gap:2.5mm;margin:3mm 0 4mm}
+  .kpi div{flex:1;border:1px solid var(--rule);border-radius:2px;padding:2.2mm 2.5mm}
+  .kpi .v{font:700 15pt/1 var(--mono);color:var(--accent);
+          font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+  .kpi .l{font-size:7.6pt;color:var(--ink3);margin-top:1mm;line-height:1.3;
+          font-family:-apple-system,sans-serif}
+  .tag{display:inline-block;font:600 7pt var(--mono);padding:.4mm 1.2mm;
+       border-radius:1.5px;letter-spacing:.04em}
+  .t-good{background:var(--good);color:#fff}
+  .t-bad{background:var(--bad);color:#fff}
+  .t-warn{background:var(--warn);color:#fff}
+  .note{background:#fafaf8;border:1px solid var(--rule2);border-left:2.5px solid var(--warn);
+        padding:2.5mm 3mm;margin:2.5mm 0;break-inside:avoid}
+  .note p:last-child{margin-bottom:0}
+  ol{margin:0 0 2.2mm;padding-left:5mm;color:var(--ink2)}
+  li{margin-bottom:1.6mm}
+  figure{margin:3mm 0 2mm;break-inside:avoid}
+  figure svg{width:100%;height:auto;display:block}
+  figcaption{font-size:8.4pt;color:var(--ink3);margin-top:1.5mm;
+             font-family:-apple-system,sans-serif}
+  .dead td:first-child{color:var(--ink);font-weight:600}
+  footer{margin-top:6mm;padding-top:2.5mm;border-top:1px solid var(--rule);
+         font:7.8pt var(--mono);color:var(--ink3)}
+</style>
+
+<header>
+  <h1>patentdb3 — Architecture and Status</h1>
+  <p class="sub">Patent number in, structured chemistry out.</p>
+  <p class="stamp">2026-08-18 &nbsp;·&nbsp; 137 patents &nbsp;·&nbsp; corpus dump 2026-08-17T23:55</p>
+</header>
+
+<div class="kpi">
+  <div><div class="v">116,007</div><div class="l">assay records<br>137 patents</div></div>
+  <div><div class="v">24,948</div><div class="l">compounds resolved<br>to a structure</div></div>
+  <div><div class="v">3,184</div><div class="l">structures the patent's<br>own mass confirms</div></div>
+  <div><div class="v">555</div><div class="l">markush compounds<br>built and verified</div></div>
+</div>
+
+<h2>1 · Summary</h2>
+
+<p class="lede">The system takes a patent number and returns its chemistry as a table. It reads
+the patent document. It extracts every assay value. It then finds the identity of each
+compound, because a patent names a compound in several different ways. It checks each
+structure against the mass the patent printed itself. Today it holds 116,007 assay records
+from 137 patents, and it has resolved 24,948 compounds to a structure. The largest remaining
+group is compounds that the patent only draws. That group needs image recognition, and image
+recognition needs GPU time.</p>
+
+<h2>2 · How it works</h2>
+
+<figure>
+<svg viewBox="0 0 700 352" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="Pipeline diagram from patent XML to one row per compound">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5"
+            orient="auto-start-reverse">
+      <path d="M0,1 L9,5 L0,9 z" fill="#767d86"/>
+    </marker>
+    <style>
+      .bx{fill:#fff;stroke:#d4d7dc;stroke-width:1.1;rx:3}
+      .bxa{fill:#f6efe8;stroke:#7a3b12;stroke-width:1.1}
+      .bxo{fill:#fff;stroke:#14171a;stroke-width:1.6}
+      .bi{fill:#fafaf8;stroke:#e8eaee;stroke-width:1}
+      .t{font-family:-apple-system,"Helvetica Neue",sans-serif;fill:#14171a}
+      .tt{font-size:12px;font-weight:600}
+      .ts{font-size:9.5px;fill:#3f464e}
+      .tx{font-size:9px;fill:#767d86}
+      .lb{font-family:"SF Mono",Menlo,monospace;font-size:8.5px;fill:#767d86;
+          letter-spacing:.06em}
+      .ln{stroke:#767d86;stroke-width:1.1;fill:none}
+    </style>
+  </defs>
+
+  <!-- input -->
+  <rect class="bx" x="250" y="6" width="200" height="32" rx="3"/>
+  <text class="t tt" x="350" y="26" text-anchor="middle">Patent document (XML)</text>
+  <line class="ln" x1="350" y1="38" x2="350" y2="52" marker-end="url(#a)"/>
+
+  <!-- assay extraction -->
+  <rect class="bx" x="170" y="54" width="360" height="42" rx="3"/>
+  <text class="t tt" x="350" y="74" text-anchor="middle">Assay extraction</text>
+  <text class="t ts" x="350" y="88" text-anchor="middle">compound id · assay · value · units — 116,007 records</text>
+
+  <!-- fan out -->
+  <line class="ln" x1="350" y1="96" x2="350" y2="118"/>
+  <text class="t lb" x="4" y="112">IDENTITY ROUTES — HOW THE DOCUMENT NAMES THE COMPOUND</text>
+  <line class="ln" x1="85" y1="118" x2="613" y2="118"/>
+  <line class="ln" x1="85" y1="118" x2="85" y2="130" marker-end="url(#a)"/>
+  <line class="ln" x1="261" y1="118" x2="261" y2="130" marker-end="url(#a)"/>
+  <line class="ln" x1="437" y1="118" x2="437" y2="130" marker-end="url(#a)"/>
+  <line class="ln" x1="613" y1="118" x2="613" y2="130" marker-end="url(#a)"/>
+
+  <rect class="bx" x="4" y="132" width="162" height="58" rx="3"/>
+  <text class="t tt" x="85" y="152" text-anchor="middle">Name in a heading</text>
+  <text class="t tx" x="85" y="166" text-anchor="middle">&#8220;Example 12&#8221; gives</text>
+  <text class="t tx" x="85" y="178" text-anchor="middle">the chemical name</text>
+
+  <rect class="bx" x="180" y="132" width="162" height="58" rx="3"/>
+  <text class="t tt" x="261" y="152" text-anchor="middle">Name in a table cell</text>
+  <text class="t tx" x="261" y="166" text-anchor="middle">a table column holds</text>
+  <text class="t tx" x="261" y="178" text-anchor="middle">the chemical name</text>
+
+  <rect class="bx" x="356" y="132" width="162" height="58" rx="3"/>
+  <text class="t tt" x="437" y="152" text-anchor="middle">Search from the id</text>
+  <text class="t tx" x="437" y="166" text-anchor="middle">follow the compound id</text>
+  <text class="t tx" x="437" y="178" text-anchor="middle">back into the text</text>
+
+  <rect class="bx" x="532" y="132" width="162" height="58" rx="3"/>
+  <text class="t tt" x="613" y="152" text-anchor="middle">Markush assembly</text>
+  <text class="t tx" x="613" y="166" text-anchor="middle">one scaffold plus a</text>
+  <text class="t tx" x="613" y="178" text-anchor="middle">table of R groups</text>
+
+  <!-- fan in -->
+  <line class="ln" x1="85" y1="190" x2="85" y2="204"/>
+  <line class="ln" x1="261" y1="190" x2="261" y2="204"/>
+  <line class="ln" x1="437" y1="190" x2="437" y2="204"/>
+  <line class="ln" x1="613" y1="190" x2="613" y2="204"/>
+  <line class="ln" x1="85" y1="204" x2="613" y2="204"/>
+  <line class="ln" x1="350" y1="204" x2="350" y2="218" marker-end="url(#a)"/>
+
+  <!-- gate -->
+  <rect class="bxa" x="60" y="220" width="580" height="66" rx="3"/>
+  <text class="t tt" x="350" y="238" text-anchor="middle">Verification gate</text>
+  <rect class="bi" x="70" y="246" width="180" height="32" rx="2"/>
+  <text class="t ts" x="160" y="260" text-anchor="middle">Name check</text>
+  <text class="t tx" x="160" y="272" text-anchor="middle">the name must read as a structure</text>
+  <rect class="bi" x="260" y="246" width="180" height="32" rx="2"/>
+  <text class="t ts" x="350" y="260" text-anchor="middle">Reagent filter</text>
+  <text class="t tx" x="350" y="272" text-anchor="middle">solvents and reagents removed</text>
+  <rect class="bi" x="450" y="246" width="180" height="32" rx="2"/>
+  <text class="t ts" x="540" y="260" text-anchor="middle">Mass gate</text>
+  <text class="t tx" x="540" y="272" text-anchor="middle">must match the printed mass</text>
+  <line class="ln" x1="350" y1="286" x2="350" y2="300" marker-end="url(#a)"/>
+
+  <!-- output -->
+  <rect class="bxo" x="150" y="302" width="400" height="44" rx="3"/>
+  <text class="t tt" x="350" y="320" text-anchor="middle">One row per compound</text>
+  <text class="t ts" x="350" y="334" text-anchor="middle">structure + assay values — 24,948 resolved, 3,184 mass-confirmed</text>
+</svg>
+<figcaption>The routes run in turn. The first one that gives a structure wins. When a route
+fails, the system records the reason. The mass gate uses only the mass the patent printed in
+that compound's own row. It is the one independent check.</figcaption>
+</figure>
+
+<h2>3 · Status</h2>
+
+<table>
+<thead><tr><th>What works today</th><th>Measure</th><th>Note</th></tr></thead>
+<tbody>
+<tr><td>Assay values read from tables</td><td class="n">116,007</td><td>over 137 patents</td></tr>
+<tr><td>Compounds resolved to a structure</td><td class="n">24,948</td><td>all four routes together</td></tr>
+<tr><td>Structures the printed mass confirms</td><td class="n">3,184</td><td>only 31 of 137 patents print a mass at all</td></tr>
+<tr><td>Structures the patent contradicts</td><td class="n">109</td><td>across 23 patents; demoted, not deleted</td></tr>
+<tr><td>Markush compounds built</td><td class="n">599</td><td>these have no name anywhere in the document</td></tr>
+<tr><td>Markush compounds verified</td><td class="n">555</td><td><strong>98.9% of those built</strong>; 38 unverified, 6 dropped</td></tr>
+<tr><td>Image reading, corpus sample</td><td class="n">166</td><td>drawings over 33 patents, capped per patent</td></tr>
+<tr><td>&nbsp;&nbsp;per-patent median agreement</td><td class="n">100%</td><td>pooled figure is 77.9%</td></tr>
+<tr><td>&nbsp;&nbsp;patents at or above 90%</td><td class="n">15 of 29</td><td>4 patents fall below 50%</td></tr>
+</tbody></table>
+
+<p>Quote the median, not the pooled figure. Compounds inside one document share a scaffold and
+a draughtsman, so the sample counts documents rather than compounds.</p>
+
+<div class="note">
+<p><strong>4,475 compounds cannot be reached by any route.</strong> The document gives nothing
+outside the assay tables. 78% of them sit in four patents that identify a compound by a number
+that appears nowhere else. Leave them out of any coverage denominator, and say so.</p>
+</div>
+
+<h2>4 · Decisions taken</h2>
+
+<table class="dead">
+<thead><tr><th>Decision</th><th>Reason</th></tr></thead>
+<tbody>
+<tr><td>No LLM vision for markush structures</td><td>The image recogniser already reads the R-group labels off the drawing. The mapping is a lookup, not a perception problem.</td></tr>
+<tr><td>No dedicated markush model</td><td>MarkushGrapher-2 scores 48–56% on its authors' own benchmarks. That is below what we already measure.</td></tr>
+<tr><td>Model confidence is not a quality signal</td><td>Measured on 67 images. Correct and incorrect reads overlap completely.</td></tr>
+<tr><td>BindingDB is reference only</td><td>The only evidence that may correct a structure is what the patent itself printed.</td></tr>
+<tr><td>Judge each row, not each table</td><td>Under one plan, 527 of 561 molecules were confirmed and 34 contradicted. The failures were per drawing, so the verdict is per row.</td></tr>
+<tr><td>Keep molecules nothing can verify</td><td>Refusing them deleted 38 correct molecules on a patent that prints no masses. Absence of evidence is now recorded as such. Evidence against is still fatal.</td></tr>
+</tbody></table>
+
+<h2>5 · Problems</h2>
+
+<table>
+<thead><tr><th>Problem</th><th>Size</th><th>Status</th><th>What unblocks it</th></tr></thead>
+<tbody>
+<tr><td>Drawn compounds not yet recognised</td><td class="n">13,053 rows</td><td class="s"><span class="tag t-bad">open</span></td><td>GPU time. The method already works. 6,626 of these rows print their own mass, so they can be scored.</td></tr>
+<tr><td>Wavy cut bond</td><td class="n">968 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>A loop that reads the drawing convention from the patent's own prose. The removal step already works.</td></tr>
+<tr><td>Tables no identity route reaches</td><td class="n">877 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing. It is traced and not yet built. This is an upper bound. Two blocks are confirmed; the rest is <strong>not determined</strong>.</td></tr>
+<tr><td>Three table layouts</td><td class="n">385 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing. Not yet built.</td></tr>
+<tr><td>Misread drawings</td><td class="n">4 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing yet. They are 8.9 to 18 Da off and share no pattern.</td></tr>
+<tr><td>Names dropped in text extraction</td><td class="n">not determined</td><td class="s"><span class="tag t-bad">open</span></td><td>A count. Nobody has measured it.</td></tr>
+<tr><td>Five patents scored zero</td><td class="n">5 patents</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. Our own mass check was wrong on one patent, and four were sampled before an earlier fix.</td></tr>
+</tbody></table>
+
+<h2>6 · Next steps</h2>
+
+<ol>
+<li><strong>Buy GPU time and recognise the 13,053 drawn compounds.</strong> This is the largest
+item by a wide margin. It needs no new method.</li>
+<li><strong>Build the route for the tables no identity route reaches.</strong> Up to 877 rows.
+The cause is traced and nothing blocks the work.</li>
+<li><strong>Build the three table layouts.</strong> 385 rows. Nothing blocks the work.</li>
+<li><strong>Build the loop that reads a patent's drawing convention.</strong> It unblocks the
+968 wavy cut bond rows, and it is the general answer to a convention we have not seen
+before.</li>
+</ol>
+
+<footer>
+patentdb3 · 137 patents · corpus dump 2026-08-17T23:55 · 420 tests passing
+</footer>

@@ -31,12 +31,15 @@ others cannot (see CLAUDE.md's own "pick 2-4 patents, say why" instruction):
                                 markush/InChIKey check (710 of them; measured
                                 to contain 0 markush rows in this sample,
                                 which the test states rather than explains).
-  MARKUSH_DRAWN_PID = US9718825   the only cached patent found (by scanning
-                                all 137) where cid_first emits BOTH `drawn_ref`
-                                rows (8) and `substituent_table:` markush rows
-                                (593) in the same document — needed to make
-                                the "these two never carry the other's marker"
-                                check non-vacuous on both sides at once.
+  MARKUSH_DRAWN_PID = US11548900  the only cached patent (of 137 scanned) where
+                                cid_first emits BOTH `drawn_ref` rows (20) and
+                                `substituent_table:` markush rows (88) in one
+                                document — needed to make the "these two never
+                                carry the other's marker" check non-vacuous on
+                                both sides at once. US9718825 held this role
+                                until its Table 4 was recognised as a
+                                substituent table, which correctly emptied its
+                                drawn_ref side.
   HEAL_PID = US10030020        gaps_found == already_known == 2: every gap
                                 the repair loop finds already has a rule in
                                 the SHIPPED library, so healing it recovers
@@ -105,7 +108,11 @@ from patentdb3.sources.uspto_assays import extract_from_patent
 
 CLEAN_PID = "US8952177"
 DUAL_ROUTE_PID = "US10214537"
-MARKUSH_DRAWN_PID = "US9718825"
+# US9718825 held this role until the marker learned to read a scaffold
+# introduced in prose. Its 8 `drawn_ref` rows were Table 4's, and Table 4 is a
+# substituent table — so they became markush rows, correctly, and this patent
+# stopped having both kinds. US11548900 now does: 20 and 88, measured.
+MARKUSH_DRAWN_PID = "US11548900"
 HEAL_PID = "US10030020"
 
 
@@ -330,9 +337,11 @@ def test_drawn_ref_and_substituent_table_markush_are_mutually_exclusive(monkeypa
     picture of the whole molecule" and "the only picture on this row is a
     substituent" cannot both be true of the same row. MARKUSH_DRAWN_PID is the
     one cached patent (of 137 scanned) where cid_first emits BOTH kinds in the
-    same document — 8 `drawn_ref` rows and 593 `substituent_table:` rows,
-    directly measured this session — so the check has real teeth on both
-    sides rather than passing vacuously because one side is empty.
+    same document — 20 `drawn_ref` rows and 88 `substituent_table:` rows,
+    directly measured — so the check has real teeth on both sides rather than
+    passing vacuously because one side is empty. It asserts non-vacuity for
+    that reason: when US9718825 held this role, a marker fix emptied its
+    drawn_ref side and this test said so rather than quietly passing.
     """
     pytest.importorskip("py2opsin")
     assert config.GP_ENABLED is False, (

@@ -223,7 +223,8 @@ from .gp_images import image_urls as _gp_image_urls
 from .opsin import batch as _opsin_batch
 from .reagents import ReagentVerdict as _ReagentVerdict
 from .reagents import classify as _classify_reagent
-from .uspto_assays import CID, SUBSTITUENT, build_columns, normalize_cid
+from .uspto_assays import (
+    CID, STRUCTURE, SUBSTITUENT, build_columns, normalize_cid)
 from .uspto_assays import extract_from_patent as _extract_assays
 from .uspto_xml import assemble_blocks, parse_tables
 
@@ -607,6 +608,29 @@ _FORMULA_LABEL = re.compile(r"\bformula[e]?\s*\(?\s*[IVX]+[a-z]?\b", re.I)
 # not chosen: the largest true gap in this corpus is US9718825's Table 1 at
 # 1,950 characters, and the window never crosses a previous `<tables>`.
 _INTRO_WINDOW = 2400
+
+# How many drawings an introducing paragraph may hold before it stops being an
+# introduction. Two is the observed shape — a scaffold beside the fragment it
+# is drawn with. A paragraph holding many drawings is a figure list, and
+# picking one of those would be a guess with no measurement behind it.
+_INTRO_MAX_CANDIDATES = 2
+
+# The introducing paragraph must say the row's picture is a PART of the
+# compound, not the compound. A formula label alone is not evidence: every
+# patent states its genus somewhere near a table, and accepting that took the
+# corpus from 1,152 markush cids to 2,133 — including 600 rows of
+# US20250163063, whose own intro reads "having a structure presented in Table
+# 1" and whose rows carry a name and an exact mass. That table's drawings ARE
+# the compounds.
+#
+# These phrases say the opposite. US9718825's Table 4: "the line crossed with
+# the symbol represents the free bond via which the group is bonded to the
+# carbon atom in the 3-position". US11548900: "wherein R1X is the substituent
+# in the table below".
+_ATTACHMENT_PROSE = re.compile(
+    r"free\s+bond|line\s+crossed|point\s+of\s+attachment"
+    r"|is\s+bonded\s+to|attached\s+to\s+the|is\s+the\s+substituent"
+    r"|substituents?\s+in\s+the\s+table", re.I)
 _IMG_FILE = re.compile(r'<img[^>]*file="([^"]+)"')
 
 # A column header naming the compound in full. Its PRESENCE is what separates
@@ -745,13 +769,56 @@ def _intro_scaffolds(xml: str) -> dict[str, str]:
     core to rows that never wanted one.
     """
     out: dict[str, str] = {}
+    for tid, ids in intro_candidates(xml).items():
+        out[tid] = ids[0]
+    return out
+
+
+def intro_candidates(xml: str) -> dict[str, list[str]]:
+    """`table id -> the drawings introduced before it`, NEAREST FIRST.
+
+    ONE DRAWING WAS TOO STRICT AND THE SECOND ONE IS NOT NOISE. The single-
+    drawing rule was written because two drawings make the choice a guess, and
+    a guessed scaffold builds a clean-looking wrong molecule. That is right
+    about the guess and wrong about the conclusion: US9718825's Table 4 is
+    introduced by TWO — `CHEM-US-00554` and `CHEM-US-00555` — and refusing
+    both left 8 rows with no scaffold at all rather than with a question.
+
+    So the candidates are returned instead, nearest the table first, and the
+    caller resolves them the way this package resolves everything else: apply
+    each, weigh the result against the mass the patent prints, keep what the
+    document confirms. A choice nobody can make from the markup is exactly the
+    kind the measurement should make.
+
+    Nearest-first is an ordering, not a verdict — the paragraph immediately
+    above a table is more often about that table — and it decides nothing on
+    its own, because `markush_loop` tries the rest when the first is refused.
+    """
+    out: dict[str, list[str]] = {}
     prev_end = 0
     for tb in re.finditer(r'<tables id="([^"]+)"', xml):
         window = xml[max(prev_end, tb.start() - _INTRO_WINDOW):tb.start()]
         prev_end = tb.start()
         ids = _CHEM_ID.findall(window)
-        if len(ids) == 1 and _FORMULA_LABEL.search(window):
-            out[tb.group(1)] = ids[0]
+        if ids and len(ids) <= _INTRO_MAX_CANDIDATES and _FORMULA_LABEL.search(window):
+            out[tb.group(1)] = list(reversed(ids))
+    return out
+
+
+def _attachment_tables(xml: str) -> set:
+    """Tables whose introducing paragraph says the row picture is a PART.
+
+    The document usually explains its own drawing convention, because a claim
+    has to be readable. That sentence is the evidence — not the presence of a
+    formula label, which every patent has.
+    """
+    out = set()
+    prev_end = 0
+    for tb in re.finditer(r'<tables id="([^"]+)"', xml):
+        window = xml[max(prev_end, tb.start() - _INTRO_WINDOW):tb.start()]
+        prev_end = tb.start()
+        if _ATTACHMENT_PROSE.search(re.sub(r"<[^>]+>", " ", window)):
+            out.add(tb.group(1))
     return out
 
 
@@ -825,6 +892,20 @@ def _markush_cids(xml: str) -> dict[str, str]:
         logger.warning("markush cid scan failed: %r", e)
         return out
     drawn = _drawn_table_ids(xml)
+    # A TABLE CAN BE A SUBSTITUENT TABLE WITH NO NAMED SUBSTITUENT COLUMN.
+    # US9718825's Table 4 reads `Example no. | <drawing> | MS (m/e)` — the
+    # drawing sits in a column with a blank header, so nothing classifies as
+    # SUBSTITUENT and the whole table was skipped, leaving 8 compounds whose
+    # picture is a fragment marked as though it were their structure.
+    #
+    # What makes it a substituent table is not a named column. It is that the
+    # document draws a SHARED SCAFFOLD above it — the paragraph introducing
+    # Table 4 says the drawn group "is bonded to the carbon atom in the
+    # 3-position", which is only meaningful if the row picture is a part.
+    # So a scaffold introduced for this table is accepted as the evidence,
+    # in place of the column.
+    introduced = intro_candidates(xml)
+    attaches = _attachment_tables(xml)
     for t in blocks:
         # No drawing in this table, so nothing here to overturn. First, and
         # cheapest — it is a set lookup against a raw-XML scan done once.
@@ -834,7 +915,17 @@ def _markush_cids(xml: str) -> dict[str, str]:
             cols = build_columns(t)
         except Exception:
             continue
-        if not any(c.kind == SUBSTITUENT for c in cols):
+        # A COLUMN HEADED `Structure` SETTLES IT, AND THE DOCUMENT WINS.
+        # Accepting the introduced scaffold on its own was measured and is far
+        # too broad: it took the corpus from 1,152 markush cids to 3,182, and
+        # 733 of the gain was US8722692 alone — a combinatorial table reading
+        # `Number | Structure | NMR | MS | Syk IC50`, where the drawing IS the
+        # compound and marking it markush would delete 733 real structures.
+        # A patent that labels the column has told us what it holds.
+        by_scaffold = (t.table_id in introduced
+                       and t.table_id in attaches
+                       and not any(c.kind == STRUCTURE for c in cols))
+        if not (any(c.kind == SUBSTITUENT for c in cols) or by_scaffold):
             continue
         if any(_NAME_HDR.search(c.header or "") for c in cols):
             continue
