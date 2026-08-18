@@ -1,0 +1,32 @@
+# Never graph the patent corpus. These directories are DATA, not source.
+#
+# A full scan of this repo finds 11,863 files and 14.9M words, and 11,700 of
+# them are extraction output — fetched patent images, MinerU page renders,
+# BindingDB tables. Graphing them produces a graph of the corpus rather than a
+# graph of the code, costs a fortune in vision calls, and buries the 66 files
+# that actually are the package.
+#
+# The live package is `patentdb3/`. Point graphify at that.
+
+# Fetched and derived patent artifacts
+output_v2/
+output_v3/
+mineru_output/
+data/
+_rerun_logs/
+.playwright-mcp/
+
+# The previous codebase. Kept for reference only — see CLAUDE.md. Graphing it
+# mixes dead v2 symbols into the live graph under names that still look current.
+patentdb_v2/
+_attic/
+
+# Environments and their vendored packages
+venv/
+venv_mineru/
+
+# Generated reports and workbooks
+*.xlsx
+*.tsv
+*.jsonl
+architecture_report.html

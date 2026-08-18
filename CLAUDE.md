@@ -225,6 +225,12 @@ Each item below cost real time. Read this list before you measure anything.
 - **Grep for the module, not the word.** Four files mention "markush" and none
   of them imported `sources/markush.py`; it was dead code with a passing test
   suite, and `CLAUDE.md` quoted a coverage number it had never produced.
+- **`build_columns` is the blast radius.** It reaches 11 files: the assay
+  reader, `table_names`, `cid_first`'s markush marker, `mass_gate`, both heal
+  tiers and their gates, and the assembly tier. A wrong column decision there
+  corrupts every downstream route at once, which is what one 0.0016 score gap
+  did to US10253019. Re-measure all seven before changing it. The reach is in
+  `graphify-out/graph.json` — run `graphify explain "build_columns"`.
 
 ## Design invariants
 
@@ -325,3 +331,13 @@ change. Never clear `output_v2/`.
   `40 - Where v3 Stands`. It holds the current numbers and the full gotcha
   list. Update it after a meaningful commit. Do not add a file per commit.
 - Tracked markdown is `CLAUDE.md`, `README.md`, `ARCH.md` only.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- ALWAYS read graphify-out/GRAPH_REPORT.md before reading any source files, running grep/glob searches, or answering codebase questions. The graph is your primary map of the codebase.
+- IF graphify-out/wiki/index.md EXISTS, navigate it instead of reading raw files
+- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
