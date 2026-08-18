@@ -30,13 +30,23 @@ objection of three judgement gates, and the gates were wrong every single time
 does not need a better threshold. So nothing here has an opinion about what a
 good plan looks like. It runs the plan and reports what came out.
 
-ADOPTION NEEDS A REFEREE, AND SILENCE IS NOT ONE
--------------------------------------------------
-`positive` is False when nothing could check the table. US10626094's 31 rows
-print no mass and no name; an assembly of them is unfalsifiable, and adopting
-an unfalsifiable answer is how a wrong structure ships looking like a right
-one. Those rows stay marked, which is what was decided for the OPSIN-limited
-compounds and is the same reasoning.
+UNVERIFIED IS A STATUS, NOT A REFUSAL
+--------------------------------------
+This file once refused any table nothing could check, on the reasoning that an
+unfalsifiable answer is how a wrong structure ships looking like a right one.
+That reasoning protects the artifact and it also deleted 38 real molecules on
+US10626094 — a document that simply does not print masses — built by the same
+plan and the same code that produced 555 confirmed structures next door.
+
+So the three states are kept apart instead of collapsed into two:
+
+    mass_confirmed    the patent's own number agrees
+    no_mass_printed   we built it and nothing in the document can check it
+    contradicted      the patent's own number disagrees — DROPPED, always
+
+Absence of evidence is recorded as absence of evidence. Evidence against is
+still fatal. The structural checks — every row identical, no shared core —
+apply in all three cases, because those indict the plan rather than the row.
 """
 from __future__ import annotations
 
@@ -135,7 +145,12 @@ class MarkushOutcome:
         if not self.built or self.all_identical or not self.share_scaffold:
             return False
         if not self.checked:
-            return False              # UNFALSIFIABLE. See the module docstring.
+            # NOTHING WEIGHED THIS TABLE. That used to end it. It no longer
+            # does: the structural checks above still ran and still passed,
+            # and the rows go out marked UNVERIFIED rather than deleted. A
+            # document that prints no masses is not evidence against the work
+            # done on it.
+            return True
         return self.agreed / self.checked >= MIN_AGREE
 
 
@@ -226,14 +241,31 @@ def _share_a_core(mols: list) -> bool:
     return res.numAtoms >= smallest * 0.5
 
 
-def confirmed_only(oc: MarkushOutcome, assembled: dict) -> dict:
-    """The rows the document confirmed. Nothing it contradicted, ever.
+VERIFIED = "mass_confirmed"
+UNVERIFIED = "no_mass_printed"
 
-    A row the patent never weighed is dropped too: it is not evidence, and
-    this tier exists because an unfalsifiable structure is indistinguishable
-    from a wrong one.
+
+def keep(oc: MarkushOutcome, assembled: dict) -> dict:
+    """`{cid -> (smiles, status)}`. Everything except what the document denies.
+
+    CANNOT VERIFY IS NOT THE SAME AS WRONG, and conflating them threw away
+    real work. An earlier version kept only `confirmed` and dropped every row
+    whose own row printed no mass — which discarded all 38 of US10626094's
+    assembled molecules because that document happens not to print masses,
+    even though the same plan, the same code and the same scaffold produced
+    555 confirmed structures next door.
+
+    A row nothing weighed is a structure we built and cannot check. It is
+    emitted carrying that fact, exactly as the OPSIN-limited compounds are
+    marked rather than deleted: a reader can filter on it, and nobody has to
+    re-derive it later.
+
+    A row the patent CONTRADICTS is still dropped. That is not an absence of
+    evidence, it is evidence against.
     """
-    return {cid: smi for cid, smi in assembled.items() if cid in oc.confirmed}
+    return {cid: (smi, VERIFIED if cid in oc.confirmed else UNVERIFIED)
+            for cid, smi in assembled.items()
+            if cid not in oc.contradicted_rows}
 
 
 def summarise(oc: MarkushOutcome) -> str:

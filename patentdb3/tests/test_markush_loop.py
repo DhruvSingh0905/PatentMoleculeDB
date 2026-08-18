@@ -48,7 +48,7 @@ def test_a_correct_plan_is_adopted_and_the_mass_says_so():
     assert rep.adopted, ML.summarise(rep.outcome) if rep.outcome else rep.blocked
     assert rep.outcome.mass_agrees == 2
     assert rep.outcome.mass_contradicts == 0
-    assert rep.structures["1"] == "Cc1ccc(N)cc1"
+    assert rep.structures["1"][0] == "Cc1ccc(N)cc1"
 
 
 def test_a_row_the_patent_contradicts_is_never_adopted():
@@ -115,24 +115,32 @@ def test_the_rows_own_adduct_is_used_not_a_default():
     assert rep.outcome.mass_contradicts == 1
 
 
-def test_a_row_nothing_weighed_is_not_adopted_either():
-    """The plan being right does not make an unchecked molecule right."""
+def test_a_row_nothing_weighed_is_emitted_as_unverified():
+    """The plan being right does not make an unchecked molecule verified —
+    but it does not make it wrong either. It goes out saying which."""
     rows = [_row(c, "CH3", "NH2") for c in ("1", "2")] + [_row("3", "CH3", "F")]
     gap = _gap(rows, masses={"1": 108, "2": 108})       # row 3 prints no mass
     rep = ML.repair_table(gap, {SCAF_REF: SCAFFOLD})
     assert rep.adopted
+    from patentdb3.repair.markush_outcome import UNVERIFIED, VERIFIED
     assert "3" in rep.outcome.unchecked
-    assert "3" not in rep.structures
+    assert rep.structures["3"][1] == UNVERIFIED     # emitted, marked
+    assert rep.structures["1"][1] == VERIFIED
 
 
-def test_a_table_nothing_can_check_is_blocked_not_adopted():
-    """US10626094's 31 rows print no mass and no name. An assembly of them is
-    unfalsifiable, and shipping an unfalsifiable answer is how a wrong
-    structure ships looking like a right one."""
-    gap = _gap([_row("1", "CH3", "NH2")])               # no mass, no name, 1 row
+def test_a_table_nothing_can_check_is_emitted_marked_not_deleted():
+    """CANNOT VERIFY IS NOT THE SAME AS WRONG.
+
+    US10626094 prints no mass and no name anywhere, and an earlier version
+    refused it outright — deleting 38 molecules built by the same plan and the
+    same code that produced 555 confirmed structures on the patent next door.
+    Absence of evidence is now recorded as absence of evidence.
+    """
+    from patentdb3.repair.markush_outcome import UNVERIFIED
+    gap = _gap([_row("1", "CH3", "NH2")])               # no mass, no name
     rep = ML.repair_table(gap, {SCAF_REF: SCAFFOLD})
-    assert not rep.adopted
-    assert rep.blocked == ML.BLOCK_NO_REFEREE
+    assert rep.adopted
+    assert rep.structures["1"] == ("Cc1ccc(N)cc1", UNVERIFIED)
 
 
 def test_a_held_out_name_can_referee_on_its_own():
@@ -196,7 +204,7 @@ def test_the_drawings_labels_make_the_mapping_deterministic():
     assert rep.adopted
     assert rep.plan.source == "deterministic"   # NOT bought
     assert rep.attempts == 0
-    assert rep.structures["1"] == "Nc1ccc(-c2ccccc2)cc1"   # 4-aminobiphenyl
+    assert rep.structures["1"][0] == "Nc1ccc(-c2ccccc2)cc1"   # 4-aminobiphenyl
 
 
 def test_a_label_matches_a_heading_on_what_it_says_not_how_it_is_set():

@@ -46,7 +46,7 @@ from ..core import config
 from ..sources import markush as MK
 from .markush_gap import MarkushGap, find_gaps
 from .markush_outcome import (
-    MarkushOutcome, confirmed_only, measure, summarise)
+    UNVERIFIED, VERIFIED, MarkushOutcome, keep, measure, summarise)
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,6 @@ MAX_ATTEMPTS = 3
 
 BLOCK_NO_SCAFFOLD = "scaffold_drawing_not_recognised"
 BLOCK_NO_FRAGMENT = "fragment_drawing_not_recognised"
-BLOCK_NO_REFEREE = "nothing_in_the_document_can_check_this"
 
 
 @dataclass
@@ -216,11 +215,6 @@ def repair_table(gap: MarkushGap, structures: dict, *,
     if gap.scaffold_ref not in structures:
         rep.blocked = BLOCK_NO_SCAFFOLD
         return rep
-    if not gap.referees:
-        # Refused BEFORE any work: an assembly nothing can check is not a
-        # result, and building it would only make a wrong answer look finished.
-        rep.blocked = BLOCK_NO_REFEREE
-        return rep
 
     plan = deterministic_plan(gap, labels)
     feedback = ""
@@ -230,11 +224,11 @@ def repair_table(gap: MarkushGap, structures: dict, *,
         oc = measure(gap, built) if built else MarkushOutcome()
         rep.plan, rep.outcome, rep.refusals = plan, oc, why
         if oc.positive:
-            # ONLY WHAT THE DOCUMENT CONFIRMED. A row the patent's own mass
-            # contradicts is dropped even when the plan is kept, and so is a
-            # row nothing weighed. The plan being right does not make an
-            # unchecked molecule right.
-            rep.adopted, rep.structures = True, confirmed_only(oc, built)
+            # Everything except what the document DENIES. A row it never
+            # weighed is emitted carrying that fact — cannot verify is not
+            # the same as wrong, and treating it that way discarded 38 real
+            # molecules on a patent that simply prints no masses.
+            rep.adopted, rep.structures = True, keep(oc, built)
             logger.info("markush %s %s: ADOPTED (%s) via %s",
                         gap.patent_id, gap.table_id, summarise(oc), plan.source)
             return rep
@@ -287,11 +281,14 @@ def summarise_patent(reports: list[TableReport]) -> str:
     for r in reports:
         if r.blocked:
             blocked[r.blocked] = blocked.get(r.blocked, 0) + 1
-    dropped = sum(len(r.outcome.contradicted_rows) + len(r.outcome.unchecked)
-                  for r in ok if r.outcome)
+    ver = sum(1 for r in ok for _c, (_s, st) in r.structures.items()
+              if st == VERIFIED)
+    unv = sum(1 for r in ok for _c, (_s, st) in r.structures.items()
+              if st == UNVERIFIED)
+    denied = sum(len(r.outcome.contradicted_rows) for r in ok if r.outcome)
     bits = [f"{len(ok)}/{len(reports)} tables adopted",
-            f"{sum(len(r.structures) for r in ok)} molecules confirmed",
-            f"{dropped} built but not confirmed, dropped"]
+            f"{ver} verified", f"{unv} unverified",
+            f"{denied} contradicted and dropped"]
     for k, v in sorted(blocked.items()):
         bits.append(f"{k}={v}")
     return "; ".join(bits)
