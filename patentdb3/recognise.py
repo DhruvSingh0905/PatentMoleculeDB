@@ -43,6 +43,7 @@ import argparse
 import csv
 import json
 import logging
+import re
 from pathlib import Path
 
 from .core import config
@@ -162,7 +163,8 @@ def _from_legacy(path: Path) -> dict[str, str]:
     return out
 
 
-def markush_drawings(patent_id: str, xml: str) -> dict[str, Path]:
+def markush_drawings(patent_id: str, xml: str, *,
+                     fetch: bool = False) -> dict[str, Path]:
     """Every drawing the assembly tier needs for one patent, already fetched.
 
     Scaffolds AND fragments, from the gaps themselves rather than from the
@@ -178,17 +180,164 @@ def markush_drawings(patent_id: str, xml: str) -> dict[str, Path]:
         want.update(r.fragment_ref for r in g.rows if r.fragment_ref)
     if not want:
         return {}
-    have = {}
-    for w in IM.read_worklist():
-        if w.chemistry_id in want and w.local_path:
-            p = Path(w.local_path)
-            if p.exists():
-                have[w.chemistry_id] = p
-    missing = want - set(have)
+    # THE FILE NAME COMES FROM THE XML, NOT FROM THE WORK LIST.
+    #
+    # Two reasons, and the first cost a staging run. A `<chemistry>` id is
+    # unique WITHIN a document and nowhere else — `CHEM-US-00022` exists in
+    # almost every patent in the corpus — so a work list spanning 137 patents
+    # matched on id alone staged 405 drawings for US9718825 of which the first
+    # three belonged to US8722692 and US9051265. The loop would then have
+    # joined one patent's scaffold to another's fragment and called it clean.
+    #
+    # And the work list is built from ASSAY CIDS. A shared scaffold belongs to
+    # no compound number, so it is not in there at all — which is precisely
+    # the drawing this tier cannot proceed without.
+    chem_files = {m.group(1): m.group(2) for m in re.finditer(
+        r'<chemistry[^>]*id="([^"]+)"(?:(?!</chemistry>).)*?'
+        r'<img[^>]*file="([^"]+)"', xml, re.S)}
+    have: dict[str, Path] = {}
+    unnamed = []
+    for chem_id in sorted(want):
+        f = chem_files.get(chem_id)
+        if not f:
+            unnamed.append(chem_id)
+            continue
+        item = IM.WorkItem(patent_id=patent_id, cid="", job="RECOVER",
+                           chemistry_id=chem_id, image_file=f)
+        p = item.local_path
+        if p.exists() and p.stat().st_size:
+            have[chem_id] = p
+        elif fetch:
+            got = IM.fetch(item)
+            if got:
+                have[chem_id] = got
+    if unnamed:
+        logger.warning("%s: %d drawing(s) name no image file", patent_id,
+                       len(unnamed))
+    missing = want - set(have) - set(unnamed)
     if missing:
-        logger.info("%s: %d drawing(s) not fetched yet — %s",
+        logger.info("%s: %d drawing(s) still unfetched — %s",
                     patent_id, len(missing), sorted(missing)[:4])
     return have
+
+
+# Installed once per VM and reused. MolScribe's own `requirements.txt` pins
+# `numpy<2` and PyPI metadata does not — with numpy 2.x the import dies inside
+# a compiled extension with a message naming neither numpy nor the cause. Read
+# the requirements file, not the package metadata; that lesson cost two runs.
+COLAB_SETUP = """
+import subprocess, os
+MARK = "/content/.molscribe_ready"
+def sh(c):
+    print("$", c, flush=True); return subprocess.run(c, shell=True).returncode
+# IDEMPOTENT, BECAUSE THE FIRST RUN WILL LOOK LIKE A FAILURE. `colab exec`
+# holds a websocket and abandons it after 600 seconds; this install takes
+# longer, so the kernel finishes and prints SETUP_RC 0 while THIS side raises
+# TimeoutError. The marker makes the retry cost seconds instead of repeating
+# a ten-minute install on a billable runtime.
+if os.path.exists(MARK):
+    print("SETUP_RC 0  (already installed)")
+else:
+    sh("pip -q install 'numpy<2' torch torchvision "
+       "'transformers<4.40' huggingface_hub rdkit OpenNMT-py==2.2.0 albumentations==1.1.0")
+    sh("pip -q install git+https://github.com/thomas0809/MolScribe.git")
+    rc = sh("python -c \\"import molscribe, torch;"
+            "print('molscribe ok, cuda', torch.cuda.is_available())\\"")
+    if rc == 0:
+        open(MARK, "w").close()
+    print("SETUP_RC", rc)
+"""
+
+
+def colab_run(patent_id: str, session: str, *, tries: int = 80,
+              every: int = 45) -> int:
+    """Drive one Colab session over this patent's manifest. A BACKEND, not the interface.
+
+    Everything here is convenience. The job directory is already a complete,
+    self-contained unit of work — `recognise_worker.py` plus a manifest plus
+    the pixels — so this only saves someone the copying. A compute node that
+    cannot run `colab` loses nothing.
+
+    NEVER ALLOCATES A SESSION AND NEVER STOPS ONE. Same rule `decimer.py`
+    holds to: a runtime is billable, and a tool that quietly starts one is a
+    tool that quietly bills. The caller passes a session it already owns.
+    """
+    import shutil
+    import subprocess
+
+    d = job_dir(patent_id)
+    if not (d / MANIFEST_NAME).exists():
+        print(f"no manifest at {d} — run `stage {patent_id} --fetch` first")
+        return 1
+    n = len(json.loads((d / MANIFEST_NAME).read_text())["images"])
+    if not n:
+        print(f"{patent_id}: manifest is empty")
+        return 1
+
+    def _colab(*args, code=""):
+        print(f"$ colab {' '.join(args)}" + (" <<code" if code else ""), flush=True)
+        return subprocess.run(["colab", *args], input=code or None,
+                              check=True, text=True)
+
+    remote = f"/content/recognise/{patent_id}"
+    # THE TARBALL LANDS FLAT IN /content, NOT BESIDE ITS DESTINATION.
+    # `colab upload` writes through the Jupyter contents API, which does not
+    # create parent directories: uploading to `/content/recognise/<pid>.tar`
+    # returns a bare `500 Internal Server Error` naming no missing path.
+    # Upload flat, then extract into the tree the next cell makes.
+    upload_to = f"/content/{patent_id}.tar"
+    # ONE UPLOAD, NOT ONE PER IMAGE. Every `colab` invocation authenticates and
+    # exits, so 714 uploads is 714 round trips for a few MB of PNGs.
+    tar = d.with_suffix(".tar")
+    shutil.make_archive(str(d), "tar", root_dir=d)
+    print(f"{patent_id}: {n} drawing(s), {tar.stat().st_size/1024:.0f} KB")
+    _colab("upload", "-s", session, str(tar), upload_to)
+    _colab("exec", "-s", session, code=(
+        f"import shutil, tarfile, os\n"
+        f"shutil.rmtree({remote!r}, ignore_errors=True)\n"
+        f"os.makedirs({remote!r}, exist_ok=True)\n"
+        f"tarfile.open({upload_to!r}).extractall({remote!r})\n"
+        f"print(len(os.listdir({remote + '/images'!r})), 'images')\n"))
+    _colab("exec", "-s", session, code=COLAB_SETUP)
+    _colab("upload", "-s", session,
+           str(Path(__file__).with_name("recognise_worker.py")),
+           "/content/recognise_worker.py")
+
+    # DETACHED, THEN POLLED. `colab exec` holds a websocket and gives up after
+    # 600 seconds while the kernel keeps working, so a long job "fails" here
+    # and succeeds there. Loading the model alone can exceed that.
+    _colab("exec", "-s", session, code=(
+        "import subprocess\n"
+        "subprocess.Popen(['python', '/content/recognise_worker.py',"
+        f" {remote!r}],\n"
+        "                 stdout=open('/content/worker.log','w'),\n"
+        "                 stderr=subprocess.STDOUT)\n"
+        "print('worker launched detached')\n"))
+
+    for i in range(tries):
+        subprocess.run(["sleep", str(every)], check=False)
+        r = subprocess.run(
+            ["colab", "exec", "-s", session], text=True, capture_output=True,
+            input=(f"import os\np={remote + '/results.tsv'!r}\n"
+                   "print('ROWS', sum(1 for _ in open(p))-1 if os.path.exists(p) else -1)\n"
+                   "print(open('/content/worker.log').read()[-300:])\n"))
+        out = (r.stdout or "") + (r.stderr or "")
+        rows = next((int(w) for ln in out.splitlines() if ln.startswith("ROWS")
+                     for w in ln.split()[1:2]), -1)
+        print(f"  poll {i+1}: {rows}/{n}", flush=True)
+        if rows >= n:
+            break
+    else:
+        print("worker did not finish; /content/worker.log on the VM has why")
+        return 1
+
+    _colab("download", "-s", session, f"{remote}/results.tsv",
+           str(d / RESULTS_NAME))
+    got = read_results(patent_id)
+    print(f"\n{patent_id}: {len(got)}/{n} recognised -> {d / RESULTS_NAME}")
+    print(f"session {session} is STILL RUNNING and billable. Stop it with:\n"
+          f"    colab stop -s {session}")
+    return 0
 
 
 def ingest(patent_id: str, src: Path) -> str:
@@ -211,6 +360,17 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("stage", help="write a manifest for one patent")
     p.add_argument("patent_id")
+    p.add_argument("--fetch", action="store_true",
+                   help="download drawings this patent needs but has not got. "
+                        "A shared scaffold is never in the image work list, "
+                        "so without this the tier's most important drawing is "
+                        "always missing.")
+
+    p = sub.add_parser("run", help="drive a Colab session over the manifest")
+    p.add_argument("patent_id")
+    p.add_argument("-s", "--session", required=True,
+                   help="a session you already own. This never allocates one "
+                        "and never stops one — a runtime is billable.")
 
     p = sub.add_parser("ingest", help="take a worker's results.tsv")
     p.add_argument("patent_id")
@@ -228,7 +388,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"no cached XML for {a.patent_id}")
             return 1
         drawings = markush_drawings(a.patent_id,
-                                    xml_path.read_text(errors="replace"))
+                                    xml_path.read_text(errors="replace"),
+                                    fetch=a.fetch)
         if not drawings:
             print(f"{a.patent_id}: no markush drawings to recognise")
             return 0
@@ -237,6 +398,9 @@ def main(argv: list[str] | None = None) -> int:
         print("run any recogniser over it, then:")
         print(f"  python3 -m patentdb3.recognise ingest {a.patent_id} <results.tsv>")
         return 0
+
+    if a.cmd == "run":
+        return colab_run(a.patent_id, a.session)
 
     if a.cmd == "ingest":
         print(ingest(a.patent_id, a.results))
