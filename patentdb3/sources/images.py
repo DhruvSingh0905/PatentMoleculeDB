@@ -148,8 +148,21 @@ def emit(*, with_urls: bool = False, path: Path | None = None) -> dict:
     from .cid_first import _drawing_refs, _header_scaffolds, _markush_cids
 
     man = json.loads(config.MANIFEST.read_text())
-    st = list(csv.DictReader(open(man["structures"]), delimiter="\t"))
-    dump = list(csv.DictReader(open(man["dump"]), delimiter="\t"))
+    # THE MANIFEST STORES ABSOLUTE PATHS AND THEY DO NOT SURVIVE A MOVE.
+    # `latest.json` records where the dump was written, which is correct as a
+    # record and useless as a lookup the moment the checkout is somewhere
+    # else: moving the project made `emit()` raise FileNotFoundError on a file
+    # sitting right next to it. The recorded path is kept — it says which run
+    # this was — but the file is found by NAME in the current output directory.
+    _here = {"structures": config.STRUCTURES, "dump": config.DUMP}
+
+    def _beside(key: str):
+        recorded = Path(man[key])
+        here = Path(_here[key])
+        return here if here.exists() else recorded
+
+    st = list(csv.DictReader(open(_beside("structures")), delimiter="\t"))
+    dump = list(csv.DictReader(open(_beside("dump")), delimiter="\t"))
 
     # A VALIDATE ROW IS A CLAIM THAT WE ALREADY KNOW THE ANSWER, and it is the
     # only thing an image reader can ever be SCORED against. A wrong answer
