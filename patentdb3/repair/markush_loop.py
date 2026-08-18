@@ -160,10 +160,18 @@ def repair_table(gap: MarkushGap, structures: dict, *,
 
 def repair_patent(patent_id: str, xml: str, structures: dict | None = None,
                   *, propose=None) -> list[TableReport]:
-    """Every substituent table in one patent."""
+    """Every substituent table in one patent.
+
+    `structures` defaults to whatever `recognise` already has for this patent —
+    `{}` when the backend is off, which is the default. So this is safe to call
+    unconditionally: with no GPU anywhere it reports every table blocked and
+    costs nothing.
+    """
     if not config.MARKUSH_ASSEMBLY:
         return []
-    structures = structures or {}
+    if structures is None:
+        from ..recognise import structures as _recognised
+        structures = _recognised(patent_id)
     return [repair_table(g, structures, propose=propose)
             for g in find_gaps(patent_id, xml)]
 

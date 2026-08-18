@@ -59,10 +59,28 @@ worth the build cost today. Date: **2026-08-17**.
 
 | item | size | why deferred |
 |---|---|---|
-| wavy cut bond | **RE-SIZED 2026-08-17: 968 rows in 6 patents**, not 32 in one | No recogniser reads a squiggle across a bond. Its FORMAL meaning in molfile is unspecified stereochemistry (flag 4), not attachment — the patent use is a drawing convention with no format backing. Most likely route is cropping/splicing the image so the model sees an asterisk, which it reads at 29 of 29. **Two new facts.** MolScribe does not drop the mark, it INVENTS a group there — measured, it returns a terminal isopropyl or tert-butyl, which is why a fragment read is never a substructure of the truth. And US9718825 states the convention in its own prose: *"the line crossed with the symbol represents the free bond via which the group —Z—R3 is bonded to the carbon atom in the 4-position"*. The document says where the attachment is. |
 | IUPAC locant to atom | **8 rows corpus-wide** | Procedure is known and verified safe for a monosubstituted ring: position 1 is the atom bonded to the scaffold, and 2/6 and 3/5 are symmetry-equivalent so direction cannot produce a wrong molecule. Breaks on a second substituent, a ring heteroatom or a fused ring. Worth 8 rows. |
 | three table layouts | 385 rows | Split headers, repeated column groups, vertical records. |
 | unknown dropped IUPACs | not sized | Text extraction drops names nobody has counted. Sits beside these as future gain. |
+| wavy cut bond | 968 rows in 6 patents | **Deliberately last. Do not work on it directly.** No recogniser reads a squiggle across a bond. Its FORMAL meaning in molfile is unspecified stereochemistry (flag 4), not attachment — the patent use is a drawing convention with no format backing. MolScribe does not drop the mark, it INVENTS a group there, returning a terminal isopropyl or tert-butyl, which is why a fragment read is never a substructure of the truth. See the note below for why hand-writing a splicer is the wrong move. |
+
+**The wavy bond is a TEST OF THE LOOP, not a task.** US9718825 states the
+convention in its own prose:
+
+> *"the line crossed with the symbol represents the free bond via which the
+> group —Z—R3 is bonded to the carbon atom in the 4-position of the
+> pyrazolo[3,4-d]pyrimidine ring system."*
+
+The document says where the attachment is. Most patents that use a private
+drawing convention are required to explain it, for the same reason: a claim
+has to be readable. So the right target is a heal loop that fires **on an
+unrecognised image**, reads the paragraph that introduces the table, and writes
+the cropping or splicing code itself — the `name_capability` pattern, applied
+to pixels instead of text.
+
+Hand-writing a splicer for the squiggle solves 968 rows and teaches the system
+nothing. The loop route solves the squiggle AND the next convention nobody has
+seen. Do not spend the wavy bond as a one-off.
 
 **The markush MS claim below was WRONG. Corrected 2026-08-17.**
 

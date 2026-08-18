@@ -283,6 +283,20 @@ IMAGE_OCR = os.environ.get("IMAGE_OCR", "0") == "1"
 # reports `scaffold_drawing_not_recognised` and no molecule is invented.
 MARKUSH_ASSEMBLY = os.environ.get("MARKUSH_ASSEMBLY", "0") == "1"
 
+# WHERE RECOGNISED STRUCTURES COME FROM — `recognise.py`. Not which model:
+# that is `RECOGNISER`. This is which side of the GPU boundary we are on.
+#
+#   off     `structures()` returns {}. Nothing is fetched, staged or invented,
+#           and every markush gap reports its drawings as unrecognised. The
+#           default, so a plain `verify --dump` never waits on a GPU.
+#   file    read `out/recognise/<pid>/results.tsv`. THE COMPUTE-NODE PATH:
+#           any machine that turns a manifest into that file is a backend, and
+#           `recognise_worker.py` imports nothing from this package so it can
+#           be copied to one on its own.
+#   colab   as `file`, plus falling back to a session already run through
+#           `decimer.py` so an existing Colab run is not wasted.
+RECOGNISER_BACKEND = os.environ.get("RECOGNISER_BACKEND", "off")
+
 # ── Structure recognisers ────────────────────────────────────────────────
 # ONE FLAG PER MODEL. The results file carries a `recogniser` column and is
 # keyed on (patent_id, cid, recogniser), so a second model adds rows rather
