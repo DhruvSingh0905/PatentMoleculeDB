@@ -447,7 +447,27 @@ def colab_run(patent_id: str, session: str, *, tries: int = 80,
         f"os.makedirs({remote!r}, exist_ok=True)\n"
         f"tarfile.open({upload_to!r}).extractall({remote!r})\n"
         f"print(len(os.listdir({remote + '/images'!r})), 'images')\n"))
-    _colab("exec", "-s", session, code=COLAB_SETUP)
+    # A SETUP TIMEOUT IS NOT A SETUP FAILURE. `colab exec` abandons its
+    # websocket after 600 seconds and the kernel carries on regardless; the
+    # MolScribe install takes longer than that, so the VM prints SETUP_RC 0
+    # while this side raises. Treating that as fatal aborted a two-patent run
+    # after the first patent's install had already succeeded. The marker file
+    # is the real answer, so it is asked for directly.
+    try:
+        _colab("exec", "-s", session, code=COLAB_SETUP)
+    except subprocess.CalledProcessError:
+        print("setup call timed out — asking the VM whether it finished anyway",
+              flush=True)
+    r = subprocess.run(["colab", "exec", "-s", session], text=True,
+                       capture_output=True, input=(
+                           "import os, subprocess\n"
+                           "ok = subprocess.run('python -c \"import molscribe\"',"
+                           " shell=True).returncode == 0\n"
+                           "if ok: open('/content/.molscribe_ready','w').close()\n"
+                           "print('READY' if ok else 'NOT_READY')\n"))
+    if "READY" not in ((r.stdout or "") + (r.stderr or "")):
+        print("the recogniser is not importable on that session; stopping")
+        return 1
     _colab("upload", "-s", session,
            str(Path(__file__).with_name("recognise_worker.py")),
            "/content/recognise_worker.py")
