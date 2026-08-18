@@ -51,15 +51,52 @@ def test_a_correct_plan_is_adopted_and_the_mass_says_so():
     assert rep.structures["1"] == "Cc1ccc(N)cc1"
 
 
-def test_a_mass_the_patent_contradicts_is_never_adopted():
-    """ONE contradicted row kills the plan. Not a rate — the patent has said
-    this molecule is not that compound, and a plan is one rule for the table."""
+def test_a_row_the_patent_contradicts_is_never_adopted():
+    """THE INVARIANT, and it is per row.
+
+    The patent has said this molecule is not that compound. It is dropped
+    whether or not the plan that built it survives.
+    """
     rows = [_row("1", "CH3", "NH2"), _row("2", "CH3", "F")]
     gap = _gap(rows, masses={"1": 108, "2": 400})       # 111 built vs 400 printed
     rep = ML.repair_table(gap, {SCAF_REF: SCAFFOLD})
-    assert not rep.adopted
     assert rep.outcome.mass_contradicts == 1
-    assert rep.outcome.contradicted
+    assert "2" in rep.outcome.contradicted_rows
+    assert "2" not in rep.structures
+
+
+def test_a_bad_row_no_longer_condemns_its_neighbours():
+    """WHAT CHANGED, AND WHY.
+
+    One contradicted row used to kill the whole plan, on the argument that a
+    plan is a single rule so a row it gets wrong means it is wrong everywhere.
+    US9718825 refuted that: 561 molecules under ONE plan, 527 confirmed by the
+    patent's own printed masses and 34 contradicted — and every explanation
+    that would make the 34 a plan failure was tested and failed, while all 34
+    came from 34 distinct fragment drawings and no drawing ever both agreed
+    and contradicted.
+
+    So the plan survives, the confirmed rows are kept, and the contradicted
+    row is still dropped. Refusing all four here to punish one would discard
+    three structures the document itself confirms.
+    """
+    rows = [_row(c, "CH3", "NH2") for c in ("1", "2", "3")] + [_row("4", "CH3", "F")]
+    gap = _gap(rows, masses={"1": 108, "2": 108, "3": 108, "4": 400})
+    rep = ML.repair_table(gap, {SCAF_REF: SCAFFOLD})
+    assert rep.adopted
+    assert rep.outcome.mass_agrees == 3 and rep.outcome.mass_contradicts == 1
+    assert set(rep.structures) == {"1", "2", "3"}
+    assert "4" not in rep.structures
+
+
+def test_a_row_nothing_weighed_is_not_adopted_either():
+    """The plan being right does not make an unchecked molecule right."""
+    rows = [_row(c, "CH3", "NH2") for c in ("1", "2")] + [_row("3", "CH3", "F")]
+    gap = _gap(rows, masses={"1": 108, "2": 108})       # row 3 prints no mass
+    rep = ML.repair_table(gap, {SCAF_REF: SCAFFOLD})
+    assert rep.adopted
+    assert "3" in rep.outcome.unchecked
+    assert "3" not in rep.structures
 
 
 def test_a_table_nothing_can_check_is_blocked_not_adopted():

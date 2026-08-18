@@ -67,6 +67,14 @@ class MarkushOutcome:
     all_identical: bool = False
     refused: dict = field(default_factory=dict)     # error -> count
     referee: str = "none"
+    # WHICH ROWS THE DOCUMENT ITSELF CONFIRMED, and which it contradicted.
+    # Adoption keeps the first set and drops the second — the mass is printed
+    # per row, so it is evidence per row, and a table-wide verdict throws most
+    # of it away. `unchecked` is neither: the row built, and its own row prints
+    # no mass to weigh it against.
+    confirmed: set = field(default_factory=set)     # cid
+    contradicted_rows: set = field(default_factory=set)
+    unchecked: set = field(default_factory=set)
 
     @property
     def checked(self) -> int:
@@ -84,14 +92,47 @@ class MarkushOutcome:
         Not a rate. One row whose printed mass says the molecule is 40 Da out
         is a statement by the patent that this assembly is wrong, and a plan is
         one rule for the whole table — so it is wrong for the whole table.
+
+        THAT REASONING WAS MEASURED AND IT IS WRONG, so this no longer gates
+        adoption. See `positive`.
         """
         return bool(self.mass_contradicts or self.name_disagrees)
 
     @property
     def positive(self) -> bool:
+        """Is this plan worth keeping the rows the document CONFIRMS?
+
+        WHY ONE CONTRADICTED ROW NO LONGER KILLS A PLAN
+        ------------------------------------------------
+        It used to. The argument was that a plan is a single rule for a whole
+        table, so a row it gets wrong means it is wrong everywhere. US9718825
+        settled that empirically and against the argument:
+
+            561 molecules built under ONE plan
+            527 agree with the mass the patent printed for that row
+             34 contradict
+
+        Every explanation that would make this a PLAN failure was tested and
+        refuted — 371 rows in the same table under the same plan and the same
+        scaffold agree; the 34 span three tables in proportion; they share no
+        slot value, no attachment element, no substructure. What they do share
+        is that all 34 come from 34 DISTINCT fragment drawings, and no drawing
+        ever both agrees in one row and contradicts in another. The variable is
+        the picture, and pictures are read one at a time.
+
+        So the failures are per row, and the evidence is per row: the patent
+        prints a mass for each. Refusing 527 confirmed structures to punish 34
+        the same gate already identifies is not caution, it is discarding the
+        measurement at the granularity it exists.
+
+        THIS IS NOT THE THRESHOLD BEING LOOSENED. Nothing the document
+        contradicts is ever adopted — `confirmed_only` drops every one of those
+        34. What changed is that a contradicted row no longer condemns its
+        neighbours. The whole-table checks below stay hard, because those DO
+        indict the plan: identical rows mean a slot was never wired, and a
+        broken shared core means a slot was wired to the wrong atom.
+        """
         if not self.built or self.all_identical or not self.share_scaffold:
-            return False
-        if self.contradicted:
             return False
         if not self.checked:
             return False              # UNFALSIFIABLE. See the module docstring.
@@ -121,8 +162,10 @@ def measure(gap, assembled: dict) -> MarkushOutcome:
         got = ExactMolWt(m) + mass_gate.PROTON
         if abs(got - want) <= mass_gate.tolerance(want):
             oc.mass_agrees += 1
+            oc.confirmed.add(cid)
         else:
             oc.mass_contradicts += 1
+            oc.contradicted_rows.add(cid)
 
     for cid, m in mols.items():
         want = gap.held_out.get(cid)
@@ -135,14 +178,21 @@ def measure(gap, assembled: dict) -> MarkushOutcome:
             continue                  # OPSIN could not read it: no verdict
         if Chem.MolToInchiKey(r) == Chem.MolToInchiKey(m):
             oc.name_agrees += 1
+            oc.confirmed.add(cid)
         else:
             oc.name_disagrees += 1
+            # A NAME OVERRULES A MASS. The mass agrees to 1.5 Da; the name
+            # agrees exactly or not at all, so a row both confirm and deny is
+            # denied.
+            oc.contradicted_rows.add(cid)
+            oc.confirmed.discard(cid)
 
     if len(mols) > 1:
         keys = {Chem.MolToInchiKey(m) for m in mols.values()}
         oc.all_identical = len(keys) == 1
         oc.share_scaffold = _share_a_core(list(mols.values()))
 
+    oc.unchecked = (set(mols) - oc.confirmed - oc.contradicted_rows)
     oc.referee = ("printed_mass" if oc.mass_agrees or oc.mass_contradicts
                   else "held_out_name" if oc.name_agrees or oc.name_disagrees
                   else "none")
@@ -173,6 +223,16 @@ def _share_a_core(mols: list) -> bool:
         return True                   # no verdict is not a negative verdict
     smallest = min(m.GetNumHeavyAtoms() for m in sample)
     return res.numAtoms >= smallest * 0.5
+
+
+def confirmed_only(oc: MarkushOutcome, assembled: dict) -> dict:
+    """The rows the document confirmed. Nothing it contradicted, ever.
+
+    A row the patent never weighed is dropped too: it is not evidence, and
+    this tier exists because an unfalsifiable structure is indistinguishable
+    from a wrong one.
+    """
+    return {cid: smi for cid, smi in assembled.items() if cid in oc.confirmed}
 
 
 def summarise(oc: MarkushOutcome) -> str:
