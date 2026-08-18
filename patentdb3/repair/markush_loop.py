@@ -38,6 +38,7 @@ is reported as blocked, by name, rather than assembled from a guess.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 
 from ..core import config
@@ -78,6 +79,10 @@ class TableReport:
     blocked: str = ""
     structures: dict = field(default_factory=dict)   # cid -> smiles, if adopted
     attempts: int = 0
+    # Why each row that produced no molecule produced none, by cause. A table
+    # that builds nothing must say what stopped it, or the summary describes
+    # some other problem — see `apply_plan`.
+    refusals: dict = field(default_factory=dict)
 
 
 def deterministic_plan(gap: MarkushGap) -> Plan:
@@ -94,16 +99,29 @@ def deterministic_plan(gap: MarkushGap) -> Plan:
                       else f"no attachment point stated for: {', '.join(unnumbered)}"))
 
 
-def apply_plan(gap: MarkushGap, plan: Plan, structures: dict) -> dict:
-    """Run one plan over one table. `{cid -> smiles}`; a refused row is absent."""
+def apply_plan(gap: MarkushGap, plan: Plan,
+               structures: dict) -> tuple[dict, Counter]:
+    """Run one plan over one table. `({cid -> smiles}, {reason -> count})`.
+
+    THE REFUSALS ARE RETURNED, NOT LOGGED. They were a `logger.debug` line,
+    and the result was a report reading `built 0; refused 0; NOTHING COULD
+    CHECK THIS TABLE` for a 426-row table that prints 426 masses. Every one of
+    those rows was refused for one nameable reason — the fragment drawing
+    carried no attachment point — and the report said the table was
+    uncheckable instead. That is the silent-block shape: a whole table
+    yielding nothing while the summary describes a different problem.
+    """
+    why: Counter = Counter()
     scaf = structures.get(gap.scaffold_ref, "")
     if not scaf:
-        return {}
+        why[BLOCK_NO_SCAFFOLD] = len(gap.rows)
+        return {}, why
     out: dict[str, str] = {}
     for row in gap.rows:
         frag = structures.get(row.fragment_ref, "") if row.fragment_ref else ""
         if row.fragment_ref and not frag:
-            continue                      # the drawing is not read yet
+            why[BLOCK_NO_FRAGMENT] += 1
+            continue
         if row.route == MK.ROUTE_IMAGE_ONLY and not row.varying:
             smi, err = MK.build_image_only(scaf, frag)
         else:
@@ -113,9 +131,11 @@ def apply_plan(gap: MarkushGap, plan: Plan, structures: dict) -> dict:
         if smi:
             out[row.cid] = smi
         else:
-            logger.debug("markush %s cid %s refused: %s",
-                         gap.table_id, row.cid, err)
-    return out
+            # Keep the SHAPE of the reason, not the row's own text: 426 rows
+            # refused for one cause must read as one cause with a count, or a
+            # reader sees 426 different problems.
+            why[(err or "refused").split(":")[0].strip()[:60]] += 1
+    return out, why
 
 
 def repair_table(gap: MarkushGap, structures: dict, *,
@@ -136,17 +156,15 @@ def repair_table(gap: MarkushGap, structures: dict, *,
     feedback = ""
     for attempt in range(MAX_ATTEMPTS + 1):
         rep.attempts = attempt
-        built = apply_plan(gap, plan, structures)
+        built, why = apply_plan(gap, plan, structures)
         oc = measure(gap, built) if built else MarkushOutcome()
-        rep.plan, rep.outcome = plan, oc
+        rep.plan, rep.outcome, rep.refusals = plan, oc, why
         if oc.positive:
             rep.adopted, rep.structures = True, built
             logger.info("markush %s %s: ADOPTED (%s) via %s",
                         gap.patent_id, gap.table_id, summarise(oc), plan.source)
             return rep
-        feedback = summarise(oc) if built else (
-            "no row produced a molecule; every fragment drawing was refused "
-            "or unread")
+        feedback = summarise(oc) if built else _why(why, gap.n_rows)
         logger.info("markush %s %s attempt %d: %s",
                     gap.patent_id, gap.table_id, attempt, feedback)
         if propose is None or attempt >= MAX_ATTEMPTS:
@@ -174,6 +192,14 @@ def repair_patent(patent_id: str, xml: str, structures: dict | None = None,
         structures = _recognised(patent_id)
     return [repair_table(g, structures, propose=propose)
             for g in find_gaps(patent_id, xml)]
+
+
+def _why(why: dict, n_rows: int) -> str:
+    """The refusal causes, biggest first. Never "nothing happened"."""
+    if not why:
+        return f"no molecule from {n_rows} row(s), and no reason recorded"
+    top = sorted(why.items(), key=lambda kv: -kv[1])
+    return "; ".join(f"{v} x {k}" for k, v in top[:3])
 
 
 def summarise_patent(reports: list[TableReport]) -> str:
