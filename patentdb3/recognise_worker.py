@@ -101,29 +101,38 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{name}: {len(images)} drawing(s) from {a.job_dir}", flush=True)
     predict = LOADERS[name]()
 
-    rows = []
-    for i, item in enumerate(images, 1):
-        path = a.job_dir / item["file"]
-        row = {"chemistry_id": item["id"], "image_file": Path(item["file"]).name,
-               "smiles": "", "confidence": "", "recogniser": name, "error": ""}
-        try:
-            smi, conf = predict(str(path))
-            row["smiles"] = smi or ""
-            row["confidence"] = "" if conf == "" else f"{float(conf):.4f}"
-            if not smi:
-                row["error"] = "empty prediction"
-        except Exception as e:                    # one bad drawing, not the run
-            row["error"] = f"{type(e).__name__}: {e}"[:200]
-            traceback.print_exc(limit=1)
-        rows.append(row)
-        if i % 25 == 0 or i == len(images):
-            print(f"  {i}/{len(images)}", flush=True)
-
+    # WRITTEN AS IT GOES, NOT AT THE END. A caller polling this file is the
+    # only way to see progress from outside — the process is detached, because
+    # any interactive channel to a GPU runtime times out long before a
+    # 649-image job finishes. Writing once at the end made the file absent for
+    # twenty minutes, during which a healthy run and a dead one look exactly
+    # the same. It also means a crash at image 600 keeps the first 599.
     out = a.job_dir / "results.tsv"
+    rows = []
     with out.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, FIELDS, delimiter="\t", extrasaction="ignore")
         w.writeheader()
-        w.writerows(rows)
+        for i, item in enumerate(images, 1):
+            path = a.job_dir / item["file"]
+            row = {"chemistry_id": item["id"],
+                   "image_file": Path(item["file"]).name,
+                   "smiles": "", "confidence": "", "recogniser": name,
+                   "error": ""}
+            try:
+                smi, conf = predict(str(path))
+                row["smiles"] = smi or ""
+                row["confidence"] = "" if conf == "" else f"{float(conf):.4f}"
+                if not smi:
+                    row["error"] = "empty prediction"
+            except Exception as e:                # one bad drawing, not the run
+                row["error"] = f"{type(e).__name__}: {e}"[:200]
+                traceback.print_exc(limit=1)
+            w.writerow(row)
+            rows.append(row)
+            if i % 25 == 0 or i == len(images):
+                fh.flush()
+                print(f"  {i}/{len(images)}", flush=True)
+
     ok = sum(1 for r in rows if r["smiles"])
     print(f"wrote {out}  —  {ok}/{len(rows)} recognised")
     return 0
