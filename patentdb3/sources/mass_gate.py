@@ -73,6 +73,7 @@ default is now a stated fallback rather than an unexamined assumption.
 """
 from __future__ import annotations
 
+import html
 import logging
 import re
 
@@ -98,9 +99,15 @@ REPORTED = re.compile(r"MS\s*\(ESI[^)]*\)[^0-9]{0,12}(\d{2,4}(?:\.\d+)?)", re.I)
 # The same statement with the words in the other order, or another instrument.
 # `ESI-MS m/z 499.2 (MH+)`, `LC-MS: 412 (M+1)`, `HRMS (ESI) m/z 350.1`.
 # Anchored on `m/z` or on the mode marker so a bare `MS` in prose cannot match.
+# THE ADDUCT SITS BETWEEN THE INSTRUMENT AND THE MASS, AND IT HAS DIGITS IN IT.
+# `LC-MS [M - 1]: 453.3` puts `[M - 1]` in the gap, so a `[^0-9]` run stops on
+# the `1` and never reaches 453.3. Before entities were unescaped this matched
+# anyway — on the digits of `&#x2212;`, recording a 2,212 Da compound. So the
+# gap explicitly steps over one bracketed group.
 REPORTED_ALT = re.compile(
-    r"\b(?:ESI|APCI|LC|HR|HPLC)[\s/-]*MS\b[^0-9]{0,16}(\d{2,4}(?:\.\d+)?)",
-    re.I)
+    r"\b(?:ESI|APCI|LC|HR|HPLC)[\s/-]*MS\b"
+    r"[^0-9]{0,10}(?:[\[(][^\])]{0,14}[\])])?[^0-9]{0,10}"
+    r"(\d{2,4}(?:\.\d+)?)", re.I)
 
 # A COLUMN, not a sentence: `MS (m/e)` over `481.0 (M + H), CP`, or
 # `[m/z (M+H)]` over `450.24`. 22 of 137 patents print their mass only in this
@@ -148,7 +155,7 @@ PROTON = 1.00728
 # literal `MS (ESI`: a pattern that enumerates one axis of variation
 # exhaustively and freezes another without noticing it had one.
 _ADDUCT_MINUS = re.compile(
-    r"[\[(]\s*M\s*(?:&#x2212;|&#8722;|&minus;|[-−–])\s*H\s*[\])]", re.I)
+    r"[\[(]\s*M\s*(?:&#x2212;|&#8722;|&minus;|[-−–])\s*(?:H|1)\s*[\])]", re.I)
 
 
 def _shift(row_markup: str) -> float:
@@ -258,7 +265,14 @@ def _scan(xml: str) -> dict[str, tuple[float, float]]:
     out: dict[str, tuple[float, float]] = {}
     for m in re.finditer(r"<row>.*?</row>", xml, re.S):
         raw = m.group(0)
-        flat = re.sub(r"<[^>]+>", " ", raw)
+        # UNESCAPE BEFORE MATCHING. Stripping tags leaves `&#x2212;` intact,
+        # and `REPORTED_ALT` then reads its DIGITS as the mass: US11485738
+        # prints `LC-MS [M &#x2212; 1]: 453.3` and the gate recorded 2212.0 —
+        # the character code of a minus sign — for cids 221 and 226. Both
+        # structures were correct and both were reported as contradicting.
+        # A referee that can invent a 2,212 Da compound is worse than no
+        # referee, because it discredits right answers.
+        flat = html.unescape(re.sub(r"<[^>]+>", " ", raw))
         hit = REPORTED.search(flat) or REPORTED_ALT.search(flat)
         if not hit:
             continue
