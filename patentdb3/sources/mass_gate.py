@@ -82,18 +82,24 @@ logger = logging.getLogger(__name__)
 # is the FIRST number after the ionisation mode — a `+` charge marker, `m/z`
 # and a space may sit between, and nothing else observed does.
 #
+# THE DECIMAL IS PART OF THE NUMBER. Every pattern here captured `(\d{2,4})`
+# and dropped `(?:\.\d+)?` on the floor, so `414.3` was compared as `414` —
+# up to 0.99 Da of a 1.5 Da budget thrown away before any chemistry happened,
+# and the docstring above says the value IS the printed number. Keeping it
+# turned 6 corpus contradictions back into agreements.
+#
 # THIS PATTERN ALONE READ 5 OF 137 PATENTS. It requires the literal order
 # `MS (ESI`, and the corpus does not agree on it: US8722692 prints `ESI-MS m/z
 # 499.2 (MH+)` 500 times and `MS (ESI` zero times, so `reported_masses`
 # returned `{}` for that whole document and six structures wrong by 40-145 Da
 # were never weighed. The gate did not pass them — it never saw them.
-REPORTED = re.compile(r"MS\s*\(ESI[^)]*\)[^0-9]{0,12}(\d{2,4})(?:\.\d+)?", re.I)
+REPORTED = re.compile(r"MS\s*\(ESI[^)]*\)[^0-9]{0,12}(\d{2,4}(?:\.\d+)?)", re.I)
 
 # The same statement with the words in the other order, or another instrument.
 # `ESI-MS m/z 499.2 (MH+)`, `LC-MS: 412 (M+1)`, `HRMS (ESI) m/z 350.1`.
 # Anchored on `m/z` or on the mode marker so a bare `MS` in prose cannot match.
 REPORTED_ALT = re.compile(
-    r"\b(?:ESI|APCI|LC|HR|HPLC)[\s/-]*MS\b[^0-9]{0,16}(\d{2,4})(?:\.\d+)?",
+    r"\b(?:ESI|APCI|LC|HR|HPLC)[\s/-]*MS\b[^0-9]{0,16}(\d{2,4}(?:\.\d+)?)",
     re.I)
 
 # A COLUMN, not a sentence: `MS (m/e)` over `481.0 (M + H), CP`, or
@@ -106,7 +112,7 @@ REPORTED_ALT = re.compile(
 # A number, optionally followed by the adduct and any trailing note
 # (`481.0 (M + H), CP`). It must START with the number: a cell reading
 # `not determined 481` states no mass for this row.
-_MASS_CELL = re.compile(r"^\s*(\d{2,4})(?:\.\d+)?\s*(?:[(\[]|,|$)")
+_MASS_CELL = re.compile(r"^\s*(\d{2,4}(?:\.\d+)?)\s*(?:[(\[]|,|\s|$)")
 
 # The row's own compound number: the first cell, digits with an optional
 # letter suffix. Same shape `uspto_assays` reads, and deliberately strict —
@@ -198,7 +204,7 @@ def tolerance(nominal: float) -> float:
     return 1.5
 
 
-def reported_masses(xml: str) -> dict[str, int]:
+def reported_masses(xml: str) -> dict[str, float]:
     """`{compound number -> the m/z the patent prints in that compound's row}`.
 
     THE VALUE IS THE PRINTED NUMBER, NOT A NEUTRAL MASS. Which adduct it
@@ -221,7 +227,7 @@ def reported_masses(xml: str) -> dict[str, int]:
     return {cid: mass for cid, (mass, _shift_) in _scan(xml).items()}
 
 
-def _scan(xml: str) -> dict[str, tuple[int, float]]:
+def _scan(xml: str) -> dict[str, tuple[float, float]]:
     """`{compound number -> (printed m/z, the adduct shift for that row)}`.
 
     ONE SCAN FOR BOTH ANSWERS, and that is the point. `reported_masses` and
@@ -235,7 +241,7 @@ def _scan(xml: str) -> dict[str, tuple[int, float]]:
 
     A shape either yields both numbers or neither.
     """
-    out: dict[str, tuple[int, float]] = {}
+    out: dict[str, tuple[float, float]] = {}
     for m in re.finditer(r"<row>.*?</row>", xml, re.S):
         raw = m.group(0)
         flat = re.sub(r"<[^>]+>", " ", raw)
@@ -244,13 +250,13 @@ def _scan(xml: str) -> dict[str, tuple[int, float]]:
             continue
         cid = _ROW_CID.match(flat)
         if cid:
-            out.setdefault(cid.group(1), (int(hit.group(1)), _shift(raw)))
+            out.setdefault(cid.group(1), (float(hit.group(1)), _shift(raw)))
     for cid, pair in _column_masses(xml).items():
         out.setdefault(cid, pair)
     return out
 
 
-def _column_masses(xml: str) -> dict[str, tuple[int, float]]:
+def _column_masses(xml: str) -> dict[str, tuple[float, float]]:
     """The bare-column shape. `{compound number -> (printed m/z, adduct shift)}`.
 
     The header names the measurement once and every cell below it is a plain
@@ -274,7 +280,7 @@ def _column_masses(xml: str) -> dict[str, tuple[int, float]]:
     from .uspto_assays import MS, build_columns, CID
     from .uspto_xml import assemble_blocks, parse_tables
 
-    out: dict[str, tuple[int, float]] = {}
+    out: dict[str, tuple[float, float]] = {}
     try:
         tables = assemble_blocks(parse_tables(xml))
     except Exception as e:                       # a parse failure is not a mass
@@ -311,7 +317,7 @@ def _column_masses(xml: str) -> dict[str, tuple[int, float]]:
                 if hit:
                     shift = (-PROTON if _ADDUCT_MINUS.search(cell)
                              else head_shift.get(i, PROTON))
-                    out.setdefault(cid[0], (int(hit.group(1)), shift))
+                    out.setdefault(cid[0], (float(hit.group(1)), shift))
                     break
     return out
 
@@ -350,7 +356,7 @@ def _mass(smiles: str) -> "tuple[float, float] | None":
     return None if mol is None else (ExactMolWt(mol), MolWt(mol))
 
 
-def verdict(smiles: str, reported: "int | None",
+def verdict(smiles: str, reported: "float | None",
             shift: float = PROTON) -> tuple[str, float | None]:
     """`(verdict, delta)` for one structure against one reported m/z.
 
