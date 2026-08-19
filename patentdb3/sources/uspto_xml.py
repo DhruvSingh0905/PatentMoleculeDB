@@ -559,6 +559,42 @@ def _open_debt(rows: list[list["Cell"]]) -> dict:
     return debt
 
 
+# A table's own title, printed as a row of its own. The designator is not
+# always a number: patents write `TABLE 1`, `TABLE A`, `TABLE 1A`, `TABLE A-1`,
+# `TABLE 37B` and `TABLE-US-00003`, and a pattern that only reads digits lets
+# the rest through as though they named a column — which produced assay labels
+# reading `TABLE 4A CELL AXL IC50 (μM)`, and on US10870641 replaced `IC50`
+# with `TABLE A-1` outright.
+_ROW_TITLE = re.compile(
+    r"^\s*TABLE\s*[-–]?\s*(?:US[-–]?)?[0-9A-Z]{0,8}(?:\s*[-–]\s*[0-9A-Z]{1,6})?\s*$",
+    re.I)
+
+
+def _spans_one_name(texts: list[str]) -> bool:
+    """Is this a header row that names ONE column and leaves the rest blank?
+
+    A multi-row header routinely puts the assay on one row and its unit on the
+    next, filling only the cell above the column it describes:
+
+        ['', '',        'AAK1 IC50']
+        ['', 'Example', '(nM)'     ]
+
+    The row-level test required two populated cells, so the first row was
+    dropped and the column was named `(nM)` — the unit kept, the assay lost.
+    US10544120 loses `AAK1 IC50` that way over 343 records, and the same shape
+    costs `elF4E` above `FP`, the target above `Emax`, and `IC50 (nM)` above
+    four PI3K isoforms.
+
+    Only ever consulted for a row the patent DECLARED in `<thead>`, so this
+    does not let a stray one-cell body row become a header. A title is still
+    not a column name, and neither is a bare number.
+    """
+    if len(texts) != 1:
+        return False
+    t = texts[0]
+    return bool(t) and not _ROW_TITLE.match(t) and not t.replace(".", "").isdigit()
+
+
 def _is_namelike(cells: list["Cell"], *, declared: bool = False,
                  open_debt: dict | None = None) -> bool:
     """Does this row look like column names rather than data or prose?
@@ -582,7 +618,7 @@ def _is_namelike(cells: list["Cell"], *, declared: bool = False,
     short) and the entire table is consumed as header, leaving no data rows.
     """
     texts = [c.text.strip() for c in cells if c.text.strip()]
-    if len(texts) < 2:
+    if len(texts) < 2 and not (declared and _spans_one_name(texts)):
         return False
     if any(_PROSE_CELL.search(t) or len(t) > 60 for t in texts):
         return False

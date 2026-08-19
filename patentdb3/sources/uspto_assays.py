@@ -937,13 +937,22 @@ def _join_header_lines(parts: list[str]) -> str:
     breaks every consumer that matches on the name — the bin-key scale patterns
     for that patent are `DNA-?PK`, and a stray space made them bind nothing, so
     three tables extracted only their hERG column.
+
+    THE HYPHEN ITSELF SURVIVES ONLY WHEN THE NEXT FRAGMENT STARTS A NEW WORD.
+    `DNA-` over `PK` is a hyphenated name and keeps its hyphen; `Meth-` over
+    `od` is one word the typesetter broke, and keeping the hyphen leaves
+    `Meth-od`, which no pattern matching `\\bmethod\\b` can see. US9611261 heads
+    a synthesis column that way and it was read as an assay for 288 records —
+    the reader already knew a `Method` column is not a measurement, and simply
+    could not tell that this was one. Case is the signal a typesetter leaves:
+    a continuation is lower-case, a second word is not.
     """
     text = ""
     for p in parts:
         if not text:
             text = p
         elif text.endswith("-"):
-            text += p
+            text = text[:-1] + p if p[:1].islower() else text + p
         else:
             text += " " + p
     return text.strip()

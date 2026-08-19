@@ -493,3 +493,72 @@ def test_the_column_cache_does_not_drop_fields():
     second = classify_column("", samples)         # served from the cache
     assert first.label_source == second.label_source == "shape"
     assert second is not first, "callers must not share one mutable column"
+
+
+# ── I. the header rows a column is named from ────────────────────────────
+
+@pytest.mark.parametrize("parts,expected", [
+    # A hyphenated NAME keeps its hyphen: the continuation starts a new word.
+    (["DNA-", "PK"], "DNA-PK"),
+    (["BACE-", "1 Ki"], "BACE-1 Ki"),
+    # A word the typesetter BROKE across rows loses it: the continuation is
+    # lower-case. `Meth-od` is invisible to a pattern matching `\bmethod\b`,
+    # so US9611261's synthesis column read as an assay for 288 records.
+    (["Meth-", "od"], "Method"),
+    (["Ex-", "ample", "#"], "Example #"),
+    (["Inter-", "me-", "diate"], "Intermediate"),
+    (["prolifer-", "ation"], "proliferation"),
+    # No hyphen: stacked rows join with a space.
+    (["AAK1 IC50", "(nM)"], "AAK1 IC50 (nM)"),
+])
+def test_a_broken_word_is_rejoined_and_a_hyphenated_name_is_not(parts, expected):
+    from patentdb3.sources.uspto_assays import _join_header_lines
+    assert _join_header_lines(parts) == expected
+
+
+@pytest.mark.parametrize("text,is_title", [
+    # A designator is not always a number, and a pattern that reads only
+    # digits lets the rest through as though it named a column — which put
+    # `TABLE 4A` on the front of an assay name and, on US10870641, replaced
+    # `IC50` outright.
+    ("TABLE 1", True), ("TABLE A", True), ("TABLE 1A", True),
+    ("TABLE A-1", True), ("TABLE 37B", True), ("TABLE-US-00003", True),
+    # Real column names, including one that opens with the word.
+    ("AAK1 IC50", False), ("elF4E", False), ("IC50 (nM)", False),
+    ("TABLE 1A FRET_ _IC50 (uM", False),
+])
+def test_a_table_title_is_not_a_column_name(text, is_title):
+    from patentdb3.sources.uspto_xml import _ROW_TITLE
+    assert bool(_ROW_TITLE.match(text)) is is_title
+
+
+def test_a_header_row_naming_one_column_is_kept():
+    """A multi-row header puts the assay on one row and its unit on the next,
+    filling only the cell above the column it describes:
+
+        ['', '',        'AAK1 IC50']
+        ['', 'Example', '(nM)'     ]
+
+    The row test required two populated cells, so the first row was dropped
+    and the column was named `(nM)` — the unit kept, the assay lost."""
+    from patentdb3.sources.uspto_assays import (
+        ASSAY, _best_per_block, build_columns, merge_header)
+    from patentdb3.sources.uspto_xml import parse_tables
+    for t in _best_per_block(parse_tables(_xml("US10544120"))):
+        if t.table_id != "TABLE-US-00001":
+            continue
+        assert merge_header(t)[2] == "AAK1 IC50 (nM)"
+        assay = [c for c in build_columns(t) if c.kind == ASSAY]
+        assert [c.assay_name for c in assay] == ["AAK1 IC50 (nM)"]
+        return
+    pytest.skip("US10544120 TABLE-US-00001 not present")
+
+
+def test_a_synthesis_method_column_is_not_an_assay():
+    """US9611261 heads a column `Meth-`/`od` over single letters naming which
+    general procedure made each compound. 288 records of synthesis metadata
+    presented as measurements."""
+    from patentdb3.sources.uspto_assays import extract_from_patent as ex
+    labels = {r.assay_name for r in ex(_xml("US9611261"))}
+    assert not any("meth" in (a or "").lower() for a in labels), \
+        f"a method column is still an assay: {labels}"
