@@ -240,9 +240,18 @@ class _Scripted:
 
     def __init__(self, *rules):
         self.rules, self.calls, self.seen_feedback = list(rules), 0, []
+        self.seen_models: list[str] = []
+        self.seen_full: list[bool] = []
 
-    def __call__(self, gap, *, model="", patent_id="", attempts=None, digest=""):
+    def __call__(self, gap, *, model="", patent_id="", attempts=None, digest="",
+                 full_context=False):
+        # `full_context` mirrors `synthesize.propose`. A stub whose signature
+        # drifts from the function it stands in for does not fail where the
+        # drift is — it fails in four unrelated tests with a TypeError, which
+        # is how a new keyword on `propose` read as a broken retry loop.
         self.seen_feedback.append(list(attempts or []))
+        self.seen_models.append(model)
+        self.seen_full.append(full_context)
         self.calls += 1
         return self.rules.pop(0) if self.rules else None
 
@@ -497,3 +506,24 @@ def test_normalize_cid_keeps_every_real_id_shape_in_this_corpus():
                       ("100AA", "100AA"), ("10-1", "10-1"), ("I-0020", "I-20"),
                       ("α-6-mPEG1-O-Codeine", "α-6-mPEG1-O-Codeine")]:
         assert normalize_cid(raw) == want, raw
+
+
+def test_the_last_attempt_escalates_to_the_strongest_model(monkeypatch, tmp_path):
+    """Two attempts have already failed on this layout with the cheap model and
+    the small view; a third of the same buys the same answer. The last one goes
+    to Opus with the wider views served up front.
+
+    Bounded, because the first version was not: firing Opus on every gap spent
+    $1.04 on US11566007 against a $0.20 soft cap, and still adopted nothing."""
+    scripted = _Scripted(*[_inert() for _ in range(6)])
+    _run_with(monkeypatch, tmp_path, scripted)
+
+    assert scripted.calls >= 2, "the loop must retry before it escalates"
+    assert not scripted.seen_full[0], "the first attempt is the cheap one"
+    assert scripted.seen_models[0] != config.MODEL_OPUS
+    # The escalation fires at most once, on the last attempt for one gap.
+    assert scripted.seen_full.count(True) <= 1
+    if True in scripted.seen_full:
+        i = scripted.seen_full.index(True)
+        assert scripted.seen_models[i] == config.MODEL_OPUS, \
+            "the escalation must go to the strongest model, not just get more context"
