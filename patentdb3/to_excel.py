@@ -198,17 +198,23 @@ def main(argv: list[str]) -> int:
 def _joined_sheet(wb, dump_rows, man) -> None:
     """THE DELIVERABLE. One row per compound: identity joined to its assays.
 
-    Everything else in this workbook is working material — the raw records,
-    the per-route trail, the reference comparison. This sheet is the thing the
-    pipeline exists to produce, and it is the only one that answers "what did
-    you get out of this patent" without the reader assembling it themselves.
+    Everything else in this workbook is working material. This sheet is the
+    thing the pipeline exists to produce, and the only one that answers "what
+    did you get out of this patent" without the reader assembling it.
 
-    WIDE, not long: one row per compound, with each assay as its own column
-    triple. A chemist reading a long-format table has to pivot it before it
-    means anything, and pivoting is where a value silently lands against the
-    wrong compound.
+    ASSAYS ARE TWO ALIGNED LISTS, NOT A COLUMN EACH. A column per assay needs
+    505 of them — that is how many distinct assay names this corpus holds —
+    so the first version showed the commonest 40 and silently hid the rest.
+    It also spent 160 columns on a compound that has, at most, 12 values;
+    measured, 13,827 compounds have exactly one and only 217 have eight.
+
+    So the assay names go in one cell and their values in the next, in the
+    same order. Every assay a compound has is visible, nothing is truncated,
+    and reading across one row tells you what was measured and what it came
+    to. Sorting or filtering still works on the columns that matter — patent,
+    route, verdict.
     """
-    from openpyxl.styles import Font
+    from openpyxl.styles import Alignment, Font
     from openpyxl.utils import get_column_letter
 
     src = Path(man.get("structures") or "")
@@ -220,8 +226,6 @@ def _joined_sheet(wb, dump_rows, man) -> None:
     with src.open(newline="") as fh:
         st = list(csv.DictReader(fh, delimiter="\t"))
 
-    # identity, best row per (patent, cid): a confirmed one beats an unchecked
-    # one, and any resolved one beats a blank.
     def rank(r):
         return (r.get("mass_check") == "agrees", bool(r.get("inchikey")))
     ident: dict = {}
@@ -232,56 +236,72 @@ def _joined_sheet(wb, dump_rows, man) -> None:
         if k not in ident or rank(r) > rank(ident[k]):
             ident[k] = r
 
-    assays = collections.defaultdict(dict)
-    names: dict = {}
+    # {compound -> {assay -> [value, ...]}}, insertion order kept so the two
+    # lists in the sheet line up exactly.
+    meas: dict = collections.defaultdict(dict)
     for r in dump_rows:
         k = (r["patent_id"], r.get("cid") or "")
         a = (r.get("assay_name") or "").strip()
         if not k[1] or not a:
             continue
-        names[a] = names.get(a, 0) + 1
-        cell = assays[k].setdefault(a, {"v": [], "q": set(), "n": set(), "u": set()})
-        if r.get("value_numeric"):
-            cell["v"].append(r["value_numeric"])
-        elif r.get("letter_grade"):
-            cell["v"].append(r["letter_grade"])
-        if r.get("qualifier"):
-            cell["q"].add(r["qualifier"])
-        if r.get("n_runs"):
-            cell["n"].add(r["n_runs"])
-        if r.get("unit"):
-            cell["u"].add(r["unit"])
+        # DO NOT REPEAT A UNIT THE ASSAY NAME ALREADY CARRIES. Patents
+        # routinely head a column `BACE1 Ki (nM)`, and appending the parsed
+        # unit again gave `BACE1 Ki (nM) nM`.
+        unit = (r.get("unit") or "").strip()
+        label = a if (not unit or unit.lower() in a.lower()) else f"{a} {unit}"
+        val = (r.get("value_numeric") or "").strip()
+        if not val:
+            val = (r.get("letter_grade") or "").strip()
+        if not val and r.get("range_lo"):
+            val = f"{r['range_lo']}-{r.get('range_hi', '')}"
+        if not val:
+            continue
+        q = (r.get("qualifier") or "").strip()
+        n = (r.get("n_runs") or "").strip()
+        cell = (q + val) if q else val
+        if n:
+            cell += f" (n={n})"
+        meas[k].setdefault(label, []).append(cell)
 
-    top = [a for a, _ in sorted(names.items(), key=lambda kv: -kv[1])[:40]]
-    head = ["patent_id", "cid", "verdict", "inchikey", "smiles", "name"]
-    for a in top:
-        head += [f"{a} value", f"{a} qualifier", f"{a} n", f"{a} unit"]
-
+    head = ["patent_id", "cid", "route", "name_iupac", "smiles", "inchikey",
+            "verdict", "n_assays", "assays", "values"]
     ws = wb.create_sheet("compounds")
     ws.append(head)
-    for k in sorted(set(ident) | set(assays)):
+    for k in sorted(set(ident) | set(meas)):
         r = ident.get(k, {})
         v = ("confirmed" if r.get("mass_check") == "agrees" else
              "DISPUTED" if r.get("mass_check") == "contradicts" else
              "resolved" if r.get("inchikey") else
              "markush" if r.get("markush") == "True" else "unresolved")
-        row = [k[0], k[1], v, r.get("inchikey", ""),
-               (r.get("smiles") or "")[:400], (r.get("name") or "")[:300]]
-        for a in top:
-            c = assays.get(k, {}).get(a)
-            row += ["; ".join(c["v"]) if c else "",
-                    "; ".join(sorted(c["q"])) if c else "",
-                    "; ".join(sorted(c["n"])) if c else "",
-                    "; ".join(sorted(c["u"])) if c else ""]
-        ws.append(row)
+        route = {"table": "name in a table cell",
+                 "cid_first": "search from the compound id"}.get(
+                     r.get("source", ""), r.get("source", "") or "\u2014")
+        if r.get("markush") == "True":
+            route = "markush assembly"
+        m = meas.get(k, {})
+        ws.append([k[0], k[1], route, (r.get("name") or "")[:300],
+                   (r.get("smiles") or "")[:400], r.get("inchikey", ""), v,
+                   len(m),
+                   ", ".join(m) or "",
+                   ", ".join("; ".join(vals) for vals in m.values()) or ""])
     for c in ws[1]:
         c.font = Font(bold=True)
-    ws.freeze_panes = "D2"
+    ws.freeze_panes = "C2"
     ws.auto_filter.ref = ws.dimensions
+    widths = {"patent_id": 15, "cid": 10, "route": 27, "name_iupac": 52,
+              "smiles": 52, "inchikey": 29, "verdict": 13, "n_assays": 10,
+              "assays": 60, "values": 34}
     for i, c in enumerate(head, 1):
-        ws.column_dimensions[get_column_letter(i)].width = (
-            46 if c in ("smiles", "name") else max(10, min(26, len(c) + 4)))
-    print(f"compounds: {ws.max_row - 1:,} rows, {len(top)} assays as columns")
+        ws.column_dimensions[get_column_letter(i)].width = widths.get(c, 14)
+    # TEXT, NOT NUMBERS. A compound with one assay yields a values cell like
+    # `83.0`, which Excel silently retypes as a number and then renders as
+    # `####` whenever the column is narrower than its own idea of the format.
+    # These are lists that happen to have one element; they are never numbers.
+    for row in ws.iter_rows(min_row=2, min_col=9, max_col=10):
+        for cell in row:
+            cell.number_format = "@"
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+    print(f"compounds: {ws.max_row - 1:,} rows, assays as aligned lists")
 
 
 def _trail_sheets(wb, man) -> None:

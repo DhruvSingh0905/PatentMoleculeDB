@@ -85,7 +85,7 @@ recognition needs GPU time.</p>
 <h2>2 · How it works</h2>
 
 <figure>
-<svg viewBox="0 0 700 352" xmlns="http://www.w3.org/2000/svg" role="img"
+<svg viewBox="-22 0 744 452" xmlns="http://www.w3.org/2000/svg" role="img"
      aria-label="Pipeline diagram from patent XML to one row per compound">
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5"
@@ -172,10 +172,42 @@ recognition needs GPU time.</p>
   <rect class="bxo" x="150" y="302" width="400" height="44" rx="3"/>
   <text class="t tt" x="350" y="320" text-anchor="middle">One row per compound</text>
   <text class="t ts" x="350" y="334" text-anchor="middle">structure + assay values — 24,948 resolved, 3,184 mass-confirmed</text>
+
+  <!-- ── self-healing loops ─────────────────────────────────────────── -->
+  <text class="t lb" x="4" y="374">SELF-HEALING LOOPS — WHAT HAPPENS WHEN A STAGE FAILS</text>
+  <line class="ln" x1="4" y1="380" x2="696" y2="380"/>
+
+  <rect class="bx" x="4" y="390" width="222" height="56" rx="3"/>
+  <text class="t tt" x="115" y="408" text-anchor="middle">Table layout</text>
+  <text class="t tx" x="115" y="422" text-anchor="middle">a table whose values did not read</text>
+  <text class="t tx" x="115" y="434" text-anchor="middle">judged on: records produced</text>
+
+  <rect class="bx" x="239" y="390" width="222" height="56" rx="3"/>
+  <text class="t tt" x="350" y="408" text-anchor="middle">Chemical name</text>
+  <text class="t tx" x="350" y="422" text-anchor="middle">a name the parser refuses</text>
+  <text class="t tx" x="350" y="434" text-anchor="middle">judged on: does it parse now</text>
+
+  <rect class="bxa" x="474" y="390" width="222" height="56" rx="3"/>
+  <text class="t tt" x="585" y="408" text-anchor="middle">Markush assembly</text>
+  <text class="t tx" x="585" y="422" text-anchor="middle">a substituent table with no molecule</text>
+  <text class="t tx" x="585" y="434" text-anchor="middle">judged on: the printed mass</text>
+
+  <!-- each loop returns to the stage it repairs -->
+  <path class="ln" d="M4,390 C-14,340 -14,110 60,75" fill="none"
+        stroke-dasharray="3 3" marker-end="url(#a)"/>
+  <path class="ln" d="M696,390 C714,330 714,190 694,166" fill="none"
+        stroke-dasharray="3 3" marker-end="url(#a)"/>
+  <text class="t tx" x="350" y="384" text-anchor="middle" style="font-size:8px">
+    a repaired stage re-enters the pipeline above · a repair is kept only if a measurement improves
+  </text>
 </svg>
 <figcaption>The routes run in turn. The first one that gives a structure wins. When a route
 fails, the system records the reason. The mass gate uses only the mass the patent printed in
-that compound's own row. It is the one independent check.</figcaption>
+that compound's own row — it is the one independent check.<br>
+The three loops below handle failure. Each finds what went wrong, buys one small reusable rule,
+applies it to that patent alone, and keeps it only if a measurement improves. A rule is keyed to
+the shape of the problem, not to the patent, so a rule bought once is reused wherever that shape
+appears again.</figcaption>
 </figure>
 
 <h2>3 · Status</h2>
@@ -211,13 +243,43 @@ OPSIN, which either parses a name to a structure or refuses — so a compound we
 compound the nomenclature supports, independent of any reference.</p>
 </div>
 
+
+
+<h2>4 · What is extracted, and what is still to run</h2>
+
+<p>45,210 compounds carry an assay value. 23,158 of them already hold a structure.
+<strong>Most of the rest are not a failure to read the patent — they are drawings we have not
+put through recognition yet.</strong> That is a compute queue, not a defect. The remaining
+defects are traced and being fixed. The two are worth keeping apart, because only one of them
+needs new work.</p>
+
+<table>
+<thead><tr><th>State</th><th>Compounds</th><th>Share</th><th>What it means</th></tr></thead>
+<tbody>
+<tr><td>Structure resolved</td><td class="n">23,158</td><td class="n">51%</td><td>identity established from the document</td></tr>
+<tr><td><strong>Drawn — recognition not yet run</strong></td><td class="n">12,892</td><td class="n">29%</td><td><strong>the method works. It needs compute.</strong></td></tr>
+<tr><td>Markush</td><td class="n">1,025</td><td class="n">2%</td><td>the assembly tier handles these</td></tr>
+<tr><td>Reader-side gap</td><td class="n">~8,100</td><td class="n">18%</td><td>traced to specific causes, work in progress</td></tr>
+</tbody></table>
+
 <div class="note">
-<p><strong>4,475 compounds cannot be reached by any route.</strong> The document gives nothing
-outside the assay tables. 78% of them sit in four patents that identify a compound by a number
-that appears nowhere else. Leave them out of any coverage denominator, and say so.</p>
+<p><strong>The 12,892 drawn compounds are the single largest item, and nothing about them is
+unsolved.</strong> A corpus sample of 166 drawings across 33 patents scored a per-patent median
+of 100% against the masses those patents printed, with 15 of 29 patents at or above 90%. The
+pipeline reads them correctly.</p>
+<p>They are unrun because structure recognition needs a GPU. We currently drive that through
+Google Colab, which is fine for a sample and <strong>does not scale to 12,892 drawings</strong> —
+sessions are interactive, time-limited and billed per session. Recognition is decoupled from the
+rest of the pipeline, so any compute can do the work: the pipeline writes a job, a machine reads
+it, the pipeline reads the answers back. What is needed is compute, not code.</p>
 </div>
 
-<h2>4 · Decisions taken</h2>
+<h3>Where the remaining work sits</h3>
+<p>It is concentrated. Of 133 patents, the top 40 hold 91% of everything still outstanding, and
+the top 10 hold 53%. The pipeline does not read badly across the corpus — it stops on particular
+documents, which is the cheap kind of problem.</p>
+
+<h2>5 · Decisions taken</h2>
 
 <table class="dead">
 <thead><tr><th>Decision</th><th>Reason</th></tr></thead>
@@ -230,7 +292,7 @@ that appears nowhere else. Leave them out of any coverage denominator, and say s
 <tr><td>Keep molecules nothing can verify</td><td>Refusing them deleted 38 correct molecules on a patent that prints no masses. Absence of evidence is now recorded as such. Evidence against is still fatal.</td></tr>
 </tbody></table>
 
-<h2>5 · Problems</h2>
+<h2>6 · Problems</h2>
 
 <table>
 <thead><tr><th>Problem</th><th>Size</th><th>Status</th><th>What unblocks it</th></tr></thead>
@@ -244,19 +306,24 @@ that appears nowhere else. Leave them out of any coverage denominator, and say s
 <tr><td>Five patents scored zero</td><td class="n">5 patents</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. Our own mass check was wrong on one patent, and four were sampled before an earlier fix.</td></tr>
 </tbody></table>
 
-<h2>6 · Next steps</h2>
+<h2>7 · Next steps</h2>
 
 <ol>
-<li><strong>Buy GPU time and recognise the 13,053 drawn compounds.</strong> This is the largest
-item by a wide margin. It needs no new method.</li>
-<li><strong>Build the route for the tables no identity route reaches.</strong> Up to 877 rows.
-The cause is traced and nothing blocks the work.</li>
-<li><strong>Build the three table layouts.</strong> 385 rows. Nothing blocks the work.</li>
-<li><strong>Recover the dropped names.</strong> About 1,800, and more than half sit in four
-patents, so it is a small number of document defects rather than a broad weakness.</li>
-<li><strong>Build the loop that reads a patent's drawing convention.</strong> It unblocks the
-968 wavy cut bond rows, and it is the general answer to a convention we have not seen
-before.</li>
+<li><strong>Compute for structure recognition.</strong> 12,892 drawn compounds are waiting on
+GPU time, not on new work. This is the largest single gain available and the method is already
+measured. Colab does not scale to it.</li>
+
+<li><strong>Unblock the compounds we cannot yet reach.</strong> Traced, in progress.</li>
+
+<li><strong>Read the wavy cut bond.</strong> 968 compounds are drawn as a scaffold plus a
+fragment, with a wavy line marking where the fragment attaches. No structure format carries
+that meaning, so a recogniser fills the gap with a group that is not there. Removing it works;
+the patent usually explains its own convention in prose, and reading that is the general
+answer.</li>
+
+<li><strong>Resolve position numbers to atoms.</strong> A substituent given as a ring position
+rather than a drawing, such as <em>3-CH<sub>3</sub></em>. Safe for a simple ring and not yet
+safe for a fused one, so it is deliberately refused today rather than guessed.</li>
 </ol>
 
 <footer>
