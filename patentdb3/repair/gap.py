@@ -26,7 +26,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from ..sources.uspto_assays import (
-    _CID_PAT, ASSAY, CID, build_columns, table_legend,
+    _CID_PAT, ASSAY, CID, build_columns, is_placeholder_name, table_legend,
     _header_rows_of, merge_header,
 )
 from ..sources.uspto_xml import Table
@@ -750,6 +750,36 @@ signature=layout_signature(t, heads),
                     + ("" if worst["agrees"] else " — which disagrees. A header "
                        "label spanning several columns has probably landed on "
                        "only one of them")),
+            sample=_sample_of(t, heads), headers=heads,
+            expanded_sample=_sample_of(t, heads, 24, expand=True),
+            column_kinds=[c.kind for c in build_columns(t)],
+        ))
+
+    # Blocks whose RECORDS carry a placeholder name. The pass below asks the
+    # same question of COLUMNS, and columns are not the only way a name is
+    # minted: the inverted-table path names a whole block at once, so a block
+    # of 818 records called `assay (binned)` raised nothing at all while a
+    # single unnamed column did. The signal is the name, not the code path.
+    for t in tables:
+        if t.table_id in unlabelled_blocks:
+            continue
+        mine = [r for r in records_list if r.table_id == t.table_id]
+        if not mine or not all(is_placeholder_name(r.assay_name) for r in mine):
+            continue
+        unlabelled_blocks.add(t.table_id)
+        heads = merge_header(t)
+        gaps.append(Gap(
+            patent_id=patent_id, table_id=t.table_id, n_cols=t.n_cols,
+            n_data_rows=rows_per_block.get(t.table_id, len(t.body_rows)),
+            n_extracted=len(cids_per_block.get(t.table_id, ())),
+            fingerprint=layout_fingerprint(t, heads),
+            signature=layout_signature(t, heads),
+            asks="column_names",
+            reason=(f"every record from this table carries a placeholder name "
+                    f"({mine[0].assay_name!r}) — we read {len(mine)} "
+                    f"measurements and cannot say what was measured. Name the "
+                    f"assay from the table's own rows or the prose around it, "
+                    f"or say that it is not a measurement"),
             sample=_sample_of(t, heads), headers=heads,
             expanded_sample=_sample_of(t, heads, 24, expand=True),
             column_kinds=[c.kind for c in build_columns(t)],

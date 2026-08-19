@@ -347,6 +347,42 @@ def _parse_row(row_xml: str) -> list[Cell]:
     return cells
 
 
+# A table's own title row: `TABLE 4`, `TABLE B`, `TABLE 3B`, `TABLE-US-00009`.
+_OWN_TITLE = re.compile(
+    r"^\s*TABLE\s*[-–]?\s*(?:US[-–]?)?[0-9A-Z]{1,8}(?:\s*[-–]\s*[0-9A-Z]{1,6})?\s*$",
+    re.I)
+
+
+def _caption_belongs(caption: str, rows) -> bool:
+    """Does this caption describe THIS table, or the one before it?
+
+    The caption is the last `<p>` before the `<tables>` element, which is a
+    guess. When a table states its own title INSIDE its markup, the guess can
+    be checked — and it is wrong far more often than it looks: 802 of the 1,820
+    blocks that name themselves are captioned with a different table's text,
+    every one of them off by one, because the look-back lands on the previous
+    table's trailing paragraph.
+
+    That matters beyond the label. The caption supplies the assay name and the
+    unit hint, and feeds the bin-key harvest, so the previous table's text can
+    put the wrong assay name and the wrong unit on this one. US11566007
+    TABLE-US-00008 is `KRAS G13C FRET data` and was captioned `TABLE 7 KRAS
+    G12D FRET data` — a different mutant, which no downstream check can catch.
+
+    A table that names itself is authoritative. Where the two disagree the
+    caption is the previous table's and is not this table's to use.
+    """
+    own = next((c.text.strip() for r in rows for c in r
+                if _OWN_TITLE.match(c.text.strip())), "")
+    if not own:
+        return True                      # nothing to check it against
+    said = re.match(r"\s*(TABLE\s*[-–]?\s*[0-9A-Za-z-]{1,10})", caption or "", re.I)
+    if not said:
+        return True                      # the caption claims no table number
+    norm = lambda t: re.sub(r"[^0-9A-Z]", "", t.upper())
+    return norm(said.group(1)) == norm(own)
+
+
 def parse_tables(xml: str) -> list[Table]:
     """Extract every CALS `tgroup` as a Table.
 
@@ -405,6 +441,14 @@ def parse_tables(xml: str) -> list[Table]:
                 _parse_row(r) for r in
                 re.findall(r"<row>(.*?)</row>", tbody.group(1) if tbody else body, re.S)
             ]
+            # A caption that names a DIFFERENT table belongs to that table.
+            # Dropped rather than repaired: the text is real, it is simply not
+            # about this block, and using it would put another table's assay
+            # name and unit here. `preceding` still carries it for the bin-key
+            # search, which looks by shape and not by ownership.
+            own_rows = header_rows + body_rows[:4]
+            if caption and not _caption_belongs(caption, own_rows):
+                caption = ""
             out.append(Table(
                 table_id=table_id, n_cols=n_cols, col_widths=col_widths,
                 header_rows=header_rows, body_rows=body_rows,

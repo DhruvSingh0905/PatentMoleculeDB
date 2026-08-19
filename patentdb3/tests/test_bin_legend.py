@@ -708,3 +708,60 @@ def test_a_block_whose_scale_is_out_of_reach_still_yields_its_grades():
         block = [r for r in recs if r.table_id == tid]
         assert len(block) > 500, f"{tid} yielded {len(block)}"
         assert all(r.letter_grade for r in block), "every record carries its grade"
+
+
+# ── M. a flag must cover every way the thing it flags is made ────────────
+
+def test_every_placeholder_name_the_reader_mints_is_one_it_flags():
+    """`label_source` marked the placeholders minted by the column classifier
+    and missed `assay (binned)`, minted by the inverted-table path — so a block
+    of 818 records with no name at all raised nothing, while a single unnamed
+    column raised a gap. Keying a flag on WHICH CODE PATH produced something is
+    how it silently covers only some of them.
+
+    This asserts the reverse: every literal the module uses as a fallback assay
+    name is in the vocabulary the detector flags on. A new fallback added at an
+    eighth call site fails here rather than going unnoticed."""
+    import re as _re
+    from pathlib import Path
+
+    from patentdb3.sources.uspto_assays import PLACEHOLDER_ASSAY_NAMES
+    src = Path(__file__).resolve().parents[1] / "sources" / "uspto_assays.py"
+    text = src.read_text()
+    minted = set(_re.findall(r'assay_name=(?:[^,\n]*?or\s+)?"([^"]+)"', text))
+    unflagged = {m for m in minted
+                 if ("unnamed" in m.lower() or "binned" in m.lower())
+                 and m not in PLACEHOLDER_ASSAY_NAMES}
+    assert not unflagged, (
+        f"minted as a fallback but not in PLACEHOLDER_ASSAY_NAMES: {unflagged}")
+
+
+def test_a_block_of_unnamed_records_is_raised_for_the_loop():
+    """The column-based detector asks this of COLUMNS, and columns are not the
+    only way a name is minted — the inverted path names a whole block at once.
+    The signal is the name, not the code path."""
+    from patentdb3.repair.gap import find_gaps
+    from patentdb3.sources.uspto_xml import assemble_blocks, parse_tables
+    xml = _xml("US11566007")
+    gaps = find_gaps("US11566007", assemble_blocks(parse_tables(xml)),
+                     extract_from_patent(xml), _source_xml=xml)
+    hit = [g for g in gaps
+           if g.table_id == "TABLE-US-00005" and "placeholder name" in (g.reason or "")]
+    assert hit, "a block whose every record is unnamed must reach the loop"
+    assert hit[0].asks == "column_names", \
+        "it must ask for names, or the loop answers a scale question instead"
+
+
+def test_a_caption_naming_another_table_is_not_used():
+    """The caption is the last <p> before the block, which is a guess. 802 of
+    the 1,820 blocks that state their own title were captioned with a different
+    table's text, every one off by one. It supplies the assay name and the unit
+    hint, so US11566007 TABLE-US-00008 — `KRAS G13C FRET data` — was captioned
+    `TABLE 7 KRAS G12D FRET data`: a different mutant, which nothing downstream
+    can catch."""
+    from patentdb3.sources.uspto_xml import parse_tables
+    names = {r.table_id: r.assay_name
+             for r in extract_from_patent(_xml("US11566007"))}
+    assert "G13C" in (names.get("TABLE-US-00008") or ""), names.get("TABLE-US-00008")
+    assert "G12D" not in (names.get("TABLE-US-00008") or "")
+    assert "G12D" in (names.get("TABLE-US-00007") or ""), names.get("TABLE-US-00007")

@@ -127,6 +127,25 @@ _MEAN_SD = re.compile(
     r"[*#]*\s*$", re.I)
 
 _NRUNS_ONLY = re.compile(r"^\s*\(\s*(\d{1,3})\s*\)\s*$")
+# EVERY NAME THIS MODULE USES WHEN IT DOES NOT KNOW WHAT WAS MEASURED.
+#
+# One set, because the detector that flags an unnamed column has to agree with
+# the code that mints the name — and keying the flag on WHICH CODE PATH set it
+# is how a flag silently covers only some of them. `label_source` marked the
+# column classifier's placeholders and missed `assay (binned)`, minted by the
+# inverted-table path, so 818 records went unflagged. The name is the signal;
+# where it came from is not.
+PLACEHOLDER_ASSAY_NAMES = frozenset({
+    "assay (binned)", "unnamed assay", "unnamed assay (letter bin)",
+})
+
+
+def is_placeholder_name(name: str | None) -> bool:
+    """Did we emit this name because we could not read one?"""
+    return (name or "").strip().lower() in {
+        n.lower() for n in PLACEHOLDER_ASSAY_NAMES}
+
+
 _LETTER_BIN = re.compile(r"^\s*([A-E])\s*$")
 # Any single letter, whether or not it is a grade. A GRADE ALPHABET IS CLOSED:
 # the legend defines A-E and the column uses nothing else. A column that also
