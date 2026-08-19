@@ -1022,7 +1022,15 @@ _KEY_HINT = re.compile(
     # value of less than 10 nM`: two words, "a calculated", and the hint said no
     # while the parser read it perfectly.
     rf"|(?:{_SYM_QN}{_DEFINES}(?:[a-z]+\s+){{0,4}}(?:{_METRIC}|{_CMP}|{_NUM}|[<>≤≥≦≧⩽⩾]))"
-    rf"|(?:{_NUM}\s*{_UNIT}?\s*=\s*{_QUOTE}?{_SYMBOL})", re.I)
+    rf"|(?:{_NUM}\s*{_UNIT}?\s*=\s*{_QUOTE}?{_SYMBOL})"
+    # Forms 5 and 6, added to the PARSER and — the first time — not to this.
+    # `1000 nM < IC50 <= 10000 nM: +++` and `A 0 < PI3K Delta Activity < 50 nM`
+    # both parse cleanly and were refused here, so 499 records were lost at the
+    # filter and never at the parser. That is the failure this file's own
+    # gotcha names, repeated: a filter in front of a parser must accept
+    # everything the parser accepts.
+    rf"|(?:[<>≤≥≦≧⩽⩾]\s*{_NUM}[^;:]{{0,40}}?[:=]\s*{_QUOTE}?{_SYMBOL})"
+    rf"|(?:{_SYM_QN}\s+{_NUM}\s*{_UNIT}?\s*[<>≤≥≦≧⩽⩾])", re.I)
 
 
 def looks_like_key(text: str) -> bool:

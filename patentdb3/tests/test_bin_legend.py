@@ -806,3 +806,31 @@ def test_the_same_fact_twice_is_one_fact():
               r.range_lo, r.range_hi, r.unit) for r in block}
     assert len(facts) == len(block), \
         f"{len(block) - len(facts)} identical facts shipped more than once"
+
+
+def test_the_hint_accepts_every_form_the_parser_reads():
+    """The gotcha this module already records, repeated by me: Forms 5 and 6
+    were added to `parse_bin_key` and not to `looks_like_key`, so
+    `1000 nM < IC50 <= 10000 nM: +++` and `A 0 < PI3K Delta Activity < 50 nM`
+    both parsed cleanly and were refused one step earlier. 499 records lost at
+    the filter and never at the parser.
+
+    Asserted as a property rather than a list, so a form added to the parser
+    without the filter fails here."""
+    forms = [
+        "A: IC50 < 3 nM",
+        "+ (greater than 10 microMolar)",
+        "A ≦ 10 nM;",
+        "*** is less than 100 nM",
+        'IC50 values of less than 0.05 μM are labelled as "+++"',
+        '“A” represents a calculated IC50 value of less than 10 nM',
+        "<1.00 nM=A",
+        "1000 nM < IC50 ≤ 10000 nM: +++",
+        "A 0 < PI3K Delta Activity < 50 nM",
+        "“D” represents a calculated IC50 value of 1 μM or greater",
+        '"A" provided an IC50 ≤10 nM',
+    ]
+    for text in forms:
+        assert bin_legend.parse_bin_key(text), f"the parser cannot read {text!r}"
+        assert bin_legend.looks_like_key(text), \
+            f"the parser reads {text!r} but the filter refuses it"
