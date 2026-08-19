@@ -355,6 +355,25 @@ def apply_rule(rule: Rule, table: Table, patent_id: str) -> list:
     return out
 
 
+def _informative(r) -> tuple:
+    """How much a record SAYS. Higher wins between two copies of one fact.
+
+    The merge used to keep a usable copy over an unusable one, which holds only
+    when the repair turns unusable into usable. It does not hold for the
+    commonest repair of all: a `bin_key` takes a grade the reader already read
+    and ADDS its numeric range. Both copies are usable, so neither was dropped
+    and every record shipped twice — 2,322 became 4,644 on US11547697 from a
+    rule the library already owned and applied for free.
+
+    Ordering by how much each copy states covers both cases with one rule:
+    usable beats unusable, ranged beats unranged, a number beats a grade.
+    """
+    return (r.is_usable,
+            r.range_lo is not None or r.range_hi is not None,
+            r.value_numeric is not None,
+            bool(r.unit))
+
+
 def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = None,
                   max_calls: int = 8, dry_run: bool = False,
                   model: str | None = None,
@@ -912,10 +931,46 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
     merged = []
     superseded = 0
     for group in by_key.values():
-        if len(group) > 1 and any(r.is_usable for r in group):
-            keep = [r for r in group if r.is_usable]
-            superseded += len(group) - len(keep)
-            merged.extend(keep)
+        # KEEP THE COPY THAT SAYS MORE, not merely the one that is usable.
+        #
+        # The rule here was "an unusable copy carries nothing its usable twin
+        # lacks", which holds only when the repair turns unusable into usable.
+        # It does not hold for the commonest repair of all: a `bin_key` takes a
+        # grade the reader already read and ADDS its numeric range. Both copies
+        # are usable, so neither was dropped and every record shipped twice —
+        # 2,322 became 4,644 on US11547697 from a rule the library already
+        # owned and applied for free.
+        #
+        # Ranking by how much each copy states covers both cases with one rule:
+        # usable beats unusable, ranged beats unranged, valued beats grade-only.
+        # Copies that say exactly as much are different facts and all survive,
+        # which is what the 17 equally-usable groups the old comment describes
+        # actually were.
+        if len(group) > 1:
+            best = max(_informative(r) for r in group)
+            keep = [r for r in group if _informative(r) == best]
+            # THE SAME FACT STATED TWICE IS ONE FACT. Ranking by information
+            # settles which copy to prefer; it does not settle two copies that
+            # say the SAME thing, and those are the common case once the reader
+            # and a bought rule agree. US11547697's `bin_key` rule reproduces a
+            # scale the reader now resolves on its own, so both copies carry
+            # the same grade and the same range and neither outranks the other.
+            #
+            # Collapsed on the FACT — the value, the grade, the interval, the
+            # unit — not on the source. Two copies that genuinely differ in any
+            # of those are two readings and both still ship, which is what the
+            # equally-usable groups were always meant to protect.
+            seen_fact: set = set()
+            unique = []
+            for r in keep:
+                fact = (r.value_numeric, r.letter_grade, r.range_lo, r.range_hi,
+                        r.unit, r.qualifier, r.n_runs)
+                if fact in seen_fact:
+                    continue
+                seen_fact.add(fact)
+                unique.append(r)
+            superseded += len(group) - len(unique)
+            merged.extend(unique)
         else:
             merged.extend(group)
     if superseded:

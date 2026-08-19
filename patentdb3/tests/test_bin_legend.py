@@ -765,3 +765,44 @@ def test_a_caption_naming_another_table_is_not_used():
     assert "G13C" in (names.get("TABLE-US-00008") or ""), names.get("TABLE-US-00008")
     assert "G12D" not in (names.get("TABLE-US-00008") or "")
     assert "G12D" in (names.get("TABLE-US-00007") or ""), names.get("TABLE-US-00007")
+
+
+# ── N. what survives when a repair and the reader both read a row ────────
+
+def test_a_repair_that_adds_a_range_replaces_the_copy_without_one():
+    """The merge kept a usable copy over an unusable one, which holds only
+    when the repair turns unusable into usable. It does not hold for the
+    commonest repair of all — a `bin_key` takes a grade the reader already read
+    and ADDS its numeric range. Both copies are usable, so neither was dropped
+    and every record shipped twice."""
+    from patentdb3.repair.loop import _informative
+    from patentdb3.sources.uspto_assays import AssayRecord
+    bare = AssayRecord(cid="1", assay_name="IC50", letter_grade="B", unit="nM")
+    ranged = AssayRecord(cid="1", assay_name="IC50", letter_grade="B", unit="nM",
+                         range_lo=3.0, range_hi=7.0)
+    assert _informative(ranged) > _informative(bare)
+
+
+def test_the_same_fact_twice_is_one_fact():
+    """Ranking settles which copy to prefer; it does not settle two copies that
+    say the SAME thing, and that is the common case once the reader and a
+    bought rule agree. Collapsed on the FACT — value, grade, interval, unit —
+    never on which produced it, so two genuinely different readings both ship.
+    """
+    import tempfile, shutil
+    from pathlib import Path
+    from patentdb3.repair.loop import repair_patent
+    from patentdb3.repair.rules import RuleLibrary
+    lib = RuleLibrary()
+    if not lib._rules:
+        pytest.skip("no rule library on disk")
+    tmp = Path(tempfile.mkdtemp())
+    shutil.copy(lib.path, tmp / "r.json")       # never mutate the tracked file
+    recs, _ = repair_patent("US11547697", _xml("US11547697"),
+                            library=RuleLibrary(path=tmp / "r.json"),
+                            max_calls=0, journal=tmp / "j.jsonl")
+    block = [r for r in recs if r.table_id == "TABLE-US-00002"]
+    facts = {(r.cid, r.assay_name, r.value_numeric, r.letter_grade,
+              r.range_lo, r.range_hi, r.unit) for r in block}
+    assert len(facts) == len(block), \
+        f"{len(block) - len(facts)} identical facts shipped more than once"
