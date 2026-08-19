@@ -204,6 +204,28 @@ def main(argv: list[str]) -> int:
     return 0
 
 
+def _range_text(lo, hi) -> str:
+    """A bin's interval, written the way the patent states it.
+
+    `3-7`, `<7`, `>3`. An open side is a real statement — a compound the
+    document places under 3 nM is bounded above and nowhere below — so it is
+    written as the inequality it is rather than padded with a fake endpoint.
+    """
+    def num(v):
+        try:
+            return f"{float(v):g}"
+        except (TypeError, ValueError):
+            return ""
+    a, b = num(lo), num(hi)
+    if a and b:
+        return f"{a}-{b}"
+    if b:
+        return f"<{b}"
+    if a:
+        return f">{a}"
+    return ""
+
+
 def _joined_sheet(wb, dump_rows, man) -> None:
     """THE DELIVERABLE. One row per compound: identity joined to its assays.
 
@@ -258,11 +280,19 @@ def _joined_sheet(wb, dump_rows, man) -> None:
         # unit again gave `BACE1 Ki (nM) nM`.
         unit = (r.get("unit") or "").strip()
         label = a if (not unit or unit.lower() in a.lower()) else f"{a} {unit}"
+        # A GRADE IS SHOWN AS THE RANGE IT MEANS, NOT AS THE LETTER.
+        #
+        # The letter was taken before the range, so the range was never
+        # reached and this sheet — the deliverable — printed `B, B, B` for a
+        # compound whose three B's the patent defines as 3-7 nM, 0.5-5 uM and
+        # 15-25 uM. 10,238 of 45,676 rows showed a bare symbol, which is the
+        # whole of the bin work invisible exactly where it is read. The
+        # `records` sheet still carries `letter_grade` for provenance.
         val = (r.get("value_numeric") or "").strip()
         if not val:
+            val = _range_text(r.get("range_lo"), r.get("range_hi"))
+        if not val:
             val = (r.get("letter_grade") or "").strip()
-        if not val and r.get("range_lo"):
-            val = f"{r['range_lo']}-{r.get('range_hi', '')}"
         if not val:
             continue
         q = (r.get("qualifier") or "").strip()
