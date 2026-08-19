@@ -401,6 +401,10 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
     # ask whether each record is a usable measurement, and the legend hunt
     # needs the document. Passing counts here silently disabled both.
     gaps = find_gaps(patent_id, tables, baseline, _source_xml=xml)
+    # The single gap the escalation tier may be spent on: the one leaving the
+    # most rows on the floor. `severity` is exactly that measure.
+    top_gap = max(gaps, key=lambda g: g.severity, default=None)
+    escalated_once = False
     report = RepairReport(patent_id=patent_id, gaps_found=len(gaps))
 
     # Before buying a single rule: is what we are looking at what the patent
@@ -524,9 +528,42 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
                     logger.info("repair: %s call budget spent after %d attempt(s) "
                                 "on %s", patent_id, len(attempts), gap.fingerprint)
                     break
+                # THE LAST ATTEMPT IS THE ESCALATION, and it is a different
+                # question, not a louder one. Two attempts have already failed
+                # on this layout with the cheap model and the small view, so a
+                # third of the same buys the same answer. It goes to the
+                # strongest model with the wider views served up front — the
+                # expanded sample and the table's original CALS XML.
+                #
+                # Bounded by construction: one call per layout that has already
+                # resisted twice, under the same `max_calls` and per-patent cap
+                # as everything else. `config.MODEL_OPUS` is a key of `PRICING`,
+                # so it is billed at its own rate rather than silently at
+                # someone else's.
+                # ESCALATION IS SCARCE, and the first version of this was not.
+                # Firing Opus with the full context on EVERY gap spent $1.04 on
+                # US11566007 against a $0.20 soft cap — 11 gaps, 11 escalations,
+                # and it still adopted nothing. A tier that can blow the cap
+                # five times over is not a tier, it is a leak.
+                #
+                # So it is spent where it can pay: ONCE per patent, on the gap
+                # that is costing the most rows, and only while the patent is
+                # still under its own cap. A layout that has resisted two cheap
+                # attempts is the right place for it; the eleventh such layout
+                # in one document is not.
+                from ..core.cost_tracker import cost_tracker
+                spent = cost_tracker.per_patent.get(patent_id, 0.0)
+                final = (len(attempts) == MAX_ATTEMPTS - 1
+                         and not escalated_once
+                         and gap is top_gap
+                         and spent < config.PER_PATENT_LM_CAP)
+                if final:
+                    escalated_once = True
                 candidate = propose(gap, patent_id=patent_id,
-                                    model=model or SYNTH_MODEL,
-                                    attempts=attempts, digest=digest)
+                                    model=(config.MODEL_OPUS if final
+                                           else (model or SYNTH_MODEL)),
+                                    attempts=attempts, digest=digest,
+                                    full_context=final)
                 calls += 1
                 report.proposed += 1
                 if candidate is None:
@@ -830,6 +867,45 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
     # same assay, same table, same grade, only no range. So it is dropped, and
     # ONLY then. 17 of the 1,138 duplicate groups have both copies equally
     # usable; those are different facts and both still ship.
+    # A `column_map` REDEFINES a table's columns, so it supersedes the reader's
+    # own reading of that block WHOLESALE — not record by record.
+    #
+    # The key below is `(cid, assay_name, table_id)`, and a column_map exists
+    # precisely to change the name. So a renamed record lands in a different
+    # group from the one it replaces and both ship. US11547697's four PI3K
+    # columns arrive named `PI3K`; the loop correctly renames them `PI3K α/β/γ/δ
+    # IC50`, and the output then asserted BOTH readings — 3,352 duplicate
+    # (compound, value) emissions in one block, every measurement twice under
+    # two different names.
+    #
+    # Guarded by the same anti-deletion rule the rest of this file follows: the
+    # rule's reading replaces the reader's only where it produces AT LEAST AS
+    # MANY usable records. A column_map that reads less of the table than we
+    # already did is not an improvement, and the baseline stands.
+    remapped = {r.table_id for r in recovered
+                if str(getattr(r, "source", "")).startswith("repair_rule_column_map")}
+    # The invariant is COMPOUND COVERAGE, not record count and not usability.
+    # Usability is decided by a bin_key, which is a different rule: a column_map
+    # that names four columns correctly leaves its records grade-only until a
+    # scale lands, so counting usable records compares two different questions
+    # and always keeps the reader's. Record count is nearly as bad — the two
+    # readings differ by a handful of rows for reasons that have nothing to do
+    # with whether a compound was read.
+    #
+    # What must never happen is a compound losing its data. If the rule covers
+    # every compound the reader covered, nothing is lost by taking its reading,
+    # and keeping both would assert two measurements where the patent states
+    # one.
+    for tid in sorted(remapped):
+        was = {r.cid for r in baseline if r.table_id == tid}
+        now = {r.cid for r in recovered if r.table_id == tid}
+        if was <= now:
+            baseline = [r for r in baseline if r.table_id != tid]
+        else:
+            logger.info("repair: %s — column_map on %s covers %d compounds where "
+                        "the reader covered %d; keeping the reader's",
+                        patent_id, tid, len(now), len(was))
+
     by_key: dict[tuple, list] = {}
     for r in list(baseline) + list(recovered):
         by_key.setdefault((r.cid, r.assay_name, r.table_id), []).append(r)

@@ -15,7 +15,10 @@ import pytest
 
 from patentdb3.core import config
 from patentdb3.sources import bin_legend
-from patentdb3.sources.uspto_assays import extract_from_patent
+from patentdb3.sources.uspto_assays import (
+    extract_from_patent,
+    _redistribute_shared_prefix,
+)
 
 
 def _xml(pid: str) -> str:
@@ -620,3 +623,38 @@ def test_no_compound_is_given_a_point_interval_by_a_bin_key():
             if r.letter_grade and r.range_lo is not None and r.range_hi is not None:
                 assert r.range_lo < r.range_hi, \
                     f"{pid} {r.cid} {r.letter_grade}: {r.range_lo}-{r.range_hi}"
+
+
+# ── K. one physical column, two assays: the header's prefix is shared ────
+
+def test_a_two_row_header_gives_its_prefix_to_every_sub_assay():
+    """US9302989 TABLE-US-00001 spans its header over two rows and merges to
+    `TR-FRET Binding IC50 (uM) probe 1, probe 2`. The cell below it is also
+    comma-separated (`0.00309, 0.00252`), so this is one physical column
+    naming TWO assays. `split_top_level` splits correctly on the top-level
+    comma, but the shared prefix sits ahead of the FIRST sub-name only, so
+    the second assay came out named bare `probe 2` — a reader of the output
+    could not tell what it measured. The fix reads the shared prefix off the
+    first part's tail (both parts end in "probe <digit>", only the digit
+    differs) and gives it back to every part after it.
+    """
+    got = _redistribute_shared_prefix(
+        ["TR-FRET Binding IC50 (μM) probe 1", "probe 2"]
+    )
+    assert got == [
+        "TR-FRET Binding IC50 (μM) probe 1",
+        "TR-FRET Binding IC50 (μM) probe 2",
+    ]
+
+
+def test_the_prefix_is_left_alone_when_the_shape_does_not_match():
+    """Two independent assay names, not one column split in two — nothing
+    about `IC50` and `EC50` says one is a truncated copy of the other, so the
+    function must not invent a prefix for either. Same for a header whose
+    tail varies by a WORD (`mutant A` / `mutant B`) rather than a digit: a
+    letter could be a real word change, not an index, so the safe move is to
+    skip the rename rather than guess it.
+    """
+    assert _redistribute_shared_prefix(["IC50", "EC50"]) == ["IC50", "EC50"]
+    assert _redistribute_shared_prefix(["Ki (nM) mutant A", "mutant B"]) == \
+        ["Ki (nM) mutant A", "mutant B"]

@@ -1290,6 +1290,43 @@ def split_top_level(text: str) -> list[str]:
     return [p for p in parts if p]
 
 
+def _redistribute_shared_prefix(parts: list[str]) -> list[str]:
+    """Give a comma-split header's shared prefix back to every part.
+
+    `TR-FRET Binding IC50 (uM) probe 1, probe 2` is ONE physical column
+    naming TWO assays, and the merged header carries the shared text only
+    once, ahead of the first sub-name: `split_top_level` on the comma gives
+    `TR-FRET Binding IC50 (uM) probe 1` and `probe 2`. The second part has
+    lost the measurement it belongs to.
+
+    The signal is structural: the first part's tail must match every other
+    part word-for-word, except for the tokens that carry the digit which
+    tells the sub-assays apart (`probe 1` vs `probe 2`). Anything that does
+    not fit that shape is left alone — a name is worth more skipped than
+    guessed.
+    """
+    if len(parts) < 2:
+        return parts
+    first_words = parts[0].split()
+    tails = [p.split() for p in parts[1:]]
+    tail_len = len(tails[0])
+    if tail_len == 0 or len(first_words) <= tail_len:
+        return parts
+    if any(len(t) != tail_len for t in tails):
+        return parts
+    first_tail = first_words[-tail_len:]
+    for tail in tails:
+        for a, b in zip(first_tail, tail):
+            if a == b:
+                continue
+            if not (any(ch.isdigit() for ch in a) and any(ch.isdigit() for ch in b)):
+                return parts
+    prefix = " ".join(first_words[:-tail_len]).strip()
+    if not prefix:
+        return parts
+    return [parts[0]] + [f"{prefix} {p}" for p in parts[1:]]
+
+
 def _label_bearing(table: Table, rows) -> list[int]:
     """Data columns that a header would actually name.
 
@@ -2890,6 +2927,11 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
                 header_parts = split_top_level(col_header)
                 if len(header_parts) < 2:
                     header_parts = []
+                else:
+                    # The comma split keeps the shared prefix on only the
+                    # first sub-name ("... probe 1", "probe 2"). Give it back
+                    # to the rest wherever the shape says it is safe to.
+                    header_parts = _redistribute_shared_prefix(header_parts)
                 cell_parts = (split_top_level(cell_text)
                               if header_parts and "," in cell_text else [])
 

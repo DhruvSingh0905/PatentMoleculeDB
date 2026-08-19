@@ -459,12 +459,21 @@ def _feedback(attempts: list[dict]) -> str:
 
 
 def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "",
-            attempts: list[dict] | None = None, digest: str = "") -> Rule | None:
+            attempts: list[dict] | None = None, digest: str = "",
+            full_context: bool = False) -> Rule | None:
     """One call. Returns an UNGATED proposal — the caller runs and measures it.
 
     `attempts` is what previous rules for this same layout did, measured on
     this patent; `digest` is a few rules already learned for the most similar
     layouts. Both go in the user turn, so the cached system prefix is untouched.
+
+    `full_context` serves the wider views UP FRONT rather than on request — the
+    expanded sample and the table's original CALS XML. Reserved for the last
+    attempt, which the caller also runs on a stronger model: by then the cheap
+    model has failed twice on this layout with the small view, and asking a
+    third time with the same evidence is paying for the same answer. A layout
+    that has resisted twice is exactly where the source of truth is worth its
+    tokens.
     """
     attempts = attempts or []
     # Lead with the diagnosis and the cells that actually failed. Buried at the
@@ -483,6 +492,7 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "",
     # The legend instruction below is unconditional by design — a legend is
     # worth transcribing whenever one is found — but that made it override
     # every other question asked of a block that has one.
+    wider = "\n" + _more_context(gap, "everything") if full_context else ""
     naming = ""
     if getattr(gap, "asks", "") == "column_names":
         naming = (
@@ -554,7 +564,7 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "",
         f"OUR READING OF IT — derived, and possibly where the fault is:\n"
         if raw else "OUR READING OF THIS TABLE:\n")
     prompt = (
-        f"PROBLEM: {gap.reason}\n{naming}{legends}"
+        f"PROBLEM: {gap.reason}\n{naming}{legends}{wider}"
         f"{failing}"
         f"{_feedback(attempts)}\n"
         f"{digest}"
