@@ -1630,7 +1630,18 @@ def extract_inverted(tables: list[Table], bin_key: dict, *,
         # first fragment — 84 of 1,827 assignments on US11566007 — so the
         # current symbol is carried forward until a new one appears.
         current_sym: str | None = None
-        for row in t.body_rows:
+        # HEADER ROWS FIRST, because in an inverted table a header row can BE
+        # data. US11566007 TABLE-US-00005 puts `['+', 'A104, A107, A108, ...']`
+        # in the thead: the symbol and the first eight compounds of its bucket.
+        # Reading only the body lost those eight AND left `current_sym` unset,
+        # so every continuation row beneath them — rows that carry compounds
+        # and no symbol of their own — was dropped too. 247 grade assignments
+        # on one block, silently, while every count looked healthy.
+        #
+        # Safe to prepend rather than gate: a row with no compound ids is
+        # skipped below regardless, so a genuine header like
+        # `['IC50*', 'Examples']` still contributes nothing.
+        for row in list(t.header_rows) + list(t.body_rows):
             cells = [c.text.strip() for c in row]
             sym = next((c for c in cells if _BIN_SYMBOL.match(c)), None)
             if sym:
