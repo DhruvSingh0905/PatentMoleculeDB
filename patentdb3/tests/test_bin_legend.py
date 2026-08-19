@@ -869,3 +869,29 @@ def test_one_conversion_table_serves_every_consumer():
     assert to_nM(4.7e-09, "mol/L") == pytest.approx(4.7)
     assert to_nM(1.0, "μM") == pytest.approx(1000.0)
     assert to_nM(7.5, "pIC50") is None, "a p-value is not a concentration"
+
+
+def test_a_unit_is_read_from_whichever_branch_matched():
+    """`_unit_from` read `m.group(1) or m.group(2) or m.group(3)`, so adding a
+    fourth alternation to `_UNIT_PAT` — the bracketed `[M]` — shifted the
+    spelled-out units into group 4 and nothing read them. `micromolar` returned
+    the EMPTY STRING, which is falsy, so every `or` chain downstream moved on
+    and the unit was silently lost: 390 records on US9694016 and 197 BindingDB
+    matches, from a change that only meant to ADD a unit.
+
+    Asserted across every branch, so a fifth cannot break it either."""
+    from patentdb3.sources.uspto_assays import _UNIT_PAT, _unit_from
+    cases = {
+        "IC50 (μM)": "uM",          # parenthesised
+        "IC50 [M] TNKS1": "M",      # bracketed molar
+        "IC50 nM": "nM",            # bare symbol
+        "IC50 micromolar": "uM",    # spelled out
+        "values are nanomolar": "nM",
+        "IC50 [mol/L]": "mol/L",
+    }
+    for text, want in cases.items():
+        assert _unit_from(text) == want, f"{text!r} gave {_unit_from(text)!r}"
+    # Every branch must be reachable by the reader, whatever its position.
+    for text in cases:
+        m = _UNIT_PAT.search(text)
+        assert m and any(m.groups()), text

@@ -1049,7 +1049,16 @@ def _unit_from(text: str) -> str | None:
     m = _UNIT_PAT.search(text or "")
     if not m:
         return None
-    raw = (m.group(1) or m.group(2) or m.group(3) or "").strip()
+    # WHICHEVER BRANCH MATCHED, by position-independence. This read
+    # `m.group(1) or m.group(2) or m.group(3)`, so adding a fourth alternation
+    # to `_UNIT_PAT` — the bracketed `[M]` — shifted the spelled-out units into
+    # group 4 and nothing read them. `micromolar` and `nanomolar` returned the
+    # empty string, which is falsy, so every `or` chain downstream moved on and
+    # the unit was silently lost: 390 records on US9694016 and 197 BindingDB
+    # matches, from a change that only meant to ADD a unit.
+    #
+    # A branch added later cannot break this.
+    raw = next((g for g in m.groups() if g), "").strip()
     low = raw.lower()
     if low in _SPELLED_UNIT:
         return _SPELLED_UNIT[low]
