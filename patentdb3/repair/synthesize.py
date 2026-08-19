@@ -479,8 +479,25 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "",
             + "\n  ".join(repr(c) for c in gap.unparsed_examples)
             + "\nIf these are plainly measurements, the fault is our cell parser "
               "and the fix is `value_pattern`, not `column_map`.\n")
+    # A gap that asks about COLUMN NAMES must not be answered with a scale.
+    # The legend instruction below is unconditional by design — a legend is
+    # worth transcribing whenever one is found — but that made it override
+    # every other question asked of a block that has one.
+    naming = ""
+    if getattr(gap, "asks", "") == "column_names":
+        naming = (
+            "\nWHAT IS BEING ASKED HERE IS THE COLUMN NAMES, NOT A SCALE.\n"
+            "Several assay columns in this table arrived with the SAME name, so "
+            "the output cannot say which is which. Return a `column_map` giving "
+            "every measurement column a DISTINCT `name`, taken from the table's "
+            "own header rows. A panel normally states the shared metric on one "
+            "row and what differs on another — an isoform, a mutant, a cell "
+            "line, a species — and it is that differing part which is missing. "
+            "Include the compound-id column index as `cid`. Do not return a "
+            "`bin_key` for this gap even if the table also shows grade symbols; "
+            "the scale is not what is wrong here.\n")
     legends = ""
-    if gap.legend_candidates:
+    if gap.legend_candidates and not naming:
         legends = ("\nTEXT FOUND ELSEWHERE IN THIS PATENT THAT MAY DEFINE THESE "
                    "GRADES:\n  " + "\n  ".join(c[:800] for c in gap.legend_candidates)
                    # Transcription, not adjudication. Asking "is it safe to
@@ -537,7 +554,7 @@ def propose(gap: Gap, *, model: str = SYNTH_MODEL, patent_id: str = "",
         f"OUR READING OF IT — derived, and possibly where the fault is:\n"
         if raw else "OUR READING OF THIS TABLE:\n")
     prompt = (
-        f"PROBLEM: {gap.reason}\n{legends}"
+        f"PROBLEM: {gap.reason}\n{naming}{legends}"
         f"{failing}"
         f"{_feedback(attempts)}\n"
         f"{digest}"

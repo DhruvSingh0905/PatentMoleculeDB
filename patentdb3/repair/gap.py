@@ -74,6 +74,13 @@ class Gap:
     # a model that says "the source disagrees with what you showed me" has found
     # a parser bug, which is worth more than any rule.
     raw_source: str = ""
+    # WHAT THIS GAP IS ASKING FOR. A detector knows which question it raised;
+    # without saying so, every gap on a block that happens to carry a legend
+    # came back as a `bin_key`, because the legend instruction in `synthesize`
+    # is unconditional. US11547697's four PI3K columns share one name AND the
+    # block has a `+`/`++` scale, so the loop answered the scale question it
+    # was not asked and the columns stayed indistinguishable.
+    asks: str = ""
 
     @property
     def severity(self) -> int:
@@ -232,6 +239,37 @@ def unlabelled_assays(table: Table) -> list[dict]:
     return [{"header": c.header, "index": c.index, "assay_name": c.assay_name}
             for c in build_columns(table)
             if c.kind == ASSAY and c.label_source == "shape"]
+
+
+def duplicate_labels(table: Table) -> list[dict]:
+    """Assay columns in ONE table that share an identical name.
+
+    A table names its columns so a reader can tell them apart. Two that arrive
+    with the same name are not two readings of one assay — they are two assays
+    whose distinguishing header row was dropped, and the output cannot say
+    which is which.
+
+    US11547697 heads a four-column PI3K panel `PI3K α` / `PI3K β` / `PI3K γ` /
+    `PI3K δ` over `IC50` over `(nM)`, and all four columns come out named
+    `PI3K`. The values are right and correctly paired; what is gone is the
+    isoform, which is the one thing that panel exists to measure. Nothing else
+    detects it: every row is read, every record well-formed, every count clean,
+    and a reader of the output cannot even see that a distinction was lost.
+
+    Only where the DOCUMENT would distinguish them. A patent that genuinely
+    prints the same assay twice is rare, and the loop can say so — which is why
+    this is raised as a question rather than settled here. 27 blocks over 13
+    patents corpus-wide, 1.1% of blocks, so it is a precise signal and not a
+    dragnet.
+    """
+    from collections import Counter as _C
+
+    from ..sources.uspto_assays import ASSAY, build_columns
+
+    cols = [c for c in build_columns(table) if c.kind == ASSAY and c.assay_name]
+    dup = {n for n, k in _C(c.assay_name for c in cols).items() if k > 1}
+    return [{"header": c.header, "index": c.index, "assay_name": c.assay_name}
+            for c in cols if c.assay_name in dup]
 
 
 def dead_assay_columns(table: Table, records) -> list[dict]:
@@ -475,6 +513,7 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
     dead_col_blocks: set[str] = set()
     unit_blocks: set[str] = set()
     unlabelled_blocks: set[str] = set()
+    dup_label_blocks: set[str] = set()
     records_list: list = []
     if not isinstance(extracted_by_table, dict):
         records = list(extracted_by_table)
@@ -742,6 +781,35 @@ signature=layout_signature(t, heads),
                     f"not a measurement — a synthetic method, an HPLC method, "
                     f"a substituent or a sequence all look like this and none "
                     f"of them is an assay"),
+            sample=_sample_of(t, heads), headers=heads,
+            expanded_sample=_sample_of(t, heads, 24, expand=True),
+            column_kinds=[c.kind for c in build_columns(t)],
+        ))
+
+    # Columns a reader cannot tell apart. Its own pass, for the reason its
+    # neighbours have one: this costs no rows either.
+    for t in tables:
+        if t.table_id in dup_label_blocks:
+            continue
+        dups = duplicate_labels(t)
+        if not dups:
+            continue
+        dup_label_blocks.add(t.table_id)
+        heads = merge_header(t)
+        names = sorted({d["assay_name"] for d in dups})
+        gaps.append(Gap(
+            patent_id=patent_id, table_id=t.table_id, n_cols=t.n_cols,
+            n_data_rows=rows_per_block.get(t.table_id, len(t.body_rows)),
+            n_extracted=len(cids_per_block.get(t.table_id, ())),
+            fingerprint=layout_fingerprint(t, heads),
+            signature=layout_signature(t, heads),
+            asks="column_names",
+            reason=(f"{len(dups)} assay columns share {len(names)} name(s) — "
+                    f"{', '.join(repr(n[:40]) for n in names)} — so the output "
+                    f"cannot say which column is which. Give each column the "
+                    f"name the table's own header rows give it; a panel usually "
+                    f"states the shared metric on one row and what differs "
+                    f"(an isoform, a mutant, a cell line) on another"),
             sample=_sample_of(t, heads), headers=heads,
             expanded_sample=_sample_of(t, heads, 24, expand=True),
             column_kinds=[c.kind for c in build_columns(t)],
