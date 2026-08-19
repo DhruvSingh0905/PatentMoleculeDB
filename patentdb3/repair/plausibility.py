@@ -194,6 +194,16 @@ def check_unconvertible_unit(patent_id: str, xml: str, records) -> list[Flag]:
     return out
 
 
+# A label names something measurable when it carries at least one token that
+# is not purely a metric, a unit, a technique or an index.
+_MEASURABLE = re.compile(
+    r"\b(?!(?:ic|ec|gi|cc|ld|kd|ki|kb|mic|nm|um|mm|pm|assay|assays|probe|test|"
+    r"value|values|data|result|results|method|binding|inhibition|inh|activity|"
+    r"potency|cell|cells|human|mouse|rat|htrf|fret|spa|elisa|tr|glo|wild|type|"
+    r"wt|mut|mutant|at|of|in|the|and|or|no|nd|n|a|b|c|d|e)\b)[A-Za-z][A-Za-z0-9-]{1,}",
+    re.I)
+
+
 def check_unnamed_assay(patent_id: str, xml: str, records) -> list[Flag]:
     """Usable measurements nobody can say the meaning of.
 
@@ -201,8 +211,13 @@ def check_unnamed_assay(patent_id: str, xml: str, records) -> list[Flag]:
     `is_usable` because that asks whether the fields are populated, and
     "unnamed assay" is a populated field.
     """
+    # THE SHARED VOCABULARY, not the substring "unnamed". `assay (binned)` is
+    # a placeholder that does not contain the word, so a block of 818 records
+    # with no name passed this check untouched — the same "keyed on the
+    # literal, not the concept" shape that let the gap detector miss it.
+    from ..sources.uspto_assays import is_placeholder_name
     unnamed = [r for r in records if r.is_usable
-               and (not r.assay_name or "unnamed" in r.assay_name.lower())]
+               and (not r.assay_name or is_placeholder_name(r.assay_name))]
     if len(unnamed) < 5:
         return []
     by_table: dict[str, int] = {}
@@ -272,9 +287,6 @@ def check_same_assay_disagrees(patent_id: str, xml: str, records) -> list[Flag]:
     return out
 
 
-CHECKS = (check_n_runs_dropped, check_potency_out_of_range,
-          check_unconvertible_unit, check_unnamed_assay,
-          check_same_assay_disagrees)
 
 
 def audit(patent_id: str, xml: str, records) -> list[Flag]:
@@ -289,3 +301,98 @@ def audit(patent_id: str, xml: str, records) -> list[Flag]:
             logging.getLogger(__name__).warning(
                 "plausibility: %s raised on %s: %r", check.__name__, patent_id, e)
     return sorted(out, key=lambda f: -f.rows_at_stake)
+
+def check_impossible_interval(patent_id: str, xml: str, records) -> list[Flag]:
+    """A bin whose lower bound is not below its upper.
+
+    A bin is an interval. `lo == hi` is not a measurement the patent made — it
+    is two bounds read out of two different grades' clauses, which is exactly
+    how US10953012 came to state that 270 compounds are EXACTLY 10 μM when the
+    patent says under 10. `lo > hi` is an interval read backwards. Neither can
+    be true of a real range, so neither needs a reference to detect.
+    """
+    bad = [r for r in records
+           if r.range_lo is not None and r.range_hi is not None
+           and r.range_lo >= r.range_hi]
+    if not bad:
+        return []
+    return [Flag(
+        kind="impossible_interval", patent_id=patent_id,
+        table_id=bad[0].table_id, rows_at_stake=len(bad),
+        examples=[f"{r.cid} {r.assay_name}: {r.range_lo}-{r.range_hi} {r.unit}"
+                  for r in bad[:6]],
+        detail=(f"{len(bad)} record(s) carry a range whose lower bound is not "
+                f"below its upper. A bin is an interval; equal bounds are two "
+                f"numbers taken from two different grades' definitions"))]
+
+
+def check_duplicate_facts(patent_id: str, xml: str, records) -> list[Flag]:
+    """Records a reader of the output cannot tell apart.
+
+    Every field is identical — compound, assay, table, value, grade, unit — so
+    whatever these are, the output cannot say. There are two causes and the
+    flag deliberately does not guess between them, because both are defects:
+
+      * ONE measurement emitted twice, when a repair produces a better copy of
+        a row the reader already had and the merge keeps both. 2,322 records
+        became 4,644 on US11547697 from a rule the library already owned.
+      * SEVERAL measurements whose columns share a label, so they collapse onto
+        one identity. US11547697 names four PI3K isoform columns `PI3K`, and a
+        compound scoring `++++` on three of them produces three rows that
+        differ in nothing.
+
+    Anything that counts rows is wrong in the first case; anything that reads
+    them is wrong in the second. Nothing else notices either: every copy is
+    well-formed.
+    """
+    seen: dict[tuple, int] = {}
+    for r in records:
+        k = (r.cid, r.assay_name, r.table_id, r.value_numeric, r.letter_grade,
+             r.range_lo, r.range_hi, r.unit)
+        seen[k] = seen.get(k, 0) + 1
+    dupes = {k: n for k, n in seen.items() if n > 1}
+    if not dupes:
+        return []
+    extra = sum(n - 1 for n in dupes.values())
+    worst = max(dupes, key=lambda k: dupes[k])
+    return [Flag(
+        kind="indistinguishable_records", patent_id=patent_id, table_id=worst[2],
+        rows_at_stake=extra,
+        examples=[f"{k[0]} {k[1]}: x{n}" for k, n in list(dupes.items())[:6]],
+        detail=(f"{extra} record(s) are indistinguishable from another — same "
+                f"compound, assay, table, value and unit. Either one "
+                f"measurement emitted twice, or several columns sharing a "
+                f"label so their readings collapse onto one identity"))]
+
+
+def check_label_names_nothing(patent_id: str, xml: str, records) -> list[Flag]:
+    """Usable measurements whose label names no measurable quantity.
+
+    Distinct from `unnamed_assay`, which catches an absent name. This catches a
+    name that is PRESENT and says nothing: `probe 2`, `Assay 1`, a bare `(nM)`.
+    The value is right and what was measured has to be read out of the prose.
+    """
+    named = [r for r in records if r.is_usable
+             and r.assay_name and not _MEASURABLE.search(r.assay_name)]
+    if len(named) < 5:
+        return []
+    by_label: dict[str, int] = {}
+    for r in named:
+        by_label[r.assay_name] = by_label.get(r.assay_name, 0) + 1
+    return [Flag(
+        kind="label_names_nothing", patent_id=patent_id,
+        table_id=named[0].table_id, rows_at_stake=len(named),
+        examples=[f"{lab!r} x{n}" for lab, n in
+                  sorted(by_label.items(), key=lambda kv: -kv[1])[:6]],
+        detail=(f"{len(named)} usable record(s) carry a label that names no "
+                f"measurable quantity — only a metric, a technique or an "
+                f"index. The value is right; the target is not stated"))]
+
+
+CHECKS = (check_n_runs_dropped, check_potency_out_of_range,
+          check_unconvertible_unit, check_unnamed_assay,
+          check_same_assay_disagrees,
+          # Invariants over the OUTPUT — none of these needs a reference,
+          # and each one names a state that cannot be true of real data.
+          check_impossible_interval, check_duplicate_facts,
+          check_label_names_nothing)

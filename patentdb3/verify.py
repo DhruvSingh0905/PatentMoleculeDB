@@ -207,6 +207,7 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
     n = n_struct = n_repaired = n_ocr = 0
     done: list[str] = []
     recovered_total = adopted_total = gaps_total = superseded_total = 0
+    flags: list = []
     struct_sources: Counter = Counter()
     spend_before = cost_tracker.total_cost
     with DUMP_PATH.open("w") as fh, STRUCT_PATH.open("w") as sfh:
@@ -243,6 +244,21 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                 print(f"  {pid}: no XML ({e})")
                 losses.record("xml_fetch_failed", pid, stage="extract_or_heal", error=str(e))
                 continue
+            # EVERY DUMP IS AUDITED, healed or not. These checks existed and
+            # ran in exactly one place — inside `repair_patent` — so the
+            # artifact everyone actually reads was never checked, and 28 real
+            # flags across 20 patents sat undelivered while the same defects
+            # were found later by opening the workbook by hand.
+            #
+            # Printed, not logged. `logger.warning` is invisible unless someone
+            # has configured logging, and nobody reads a channel they have to
+            # opt into.
+            try:
+                from .repair.plausibility import audit as _audit
+                for f in _audit(pid, xml, recs):
+                    flags.append(f)
+            except Exception as e:                      # a broken check must
+                print(f"  {pid}: audit skipped ({e!r})")  # never cost a run
             for r in recs:
                 vals = [str(getattr(r, f, "") if getattr(r, f, None) is not None else "")
                         .replace("\t", " ").replace("\n", " ") for f in FIELDS]
@@ -453,6 +469,26 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
         print(f"loss log: 0 records -> {losses.LOSS_LOG}")
     else:
         print("loss log OFF (LOG_LOSSES=0)")
+    # THE AUDIT, PRINTED WHERE IT CANNOT BE MISSED. Grouped by kind, worst
+    # first, so the line that matters is the first one read. Every flag names a
+    # state that cannot be true of real data and needs no reference to detect.
+    if flags:
+        by_kind: dict[str, list] = {}
+        for f in flags:
+            by_kind.setdefault(f.kind, []).append(f)
+        rows = sorted(by_kind.items(),
+                      key=lambda kv: -sum(x.rows_at_stake for x in kv[1]))
+        print(f"\nAUDIT — {len(flags)} flag(s) over "
+              f"{len({f.patent_id for f in flags})} patent(s):")
+        for kind, fs in rows:
+            at_stake = sum(f.rows_at_stake for f in fs)
+            worst = max(fs, key=lambda f: f.rows_at_stake)
+            print(f"  {kind:22} {len(fs):3} patent(s), {at_stake:6,} row(s)")
+            print(f"    {worst.patent_id}: {worst.detail[:132]}")
+        print("  (these are expectations about the OUTPUT — none needs a "
+              "reference database)")
+    else:
+        print("\nAUDIT — no flags.")
     print(f"manifest -> {MANIFEST_PATH}")
     return n
 
