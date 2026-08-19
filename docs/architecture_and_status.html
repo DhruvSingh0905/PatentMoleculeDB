@@ -215,10 +215,12 @@ appears again.</figcaption>
 <table>
 <thead><tr><th>What works today</th><th>Measure</th><th>Note</th></tr></thead>
 <tbody>
-<tr><td>Assay values read from tables</td><td class="n">116,007</td><td>over 137 patents</td></tr>
+<tr><td>Assay values read from tables</td><td class="n">116,002</td><td>over 133 patents</td></tr>
+<tr><td>&nbsp;&nbsp;published as a grade, not a number</td><td class="n">29,612</td><td>a letter or <code>+</code>/<code>++</code>, with the scale defined in a legend</td></tr>
+<tr><td>&nbsp;&nbsp;graded values carrying the patent's own range</td><td class="n">89.2%</td><td>26,415 of 29,612; was 42% before this was read</td></tr>
 <tr><td>Compounds resolved to a structure</td><td class="n">24,948</td><td>all four routes together</td></tr>
-<tr><td>Structures the printed mass confirms</td><td class="n">3,184</td><td>only 31 of 137 patents print a mass at all</td></tr>
-<tr><td>Structures the patent contradicts</td><td class="n">109</td><td>across 23 patents; demoted, not deleted</td></tr>
+<tr><td>Structures the printed mass confirms</td><td class="n">3,259</td><td>only 31 of 137 patents print a mass at all</td></tr>
+<tr><td>Structures the patent contradicts</td><td class="n">123</td><td>across 23 patents; demoted, not deleted</td></tr>
 <tr><td>Markush compounds built</td><td class="n">599</td><td>these have no name anywhere in the document</td></tr>
 <tr><td>Markush compounds verified</td><td class="n">555</td><td><strong>98.9% of those built</strong>; 38 unverified, 6 dropped</td></tr>
 <tr><td>Assay values checked against BindingDB</td><td class="n">96.2%</td><td>8,725 of 9,072 agree to within 1%, over 18 patents BDB cites</td></tr>
@@ -241,6 +243,20 @@ today measures unfinished work. BindingDB and ChEMBL also aggregate from sources
 patent, so a row we do not hold is not automatically a miss. And identity here is gated by
 OPSIN, which either parses a name to a structure or refuses — so a compound we report is a
 compound the nomenclature supports, independent of any reference.</p>
+<p><strong>It checks the number, not the name on it.</strong> The comparison joins on
+compound and compares values, so a value can be right and sit under the wrong assay label
+without the check noticing. BindingDB does record which metric each value is and what the
+target was, so the label can be tested too. On the 8,790 values where we agree:
+our metric agrees wherever we state one, and <strong>contradicts BindingDB in 3 records</strong>
+— in all three the patent's own column heading says what we say, and BindingDB says otherwise.
+Our label uses the patent's name for the target and BindingDB uses the protein's formal name
+(<code>BACE1</code> against <code>Beta-secretase 1</code>, <code>FLAP</code> against
+<code>Arachidonate 5-lipoxygenase-activating protein</code>), so the two disagree in wording
+far more often than in meaning.</p>
+<p>The labels worth attention are the ones that name nothing at all — a column headed
+<code>probe 2</code>, <code>Assay 1</code> or bare <code>(nM)</code>. There are 12 of them,
+over 10 patents, carrying <strong>1,818 records (1.6%)</strong>. The value is right; what was
+measured has to be read out of the patent's prose.</p>
 </div>
 
 
@@ -290,6 +306,9 @@ documents, which is the cheap kind of problem.</p>
 <tr><td>BindingDB is reference only</td><td>The only evidence that may correct a structure is what the patent itself printed.</td></tr>
 <tr><td>Judge each row, not each table</td><td>Under one plan, 527 of 561 molecules were confirmed and 34 contradicted. The failures were per drawing, so the verdict is per row.</td></tr>
 <tr><td>Keep molecules nothing can verify</td><td>Refusing them deleted 38 correct molecules on a patent that prints no masses. Absence of evidence is now recorded as such. Evidence against is still fatal.</td></tr>
+<tr><td>A grade keeps the patent's range, never a made-up midpoint</td><td>A compound known to be 3–7 nM is a real measurement. Inventing 4.8 nM for it is not, and it would then be compared against references as though it were measured.</td></tr>
+<tr><td>Two scales that contest one grade give no range</td><td>Some patents define the same letters twice, once per column. Where the document says which column each governs, each column takes its own. Where it does not, the grade is kept and no range is attached.</td></tr>
+<tr><td>Ask what a column measures rather than assume</td><td>A column of grades with no heading is almost certainly an assay, and what it measured cannot be read from its cells. Those go to the repair loop as a question. Guessing produced clean records of HPLC methods and peptide sequences.</td></tr>
 </tbody></table>
 
 <h2>6 · Problems</h2>
@@ -303,6 +322,11 @@ documents, which is the cheap kind of problem.</p>
 <tr><td>Three table layouts</td><td class="n">385 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing. Not yet built.</td></tr>
 <tr><td>Misread drawings</td><td class="n">4 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing yet. They are 8.9 to 18 Da off and share no pattern.</td></tr>
 <tr><td>Names dropped in text extraction</td><td class="n">~1,800</td><td class="s"><span class="tag t-warn">sized</span></td><td>Measured: 1,752 compounds carry a name-like string that never became a structure, range 1,450–2,100. Four patents hold 55% of it.</td></tr>
+<tr><td>Assay labels that name nothing</td><td class="n">1,818 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>12 column headings over 10 patents read <code>probe 2</code>, <code>Assay 1</code> or bare <code>(nM)</code>. The values are right; the target has to be read from the patent's prose.</td></tr>
+<tr><td>Graded values with no scale in the document</td><td class="n">3,197 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Either the patent never defines its grades, or it defines them twice and does not say which column takes which. The grade is kept; no range is attached.</td></tr>
+<tr><td>Grades published without their scale</td><td class="n">17,275 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. The legend was being read, and five of its seven written forms were rejected before the parser saw them. 89.2% of graded values now carry the patent's own range, from 42%.</td></tr>
+<tr><td>Non-assay columns read as assays</td><td class="n">191 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. HPLC method letters, a peptide sequence and a hydrogen substituent column were producing potency grades. A grade alphabet is closed; letters outside it now disqualify the column.</td></tr>
+<tr><td>Percentages labelled as concentrations</td><td class="n">2,375 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A column headed <code>% inhibition at 10 µM</code> took µM as its unit — the concentration the assay ran at, not the unit of the result.</td></tr>
 <tr><td>Five patents scored zero</td><td class="n">5 patents</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. Our own mass check was wrong on one patent, and four were sampled before an earlier fix.</td></tr>
 </tbody></table>
 

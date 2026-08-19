@@ -172,21 +172,30 @@ def main(argv: list[str]) -> int:
                 ours[(r["patent_id"], r["cid"])].add(nm)
         sb = wb.create_sheet("bindingdb")
         sb.append(["patent_id", "cid", "bdb_nM", "ours_nM", "agrees_1pct", "note"])
-        hit = tot = 0
+        hit = tot = held = 0
         for (p, c), vals in sorted(ref.items()):
             mine = ours.get((p, c), set())
             for v in sorted(vals):
                 ok = any(abs(v - o) <= TOLERANCE * max(v, 1e-12) for o in mine)
                 tot += 1
                 hit += ok
+                held += bool(mine)
                 sb.append([p, c, v, ", ".join(f"{o:g}" for o in sorted(mine)) or "—",
                            "yes" if ok else "no",
                            "" if mine else "cid not extracted"])
         for c in sb[1]:
             c.font = Font(bold=True)
         sb.freeze_panes = "A2"
-        print(f"bindingdb: {hit}/{tot} agree within {TOLERANCE:.0%}"
-              + (f"  ({hit/tot:.1%})" if tot else ""))
+        # TWO NUMBERS, BECAUSE THEY MEASURE DIFFERENT THINGS. A reference value
+        # for a compound we never extracted is a COVERAGE miss; counting it as
+        # a disagreement reports the reader as wrong for a drawing that has not
+        # been through recognition yet. One line printed `8725/10350 = 84.3%`
+        # while agreement on the compounds we actually hold was 8725/9072 =
+        # 96.2%, and the two were read as the same quantity.
+        print(f"bindingdb: {hit}/{held} agree within {TOLERANCE:.0%}"
+              + (f"  ({hit/held:.1%} of the compounds we hold)" if held else "")
+              + f"; {tot - held} more reference values are for compounds we "
+                f"have not extracted ({tot} rows in total)")
 
     XLSX_PATH.parent.mkdir(parents=True, exist_ok=True)
     wb.save(XLSX_PATH)
