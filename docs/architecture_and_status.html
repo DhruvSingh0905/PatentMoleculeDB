@@ -62,11 +62,11 @@
 <header>
   <h1>patentdb3 — Architecture and Status</h1>
   <p class="sub">Patent number in, structured chemistry out.</p>
-  <p class="stamp">2026-08-19 &nbsp;·&nbsp; 133 patents &nbsp;·&nbsp; corpus dump 2026-08-19T16:13</p>
+  <p class="stamp">2026-08-19 &nbsp;·&nbsp; 133 patents &nbsp;·&nbsp; corpus dump 2026-08-19T17:18</p>
 </header>
 
 <div class="kpi">
-  <div><div class="v">116,069</div><div class="l">assay records<br>133 patents</div></div>
+  <div><div class="v">121,409</div><div class="l">assay records<br>133 patents</div></div>
   <div><div class="v">23,916</div><div class="l">compounds resolved<br>to a structure</div></div>
   <div><div class="v">3,602</div><div class="l">structures the patent's<br>own mass confirms</div></div>
   <div><div class="v">555</div><div class="l">markush compounds<br>built and verified</div></div>
@@ -77,7 +77,7 @@
 <p class="lede">The system takes a patent number and returns its chemistry as a table. It reads
 the patent document. It extracts every assay value. It then finds the identity of each
 compound, because a patent names a compound in several different ways. It checks each
-structure against the mass the patent printed itself. Today it holds 116,069 assay records
+structure against the mass the patent printed itself. Today it holds 121,409 assay records
 from 133 patents, and it has resolved 23,916 compounds to a structure. The largest remaining
 group is compounds that the patent only draws. That group needs image recognition, and image
 recognition needs GPU time.</p>
@@ -115,7 +115,7 @@ recognition needs GPU time.</p>
   <!-- assay extraction -->
   <rect class="bx" x="170" y="54" width="360" height="42" rx="3"/>
   <text class="t tt" x="350" y="74" text-anchor="middle">Assay extraction</text>
-  <text class="t ts" x="350" y="88" text-anchor="middle">compound id · assay · value · units — 116,069 records</text>
+  <text class="t ts" x="350" y="88" text-anchor="middle">compound id · assay · value · units — 121,409 records</text>
 
   <!-- fan out -->
   <line class="ln" x1="350" y1="96" x2="350" y2="118"/>
@@ -215,9 +215,9 @@ appears again.</figcaption>
 <table>
 <thead><tr><th>What works today</th><th>Measure</th><th>Note</th></tr></thead>
 <tbody>
-<tr><td>Assay values read from tables</td><td class="n">116,069</td><td>over 133 patents, under 613 assay names</td></tr>
-<tr><td>&nbsp;&nbsp;published as a grade, not a number</td><td class="n">29,667</td><td>a letter or <code>+</code>/<code>++</code>, with the scale defined in a legend</td></tr>
-<tr><td>&nbsp;&nbsp;graded values carrying the patent's own range</td><td class="n">92.7%</td><td>27,505 of 29,667; was 42% before this was read</td></tr>
+<tr><td>Assay values read from tables</td><td class="n">121,409</td><td>over 133 patents, under 622 assay names</td></tr>
+<tr><td>&nbsp;&nbsp;published as a grade, not a number</td><td class="n">35,007</td><td>a letter or <code>+</code>/<code>++</code>, with the scale defined in a legend</td></tr>
+<tr><td>&nbsp;&nbsp;graded values carrying the patent's own range</td><td class="n">27,505</td><td>of 35,007. Was 12,531 of 29,803 when this work started</td></tr>
 <tr><td>Compounds resolved to a structure</td><td class="n">23,916</td><td>all four routes together</td></tr>
 <tr><td>Structures the printed mass confirms</td><td class="n">3,602</td><td>only 31 of 133 patents print a mass at all</td></tr>
 <tr><td>Structures the patent contradicts</td><td class="n">133</td><td>across 23 patents; demoted, not deleted</td></tr>
@@ -255,7 +255,7 @@ Our label uses the patent's name for the target and BindingDB uses the protein's
 far more often than in meaning.</p>
 <p>The labels worth attention are the ones that name nothing at all — a column headed
 <code>probe 2</code>, <code>Assay 1</code> or bare <code>(nM)</code>. There are 12 of them,
-over 10 patents, carrying <strong>1,368 records (1.2%)</strong>. The value is right; what was
+over 10 patents, carrying <strong>305 records (0.3%)</strong>. The value is right; what was
 measured has to be read out of the patent's prose.</p>
 </div>
 
@@ -322,7 +322,7 @@ documents, which is the cheap kind of problem.</p>
 <tr><td>Three table layouts</td><td class="n">385 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing. Not yet built.</td></tr>
 <tr><td>Misread drawings</td><td class="n">4 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing yet. They are 8.9 to 18 Da off and share no pattern.</td></tr>
 <tr><td>Names dropped in text extraction</td><td class="n">~1,800</td><td class="s"><span class="tag t-warn">sized</span></td><td>Measured: 1,752 compounds carry a name-like string that never became a structure, range 1,450–2,100. Four patents hold 55% of it.</td></tr>
-<tr><td>Assay labels that name nothing</td><td class="n">1,368 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Down from 1,818. The rest read <code>probe 2</code>, <code>Assay 1</code> or bare <code>(nM)</code>. The values are right; the target has to be read from the patent's prose.</td></tr>
+<tr><td>Assay labels that name nothing</td><td class="n">305 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Down from 1,818. The rest read <code>probe 2</code>, <code>Assay 1</code> or bare <code>(nM)</code>. The values are right; the target has to be read from the patent's prose.</td></tr>
 <tr><td>Columns named from the wrong header row</td><td class="n">4,354 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A header row naming one column was discarded for having only one populated cell, so a column headed <code>AAK1 IC50</code> over <code>(nM)</code> was named <code>(nM)</code> — the unit kept, the assay lost.</td></tr>
 <tr><td>Synthesis metadata read as assays</td><td class="n">301 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A column headed <code>Meth-</code>/<code>od</code> across two header rows joined as <code>Meth-od</code>, which no pattern for <code>method</code> could see.</td></tr>
 <tr><td>Graded values with no scale in the document</td><td class="n">3,197 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Either the patent never defines its grades, or it defines them twice and does not say which column takes which. The grade is kept; no range is attached.</td></tr>
@@ -331,6 +331,7 @@ documents, which is the cheap kind of problem.</p>
 <tr><td>Percentages labelled as concentrations</td><td class="n">2,375 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A column headed <code>% inhibition at 10 µM</code> took µM as its unit — the concentration the assay ran at, not the unit of the result.</td></tr>
 <tr><td>An inverted table's first bucket</td><td class="n">356 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A table listing a grade and then the compounds that scored it kept its first bucket in the header row, which was not read — losing those compounds and every continuation row beneath them.</td></tr>
 <tr><td>A grade given a point value</td><td class="n">270 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A two-level <code>+</code>/<code>−</code> scale had no <code>−</code> in its alphabet, so the definition of <code>+</code> ran into the next grade's clause and read both bounds — reporting compounds as exactly 10 µM rather than under it.</td></tr>
+<tr><td>Grades discarded for want of a scale</td><td class="n">5,340 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A table that lists a grade and then the compounds that scored it was read only when the numeric scale could also be found — so four blocks of one patent, whose scale sits beyond the look-back, produced nothing at all rather than the grades the document prints.</td></tr>
 <tr><td>Five patents scored zero</td><td class="n">5 patents</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. Our own mass check was wrong on one patent, and four were sampled before an earlier fix.</td></tr>
 </tbody></table>
 
@@ -355,5 +356,5 @@ safe for a fused one, so it is deliberately refused today rather than guessed.</
 </ol>
 
 <footer>
-patentdb3 · 133 patents · corpus dump 2026-08-19T16:13 · runs end to end
+patentdb3 · 133 patents · corpus dump 2026-08-19T17:18 · runs end to end
 </footer>
