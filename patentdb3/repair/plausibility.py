@@ -31,12 +31,14 @@ see that and a reference database should not have to.
 from __future__ import annotations
 
 import re
+
+# One shared table — see `sources.uspto_assays.TO_NM` for why.
+from ..sources.uspto_assays import TO_NM as _TO_NM
 import statistics
 from dataclasses import dataclass, field
 
 # nM is the common denominator; anything not here is not a concentration.
-_TO_NM = {"nM": 1.0, "uM": 1e3, "µM": 1e3, "μM": 1e3, "mM": 1e6,
-          "pM": 1e-3, "M": 1e9}
+
 
 # An assay whose value IS a concentration, so a magnitude check is meaningful.
 # Deliberately narrow: a percentage, a ratio, a clearance and a half-life all
@@ -95,7 +97,21 @@ def check_n_runs_dropped(patent_id: str, xml: str, records) -> list[Flag]:
 
     kept = sum(1 for r in records if r.n_runs is not None)
     stated, examples, per_table = 0, [], {}
+    # ONLY TABLES THAT ACTUALLY PRODUCED ASSAY RECORDS. A bare parenthesised
+    # integer is also crystallographic notation: `1.524(8)` is 1.524 ± 0.008 Å,
+    # and `8035(1)` is a fractional coordinate with its standard deviation. Both
+    # match `_STATES_N` exactly.
+    #
+    # US10376513 TABLE-US-00004 is `Atomic coordinates (x10^4)` and US9670201
+    # TABLE-US-00025 is `Bond lengths [Å] and angles [°]` — every cell in them
+    # looked like a dropped replicate count, and this reported 204 lost rows
+    # from two tables the reader correctly ignores and that never become
+    # records at all. Scoring a loss against a table we never read is measuring
+    # our own scope, not a defect.
+    scored = {r.table_id for r in records}
     for t in assemble_blocks(parse_tables(xml)):
+        if t.table_id not in scored:
+            continue
         _, data = _header_rows_of(t)
         for row in data:
             for c in row:

@@ -61,7 +61,15 @@ UNKNOWN = "unknown"
 NON_ASSAY = {NMR, MS, MW, RT, STRUCTURE, SUBSTITUENT, CID, NRUNS, UNKNOWN}
 
 _UNIT_PAT = re.compile(
-    r"\(\s*(n[mM]|[μuµ][mM]|m[mM]|p[mM]|nmol|µg/mL|ug/mL|%|percent|mol/[lL]|[μuµ]mol/[lL]|nmol/[lL])\s*\)|"  
+    r"\(\s*(n[mM]|[μuµ][mM]|m[mM]|p[mM]|nmol|µg/mL|ug/mL|%|percent|mol/[lL]|[μuµ]mol/[lL]|nmol/[lL])\s*\)|"
+    # BARE `M` IS MOLAR, and only ever inside brackets. US10570116 heads its
+    # columns `IC50 [M] TNKS1 ELISA` and the pattern could not see it, so the
+    # column yielded no unit at all — and `infer_units_from_description` then
+    # filled one from the document's PRIOR-ART prose, which cites someone
+    # else's `IC50 (TNKS1) = 2 nM`. `5.7e-10 M` is 0.57 nM and shipped as
+    # `5.7e-10 nM`: wrong by a factor of 1e9, on 106 records, with every count
+    # healthy. Bracketed only — a bare `M` anywhere would match a name.
+    r"[\(\[]\s*(M)\s*[\)\]]|"  
     r"\b(nM|µM|μM|uM|mM|pM|mol/L|mol/l)\b|"  
     # Spelled-out units. Patents routinely state the unit in a table legend as
     # a word — "IC50's are micromolar." — rather than as a symbol in the
@@ -987,6 +995,36 @@ def _join_header_lines(parts: list[str]) -> str:
 # call that reached them. Lifting them out is why they are up here: a constant
 # is also something the capability tier can offer as a target, which a literal
 # buried in a function body never was.
+# THE ONE TABLE THAT PUTS A CONCENTRATION ON A COMMON SCALE.
+#
+# There were two, and they disagreed in both directions: `plausibility` knew
+# `µM`/`μM` and not `mol/L`, `to_excel` knew `mol/L` and not the Greek spellings.
+# So the audit reported 550 records as carrying a unit "nothing downstream can
+# convert" while the converter had handled them all along — two lists that must
+# agree, kept apart, which is the same shape as the filter that was narrower
+# than its parser and the cache that dropped a field.
+#
+# Every spelling of micro is here because `_UNIT_CANON` does not reach every
+# path: a unit read from a rule payload or a legend arrives as the document
+# spelled it.
+TO_NM = {
+    "nM": 1.0, "uM": 1e3, "µM": 1e3, "μM": 1e3, "mM": 1e6, "pM": 1e-3,
+    "M": 1e9, "mol/L": 1e9, "mol/l": 1e9,
+    "nmol/L": 1.0, "umol/L": 1e3, "µmol/L": 1e3, "μmol/L": 1e3,
+}
+
+
+def to_nM(value, unit):
+    """`value` in `unit` as nanomolar, or None when it is not a concentration."""
+    f = TO_NM.get((unit or "").strip())
+    if f is None:
+        return None
+    try:
+        return float(value) * f
+    except (TypeError, ValueError):
+        return None
+
+
 _MOL_UNIT = {
     "mol/l": "mol/L",
     "umol/l": "uM",

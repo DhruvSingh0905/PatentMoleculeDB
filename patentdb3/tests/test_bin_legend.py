@@ -834,3 +834,38 @@ def test_the_hint_accepts_every_form_the_parser_reads():
         assert bin_legend.parse_bin_key(text), f"the parser cannot read {text!r}"
         assert bin_legend.looks_like_key(text), \
             f"the parser reads {text!r} but the filter refuses it"
+
+
+# ── O. what the audit fan-out found ──────────────────────────────────────
+
+@pytest.mark.parametrize("header,unit", [
+    # Bare `M` is molar and only ever inside brackets. US10570116 heads its
+    # columns `IC50 [M]`; the pattern could not see it, the column yielded no
+    # unit, and `infer_units_from_description` filled one from the document's
+    # PRIOR-ART prose citing someone else's `IC50 (TNKS1) = 2 nM`. `5.7e-10 M`
+    # is 0.57 nM and shipped as `5.7e-10 nM` — wrong by 1e9 on 106 records.
+    ("IC50 [M] TNKS1 ELISA", "M"),
+    ("IC50 (M)", "M"),
+    ("IC50 [nM]", "nM"),
+    # A bare M anywhere would match a name or a molecular weight.
+    ("Compound M series", None),
+    ("MW (g/mol)", None),
+])
+def test_bracketed_molar_is_a_unit_and_a_bare_letter_is_not(header, unit):
+    from patentdb3.sources.uspto_assays import _unit_from
+    assert _unit_from(header) == unit
+
+
+def test_one_conversion_table_serves_every_consumer():
+    """There were two and they disagreed in BOTH directions: the audit knew
+    `µM`/`μM` and not `mol/L`, the workbook knew `mol/L` and not the Greek
+    spellings. So 550 records were reported as carrying a unit "nothing
+    downstream can convert" while the converter had handled them all along."""
+    from patentdb3.repair.plausibility import _TO_NM as audit_table
+    from patentdb3.sources.uspto_assays import TO_NM, to_nM
+    from patentdb3.to_excel import _TO_NM as sheet_table
+    assert audit_table is TO_NM and sheet_table is TO_NM
+    assert to_nM(5.7e-10, "M") == pytest.approx(0.57)
+    assert to_nM(4.7e-09, "mol/L") == pytest.approx(4.7)
+    assert to_nM(1.0, "μM") == pytest.approx(1000.0)
+    assert to_nM(7.5, "pIC50") is None, "a p-value is not a concentration"

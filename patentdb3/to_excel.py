@@ -30,6 +30,8 @@ import sys
 from pathlib import Path
 
 from .core import config
+# One shared table — see `sources.uspto_assays.TO_NM` for why.
+from .sources.uspto_assays import TO_NM as _TO_NM
 
 
 MANIFEST_PATH = config.MANIFEST
@@ -62,10 +64,6 @@ def _load() -> tuple[list[dict], dict]:
 # What one printed value is worth in nM, the unit BindingDB publishes in.
 # Anything not here is not comparable and is left out rather than guessed at —
 # a pIC50 or a bare percentage is not a concentration.
-_TO_NM = {"nM": 1.0, "uM": 1e3, "mM": 1e6, "M": 1e9, "mol/L": 1e9,
-          "pM": 1e-3, "nmol/L": 1.0, "umol/L": 1e3}
-
-
 def _to_nM(value, unit):
     """`value` in `unit` as nanomolar, or None when it is not a concentration."""
     f = _TO_NM.get((unit or "").strip())
