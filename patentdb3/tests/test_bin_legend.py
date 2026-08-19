@@ -467,3 +467,29 @@ def test_a_percentage_column_is_still_an_assay():
                 if needle in (r.assay_name or "")]
         assert recs, f"{pid}: {needle!r} column produced nothing"
         assert {r.unit for r in recs} == {"%"}
+
+
+# ── H. a label the document never wrote ──────────────────────────────────
+
+def test_a_column_named_only_by_its_data_says_so():
+    """A headerless column of grades is almost certainly an assay, and what it
+    MEASURED is not knowable from its cells. The marker is what turns that into
+    a question for the heal loop instead of an assertion."""
+    from patentdb3.sources.uspto_assays import classify_column
+    bare = classify_column("", ["E"] * 12 + ["A"])
+    assert bare.label_source == "shape"
+    named = classify_column("BACE1 IC50 (nM)", ["1.2", "3.4"])
+    assert named.label_source == "header"
+
+
+def test_the_column_cache_does_not_drop_fields():
+    """The memoised classifier rebuilt its result field by field, so a field
+    added to `Column` was silently replaced by its default on every cached
+    call. `label_source` was set correctly by the classifier and read as
+    `header` by every caller, which made the flag above do nothing at all."""
+    from patentdb3.sources.uspto_assays import classify_column
+    samples = ["E"] * 12 + ["A"]
+    first = classify_column("", samples)          # computed
+    second = classify_column("", samples)         # served from the cache
+    assert first.label_source == second.label_source == "shape"
+    assert second is not first, "callers must not share one mutable column"

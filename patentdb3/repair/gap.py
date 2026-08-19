@@ -206,6 +206,34 @@ def guessed_units(table: Table) -> list[dict]:
              "agrees": c.unit in said} for c in guessed]
 
 
+def unlabelled_assays(table: Table) -> list[dict]:
+    """Assay columns the DOCUMENT never named — called assays by their shape.
+
+    A column with no header whose cells are all grades or all `+`/`++` is
+    almost certainly an assay, and reading it is usually right. What is never
+    knowable from the cells is WHAT IT MEASURED, and that is the half a count
+    cannot check: the records come out complete, carry a plausible value, and
+    are labelled with a name the patent does not contain.
+
+    The failures are not hypothetical and they do not look like failures.
+    US9221791's `HPLC Method` column is single letters and produced 82 potency
+    grades. US20240010684A1's peptide column is the twenty amino-acid letters
+    and produced 40. Both were caught by the shape of their ALPHABET, not by
+    any count — every row read, every record well-formed.
+
+    So this is raised as a question rather than settled as a guess. The loop
+    can see the table, its neighbours and the prose around it, and can answer
+    what the column measures or say that it measures nothing. Asking costs one
+    call; asserting costs a column of invented measurements that nothing
+    downstream can distinguish from real ones.
+    """
+    from ..sources.uspto_assays import ASSAY, build_columns
+
+    return [{"header": c.header, "index": c.index, "assay_name": c.assay_name}
+            for c in build_columns(table)
+            if c.kind == ASSAY and c.label_source == "shape"]
+
+
 def dead_assay_columns(table: Table, records) -> list[dict]:
     """Assay columns holding data that yields nothing, beside siblings that do.
 
@@ -446,6 +474,7 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
     homogeneous_blocks: set[str] = set()
     dead_col_blocks: set[str] = set()
     unit_blocks: set[str] = set()
+    unlabelled_blocks: set[str] = set()
     records_list: list = []
     if not isinstance(extracted_by_table, dict):
         records = list(extracted_by_table)
@@ -682,6 +711,37 @@ signature=layout_signature(t, heads),
                     + ("" if worst["agrees"] else " — which disagrees. A header "
                        "label spanning several columns has probably landed on "
                        "only one of them")),
+            sample=_sample_of(t, heads), headers=heads,
+            expanded_sample=_sample_of(t, heads, 24, expand=True),
+            column_kinds=[c.kind for c in build_columns(t)],
+        ))
+
+    # Assay columns the document never named. Its own pass, for the reason the
+    # two around it have one: this costs no rows either. The column reads
+    # perfectly and every count scores it perfectly; what is missing is the
+    # name of what was measured, which only the surrounding document can give.
+    for t in tables:
+        if t.table_id in unlabelled_blocks:
+            continue
+        bare = unlabelled_assays(t)
+        if not bare:
+            continue
+        unlabelled_blocks.add(t.table_id)
+        heads = merge_header(t)
+        gaps.append(Gap(
+            patent_id=patent_id, table_id=t.table_id, n_cols=t.n_cols,
+            n_data_rows=rows_per_block.get(t.table_id, len(t.body_rows)),
+            n_extracted=len(cids_per_block.get(t.table_id, ())),
+            fingerprint=layout_fingerprint(t, heads),
+            signature=layout_signature(t, heads),
+            reason=(f"{len(bare)} column(s) were read as assays because their "
+                    f"CELLS look like assay values, and the document never "
+                    f"names them: column(s) "
+                    f"{', '.join(str(b['index']) for b in bare)} carry no "
+                    f"header. Say what each one measures, or say that it is "
+                    f"not a measurement — a synthetic method, an HPLC method, "
+                    f"a substituent or a sequence all look like this and none "
+                    f"of them is an assay"),
             sample=_sample_of(t, heads), headers=heads,
             expanded_sample=_sample_of(t, heads, 24, expand=True),
             column_kinds=[c.kind for c in build_columns(t)],

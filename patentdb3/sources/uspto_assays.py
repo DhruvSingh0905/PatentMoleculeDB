@@ -35,7 +35,7 @@ import json
 import logging
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from functools import lru_cache
 
 from ..core import config
@@ -477,6 +477,18 @@ class Column:
     kind: str
     unit: str | None = None
     assay_name: str | None = None
+    # Where the assay LABEL came from. `header` means the document names this
+    # column; `shape` means nothing does, and it was called an assay because
+    # its cells look like assay values.
+    #
+    # A `shape` label is a guess about WHAT WAS MEASURED, and no count can
+    # check it: the records come out well-formed and carry a name the patent
+    # never wrote. US9221791's `HPLC Method` column and US20240010684A1's
+    # peptide-sequence column both produced clean records this way. So the
+    # marker is not decoration — `repair.gap.unlabelled_assays` turns it into
+    # a question for the heal loop, which is the difference between asking and
+    # asserting.
+    label_source: str = "header"
 
 
 @dataclass
@@ -1045,7 +1057,12 @@ def _memoise_column(fn):
             got = fn(header, samples)
             if len(cache) < _COLUMN_CACHE_MAX:
                 cache[key] = got
-        return Column(got.index, got.header, got.kind, got.unit, got.assay_name)
+        # `replace`, not a field-by-field rebuild. Listing the fields here
+        # means a field added to `Column` is silently dropped on every cached
+        # call and defaults instead — which is what happened to `label_source`:
+        # the classifier set it correctly and every caller read the default,
+        # so no column ever looked uncertain.
+        return _dc_replace(got)
 
     wrapper.cache_clear = cache.clear       # type: ignore[attr-defined]
     wrapper.cache_size = lambda: len(cache)  # type: ignore[attr-defined]
@@ -1210,7 +1227,11 @@ def classify_column(header: str, samples: list[str]) -> Column:
                         if _ANY_LETTER.match(v) and not _LETTER_BIN.match(v))
             if (plus_or_letter > len(vals) * 0.6
                     and stray <= len(vals) * _STRAY_LETTER_MAX):
-                return Column(-1, h, ASSAY, assay_name=h if h else "unnamed assay (letter bin)")
+                # The data shape decided this, not the document. Marked so the
+                # heal loop is asked rather than the guess being asserted.
+                return Column(-1, h, ASSAY,
+                              assay_name=h if h else "unnamed assay (letter bin)",
+                              label_source="header" if h else "shape")
     return Column(-1, h, UNKNOWN)
 
 
