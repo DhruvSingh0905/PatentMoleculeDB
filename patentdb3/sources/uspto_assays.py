@@ -1967,6 +1967,54 @@ def _best_per_block(raw: list[Table]) -> list[Table]:
 _LEGEND_MAX_CELLS = 3
 
 
+def _is_inverted_block(tables) -> bool:
+    """Does this block list a GRADE and then the compounds that scored it?
+
+    The shape is unmistakable and does not depend on finding a scale: a row
+    holding a bin symbol, and rows holding runs of compound ids. Two such rows
+    are required so that a stray `+` beside a single id cannot qualify a table
+    that is not inverted at all.
+    """
+    # THE SYMBOL AND THE LIST MUST SHARE A ROW. Looking for a symbol anywhere
+    # in the block and an id list anywhere else matches an ordinary
+    # row-per-compound table too: US10172859 TABLE-US-00009 grades compounds
+    # `B`/`A`/`A` and its caption names six examples, which satisfied both
+    # halves separately and minted 54 records under `assay (binned)` for a
+    # table that is not inverted at all.
+    #
+    # In an inverted table the grade and the compounds it applies to are
+    # printed side by side — `['++', 'A028, A075, A076, ...']` — and that
+    # pairing is the shape, not the ingredients.
+    for t in tables:
+        for row in list(t.header_rows) + list(t.body_rows):
+            cells = [c.text.strip() for c in row]
+            if not any(_BIN_SYMBOL.match(c) for c in cells):
+                continue
+            if any(_is_id_list_cell(c) for c in cells):
+                return True
+    return False
+
+
+def _is_id_list_cell(cell: str) -> bool:
+    """Is this cell A LIST OF COMPOUND IDS, rather than text containing some?
+
+    `_cid_list` pulls ids out of any text, which is what it is for. Here that
+    is too generous: a chemical name carries a locant run, and
+    `[4-Fluoro-3-[7-(2,2,3,3,5,5,6,6-octadeuterio-morpholin-4-...` yields
+    `['2','3','3','5','5','6']` — six "compounds" that are ring positions.
+    Beside a graded cell in the same row that satisfied the inverted-table
+    shape and minted 54 records for an ordinary row-per-compound table.
+
+    An inverted table's cell IS the list: `A028, A075, A076, A087, ...` and
+    almost nothing else. So the ids have to account for the cell, not merely
+    appear in it.
+    """
+    ids = _cid_list(cell)
+    if len(ids) < 3:
+        return False
+    return len("".join(ids)) >= 0.5 * len(re.sub(r"[\s,;]", "", cell or ""))
+
+
 def _legend_lines(tables) -> list[str]:
     """A block's rows in document order, each joined across its cells.
 
@@ -2184,7 +2232,11 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
             raw_block[0].caption,
         ]
         text = " ".join([*key_lines, *(p for p in prose if p)])
-        if not bin_legend.looks_like_key(text):
+        # The shape of the block counts as much as the presence of a key.
+        # `looks_like_key` asks whether a SCALE is in scope, and for an
+        # inverted table that is the wrong question first: the grades and the
+        # compounds they apply to are in the table itself.
+        if not bin_legend.looks_like_key(text) and not _is_inverted_block(block):
             continue
         # The block's own rows first, each read alone; then the prose sources
         # in order of distance. Rows are a list and prose is a paragraph, and
@@ -2200,7 +2252,24 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
         per_column = _prose_sections_for(prose, records, block_id)
         for sym, br in bin_legend.parse_bin_key_layered(prose).items():
             key.setdefault(sym, br)
-        if not key and not per_column:
+        # A GRADE ASSIGNMENT IS DATA, EVEN WITHOUT ITS SCALE. This gate threw
+        # the whole block away when no key resolved — so a table that plainly
+        # states `++ → A028, A075, A076, …` produced nothing at all, rather
+        # than the grades it prints.
+        #
+        # US11566007 is the case. Its inverted tables carry hundreds of
+        # compound ids inline, so for the later blocks the key — printed before
+        # the PREVIOUS table — sits beyond the 6,000-character look-back and is
+        # never seen. TABLE-US-00008 finds it and yields 825 records;
+        # TABLE-US-00009 has the identical layout, does not find it, and
+        # yielded 0. The repair loop diagnosed that itself, refused to buy a
+        # rule for it, and escalated as "INCONSISTENT HANDLING — not a layout
+        # gap": the same fingerprint cannot be both readable and unreadable.
+        #
+        # The range is a SECOND fact about a grade, not a precondition for it.
+        # Grade-only records are already emitted in thousands elsewhere; only
+        # this path required the scale before it would admit the assignment.
+        if not key and not per_column and not _is_inverted_block(block):
             continue
         _apply_per_column(records, block_id, per_column)
         name, unit = caption_assay_hint(raw_block[0].caption)

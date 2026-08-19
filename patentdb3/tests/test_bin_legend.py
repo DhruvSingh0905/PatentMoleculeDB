@@ -658,3 +658,53 @@ def test_the_prefix_is_left_alone_when_the_shape_does_not_match():
     assert _redistribute_shared_prefix(["IC50", "EC50"]) == ["IC50", "EC50"]
     assert _redistribute_shared_prefix(["Ki (nM) mutant A", "mutant B"]) == \
         ["Ki (nM) mutant A", "mutant B"]
+
+
+# ── L. a grade assignment is data, even without its scale ────────────────
+
+def test_a_chemical_name_is_not_a_list_of_compound_ids():
+    """`_cid_list` pulls ids out of any text, which is what it is for. A
+    chemical name carries a locant run, and
+    `[4-Fluoro-3-[7-(2,2,3,3,5,5,6,6-octadeuterio-morpholin-4-...` yields six
+    "compounds" that are ring positions. Beside a graded cell in the same row
+    that satisfied the inverted-table shape and minted 54 records for an
+    ordinary row-per-compound table. An inverted table's cell IS the list."""
+    from patentdb3.sources.uspto_assays import _is_id_list_cell
+    assert _is_id_list_cell("A028, A075, A076, A087, A112")
+    assert _is_id_list_cell("1, 2, 3, 4, 5")
+    assert not _is_id_list_cell(
+        "[4-Fluoro-3-[7-(2,2,3,3,5,5,6,6-octadeuterio-morpholin-4-yl)quinazolin")
+
+
+def test_an_inverted_table_needs_the_grade_beside_the_list():
+    """The grade and the compounds it applies to are printed side by side.
+    Looking for a symbol anywhere in a block and an id list anywhere else
+    matches a normal graded table too."""
+    from patentdb3.sources.uspto_assays import _best_per_block, _is_inverted_block
+    from patentdb3.sources.uspto_xml import parse_tables
+    blocks = {}
+    for t in parse_tables(_xml("US11566007")):
+        blocks.setdefault(t.table_id, []).append(t)
+    assert _is_inverted_block(blocks["TABLE-US-00009"])
+    normal = {}
+    for t in parse_tables(_xml("US10172859")):
+        normal.setdefault(t.table_id, []).append(t)
+    assert not _is_inverted_block(normal["TABLE-US-00009"]), \
+        "a row-per-compound table is not an inverted one"
+
+
+def test_a_block_whose_scale_is_out_of_reach_still_yields_its_grades():
+    """US11566007's inverted tables carry hundreds of compound ids inline, so
+    for the later blocks the key — printed before the PREVIOUS table — sits
+    beyond the 6,000-character look-back and is never seen. TABLE-US-00008
+    finds it and yielded 825 records; TABLE-US-00009 has the identical layout,
+    does not find it, and yielded 0.
+
+    The repair loop diagnosed that itself and refused to buy a rule for it:
+    'INCONSISTENT HANDLING — not a layout gap'. The range is a SECOND fact
+    about a grade, not a precondition for admitting the assignment."""
+    recs = extract_from_patent(_xml("US11566007"))
+    for tid in ("TABLE-US-00009", "TABLE-US-00010", "TABLE-US-00012"):
+        block = [r for r in recs if r.table_id == tid]
+        assert len(block) > 500, f"{tid} yielded {len(block)}"
+        assert all(r.letter_grade for r in block), "every record carries its grade"
