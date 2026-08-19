@@ -76,7 +76,23 @@ def _to_nM(value, unit):
 
 
 def _bdb(pids: set[str]) -> dict[tuple[str, str], set[float]]:
-    """Reference points as {(patent, cid) -> {value_nM}}.
+    """Reference points, keyed TWO ways: by compound number and by structure.
+
+    THE COMPOUND NUMBER IS BINDINGDB'S, NOT THE PATENT'S. It is parsed out of a
+    free-text ligand name, and the two numbering schemes are not the same
+    document's: US8722692 Example 7 — `JFPWYXWNCPJSCN-UHFFFAOYSA-N` — appears in
+    BindingDB as `US8722692, 576`. Joining on it therefore compares the wrong
+    compound, quietly, because a wrong pairing still produces a number.
+
+    Measured over the corpus, on the 11,902 compounds reachable by either key:
+
+        values agree on the id join        4,003   33.6%
+        values agree on the structure join 11,308  95.0%
+        reachable ONLY by structure        7,892
+
+    So the number this sheet reports is the structure join, and the id join is
+    kept beside it as the thing it replaced. An InChIKey cannot drift: two rows
+    carrying the same one are the same molecule.
 
     The ligand name holds `PATENT, CID` pairs joined by `::`, and one row is
     routinely cited against several patents at once — 97% of US8952177's rows
@@ -85,13 +101,15 @@ def _bdb(pids: set[str]) -> dict[tuple[str, str], set[float]]:
     numbering is unrelated.
     """
     out: dict[tuple[str, str], set[float]] = collections.defaultdict(set)
+    by_structure: dict[tuple[str, str], set[float]] = collections.defaultdict(set)
     if not BDB_TSV.exists():
-        return out
+        return out, by_structure
     csv.field_size_limit(10 ** 9)
     with BDB_TSV.open(newline="") as fh:
         rd = csv.reader(fh, delimiter="\t", quoting=csv.QUOTE_NONE)
         hdr = next(rd)
         iP, iN = hdr.index("Patent Number"), hdr.index("BindingDB Ligand Name")
+        iK = hdr.index("Ligand InChI Key")
         vcols = [i for i, h in enumerate(hdr) if h in ("IC50 (nM)", "Ki (nM)")]
         for row in rd:
             if len(row) <= max(iP, iN):
@@ -108,7 +126,16 @@ def _bdb(pids: set[str]) -> dict[tuple[str, str], set[float]]:
                     out[(pid, m.group(1))].add(float(v))
                 except ValueError:
                     pass
-    return out
+            # THE SAME ROW, KEYED ON CHEMISTRY. See `_bdb`'s docstring.
+            ik = (row[iK] or "").strip()
+            if ik:
+                for i in vcols:
+                    v = (row[i] or "").strip().lstrip("<>=~ ")
+                    try:
+                        by_structure[(pid, ik)].add(float(v))
+                    except ValueError:
+                        pass
+    return out, by_structure
 
 
 def main(argv: list[str]) -> int:
@@ -152,7 +179,7 @@ def main(argv: list[str]) -> int:
     _trail_sheets(wb, man)
 
     if "--no-bdb" not in argv:
-        ref = _bdb(pids)
+        ref, ref_by_structure = _bdb(pids)
         ours = collections.defaultdict(set)
         # EVERY UNIT WE CAN CONVERT, NOT JUST uM. This read
         # `r["unit"] == "uM"` and BindingDB publishes in nM — so the filter
@@ -168,17 +195,49 @@ def main(argv: list[str]) -> int:
             nm = _to_nM(r.get("value_numeric"), r.get("unit"))
             if nm is not None:
                 ours[(r["patent_id"], r["cid"])].add(nm)
+        # OUR VALUES KEYED ON STRUCTURE TOO, from `structures.tsv`, so the
+        # comparison can join on chemistry rather than on a compound number
+        # BindingDB assigns itself. 89.9% of its rows for our patents carry an
+        # InChIKey and only 16.1% yield a parseable compound number, so the id
+        # key was discarding five sixths of the available reference before it
+        # compared anything.
+        ours_by_structure: dict = collections.defaultdict(set)
+        src = Path(man.get("structures") or "")
+        if src.exists():
+            key_of = {(r["patent_id"], r["cid"]): r["inchikey"]
+                      for r in csv.DictReader(src.open(), delimiter="\t")
+                      if r.get("inchikey") and r.get("cid")}
+            for (p, c), vals in ours.items():
+                ik = key_of.get((p, c))
+                if ik:
+                    ours_by_structure[(p, ik)] |= vals
+
         sb = wb.create_sheet("bindingdb")
-        sb.append(["patent_id", "cid", "bdb_nM", "ours_nM", "agrees_1pct", "note"])
+        sb.append(["patent_id", "join", "key", "bdb_nM", "ours_nM",
+                   "agrees_1pct", "note"])
         hit = tot = held = 0
-        for (p, c), vals in sorted(ref.items()):
-            mine = ours.get((p, c), set())
+        for (p, ik), vals in sorted(ref_by_structure.items()):
+            mine = ours_by_structure.get((p, ik), set())
+            if not mine:
+                continue                      # a compound we have not resolved
             for v in sorted(vals):
                 ok = any(abs(v - o) <= TOLERANCE * max(v, 1e-12) for o in mine)
                 tot += 1
                 hit += ok
-                held += bool(mine)
-                sb.append([p, c, v, ", ".join(f"{o:g}" for o in sorted(mine)) or "—",
+                held += 1
+                sb.append([p, "structure", ik, v,
+                           ", ".join(f"{o:g}" for o in sorted(mine)) or "—",
+                           "yes" if ok else "no", ""])
+        # The id join is kept beside it, as the thing it replaced.
+        id_hit = id_tot = 0
+        for (p, c), vals in sorted(ref.items()):
+            mine = ours.get((p, c), set())
+            for v in sorted(vals):
+                ok = any(abs(v - o) <= TOLERANCE * max(v, 1e-12) for o in mine)
+                id_tot += 1
+                id_hit += ok
+                sb.append([p, "compound no.", c, v,
+                           ", ".join(f"{o:g}" for o in sorted(mine)) or "—",
                            "yes" if ok else "no",
                            "" if mine else "cid not extracted"])
         for c in sb[1]:
@@ -190,10 +249,12 @@ def main(argv: list[str]) -> int:
         # been through recognition yet. One line printed `8725/10350 = 84.3%`
         # while agreement on the compounds we actually hold was 8725/9072 =
         # 96.2%, and the two were read as the same quantity.
-        print(f"bindingdb: {hit}/{held} agree within {TOLERANCE:.0%}"
-              + (f"  ({hit/held:.1%} of the compounds we hold)" if held else "")
-              + f"; {tot - held} more reference values are for compounds we "
-                f"have not extracted ({tot} rows in total)")
+        print(f"bindingdb (structure join): {hit}/{held} agree within "
+              f"{TOLERANCE:.0%}" + (f"  ({hit/held:.1%})" if held else ""))
+        print(f"  the compound-number join it replaces: {id_hit}/{id_tot}"
+              + (f"  ({id_hit/id_tot:.1%})" if id_tot else "")
+              + " — BindingDB numbers compounds itself, so that key compares "
+                "the wrong molecule")
 
     XLSX_PATH.parent.mkdir(parents=True, exist_ok=True)
     wb.save(XLSX_PATH)
