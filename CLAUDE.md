@@ -122,10 +122,21 @@ Read it this way:
   resolve from text.
 - **The reader-side gap is 3,650 (8.2%)** and it is concentrated in about
   eight documents. Document defects, not mechanism failures.
-- **4,475 are unfixable.** 78% of them are four patents — US9718790,
-  US9303033, US12065407, US10266548 — which identify a compound by a number
-  that appears nowhere else. Do not point the heal loop at these. Exclude
-  them from a coverage denominator and say so.
+- **"4,475 unfixable" WAS WRONG. Corrected 2026-08-19.** Two of the four named
+  patents print the compound number in the SAME TABLE ROW as its drawing, and
+  `cid_first._drawing_refs` never sees it: line 973 reads `cells[0]` as the id,
+  and US9718790 lays its tables out `Structure | Compound No. | RT | [M+H]`,
+  so the first cell tag-strips to `""` and the row is dropped. That function
+  returns **0 refs for a 2.6 MB document holding 565 drawn tables**, while
+  `build_columns` correctly returns `kind == CID` at index 1 on all 565.
+  Two more defects sit beside it: the dict is keyed on the RAW cell while
+  every lookup uses `normalize_cid` (`CAP01564` vs `CAP1564`, zero overlap on
+  US12065407), and `_resolve` returns at line 1155 before the drawn-marker
+  block, so a patent with no name assertion emits no marker at all.
+  **3,399 compounds corpus-wide, class (b).** US9303033's 1,270 are a
+  different shape — drawings and values in separate `<tables>` paired by
+  caption, a positional cross-block join no function performs. US10266548
+  gains 0.
 
 ## Layout
 
@@ -246,6 +257,20 @@ Each item below cost real time. Read this list before you measure anything.
 - **Grep for the module, not the word.** Four files mention "markush" and none
   of them imported `sources/markush.py`; it was dead code with a passing test
   suite, and `CLAUDE.md` quoted a coverage number it had never produced.
+- **A filter in front of a parser must accept everything the parser accepts.**
+  `bin_legend.looks_like_key` recognised `:`, `=` and five verbs as separators.
+  It therefore rejected `+ (greater than 10 microMolar)`, `A ≦ 10 nM`,
+  `*** is less than 100 nM`, `"A" represents ... less than 10 nM`, and
+  `<1.00 nM=A` — every one of which the parser behind it could read. 9,372
+  records, on 15 patents, lost at the filter and never at the parser.
+- **A bin key is applied to thousands of rows at once, so a wrong one is
+  silent.** Four things go wrong and none show up in the output: the same
+  letters mean different ranges in different COLUMNS (US10172859 `B` is 3-7 nM,
+  0.5-5 uM or 15-25 uM); the two scales measure different QUANTITIES
+  (US10030020 grades nM with `*` and percent with `#`); the legend is a
+  `value | symbol` TABLE, so flattening it gives each grade the next grade's
+  number (US9221791); or a key defined for the NEXT block sits in the rows of
+  this one (US11566007). `test_bin_legend.py` pins all four.
 - **`build_columns` is the blast radius.** It reaches 11 files: the assay
   reader, `table_names`, `cid_first`'s markush marker, `mass_gate`, both heal
   tiers and their gates, and the assembly tier. A wrong column decision there

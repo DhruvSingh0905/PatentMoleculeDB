@@ -9,11 +9,41 @@ somewhere nearby, a key that defines what the symbol means:
     to 0.01 μM is marked "++++"; a value greater than 0.01 μM and less than or
     equal to 0.1 μM is marked "+++"; ...
 
-Both forms appear, and the two examples above are from different patents with
-*different scales for the same symbol* — US11566007 uses `++++` for ≥1 μM while
-US11292791 uses `++++` for 0.001-0.01 μM. **A global symbol→range mapping would
-silently corrupt one of them.** Keys are therefore always resolved per table,
-never shared, and a symbol with no key in scope yields no range at all.
+Seven forms appear in this corpus and each one is somebody's house style. The
+separator is the only thing that varies, and it varies completely:
+
+    A: IC50 < 3 nM                          a colon              US10172859
+    + (greater than 10 microMolar)          a parenthesis        US9682141
+    A ≦ 10 nM;                              nothing at all       US9656988
+    *** is less than 100 nM                 the verb `is`        US10030020
+    ... are labelled as "+++"               range stated first   US11286268
+    "A" represents an IC50 of less than …   a quoted symbol      US20240166635
+    <1.00 nM=A                              symbol stated last   US9688680
+
+They are all read here, because a legend that is not read costs every record
+under it, and 9 of these 15 patents publish nothing but grades.
+
+**A key is applied to thousands of rows at once, so a wrong key is silent.**
+That is what the rest of this module is defending against, and there are four
+distinct ways to get one:
+
+  * THE SAME SYMBOL, DIFFERENT SCALES. US11566007 uses `++++` for ≥1 μM in one
+    table and 1-10 μM in the next; US11292791 uses it for 0.001-0.01 μM. Keys
+    are resolved per table, never shared, and a symbol with no key in scope
+    yields no range at all.
+  * THE SAME SYMBOL, DIFFERENT COLUMNS. US10172859 defines `A`-`D` three times
+    on one page, once per assay, so `B` is 3-7 nM, 0.5-5 μM or 15-25 μM
+    depending only on which column it sits in. `parse_sectioned_key` keeps the
+    scales apart and `section_for_column` matches one to a column by name.
+  * THE SAME SYMBOL, DIFFERENT QUANTITIES. US10030020 grades potency in nM with
+    `*` and inhibition in percent with `#`, in one sentence. `compatible`
+    refuses a bin whose dimension the column contradicts.
+  * THE LEGEND IS A TABLE, NOT A SENTENCE. US9221791 prints `value | rating`
+    rows, and flattening them hands every grade the NEXT grade's number.
+    `_VALUE_BEFORE` refuses a symbol that merely follows a value.
+
+Every one of those was live in the corpus, and none of them showed up in the
+output as anything other than a plausible number.
 
 This turns a symbol into an honest interval, which is real, usable data — a
 compound known to be 0.1-1 μM is a meaningful record for a screening cascade.
@@ -25,21 +55,96 @@ from __future__ import annotations
 import re
 
 # Units accepted inside a key definition, normalised to the project's spelling.
-_UNIT = r"(?:nM|pM|mM|[μuµ]M|micromolar|nanomolar|millimolar|picomolar)"
+#
+# A bin scale is NOT always a concentration. The same patent grades potency in
+# nM and inhibition in percent, and a legend that omits the unit on some lines
+# used to inherit whichever unit the rest of the document showed. US10030020
+# defines `### is ≥75%` for six columns headed `% Inh 1 μM (mouse)`, and `%`
+# was not a unit here — so those bins parsed unitless, the backfill below
+# stamped `nM` on them, and 1,243 records claimed a nanomolar potency the
+# patent never measured. A dimension we cannot name must stay unnamed.
+_UNIT = (r"(?:nM|pM|mM|[μuµ]M|micromolar|nanomolar|millimolar|picomolar"
+         r"|%|mg/kg|[-\s]?fold)")
 _UNIT_CANON = {
     "um": "uM", "µm": "uM", "μm": "uM", "nm": "nM", "mm": "mM", "pm": "pM",
     "micromolar": "uM", "nanomolar": "nM", "millimolar": "mM", "picomolar": "pM",
+    "%": "%", "mg/kg": "mg/kg", "fold": "fold", "-fold": "fold",
 }
 
-# The symbol a bin is written with: a run of '+', or a single letter grade.
-_SYMBOL = r"(?:\++|[A-E])"
+# The symbol a bin is written with: a run of '+', '*' or '#', or a letter grade.
+#
+# `*` and `#` were absent, and their absence is invisible rather than noisy:
+# the grade is still READ off the data table, so records appear, carry a
+# symbol, and carry no range. US10030020 and US9133148 grade with `*`/`**`/
+# `***` for potency and `#`/`##`/`###` for percent inhibition; US12351648 uses
+# `***`/`****`. 2,598 records between them.
+#
+# The letter grades are UPPERCASE-only — `(?-i:...)` holds even though every
+# pattern here compiles with re.I for the English verbs around it. Case-folding
+# the grade turns the last letter of an ordinary word into one: the phrase
+# `the following designations are used: <1.00 nM=A` defines `A`, and also
+# matched `d` — the tail of "used", followed by a colon, followed by a range.
+# A grade that exists only inside another word is always a false positive.
+_SYMBOL = r"(?:\++|\*+|#+|(?-i:[A-E]))"
+
+# Patents quote the symbol as often as not: `"A" represents ...`, `is marked
+# "+++"`. Straight and curly, single and double.
+_QUOTE = r"[\"“”'‘’`]"
+# Capturing and non-capturing forms of "a symbol, optionally quoted".
+#
+# The lookbehind is the second half of the `used:` guard above: a symbol may
+# not be glued to the end of a WORD. It is written before the optional quote so
+# that `“A”` still passes — the character before `A` is the quote, not a letter.
+#
+# Digits are deliberately NOT excluded. US11485738 runs its sentence into its
+# key with no space — `the results are shown in Table 15A=<250 nM` — and
+# rejecting a grade after a digit drops that key and the 117 records under it.
+_SYM_Q = rf"(?<![A-Za-z]){_QUOTE}?(?P<sym>{_SYMBOL}){_QUOTE}?"
+_SYM_QN = rf"(?<![A-Za-z]){_QUOTE}?(?:{_SYMBOL}){_QUOTE}?"
 
 _NUM = r"\d+(?:\.\d+)?"
+
+# The metric a bin definition may name. ONE constant, because the cheap
+# pre-filter and the full parser must accept the same set: `_KEY_HINT` listed
+# only IC50/EC50 while `_KEY_COMPACT` also accepted Ki/Kd, so `A: Ki > 25 uM`
+# was rejected before the parser that could read it ever ran. US10172859 states
+# its whole hERG scale that way — 431 records, and worse than a plain miss,
+# because `parse_sectioned_key` then reads the unparsed definition row as the
+# next section's HEADING and shifts every section boundary after it.
+_METRIC = r"(?:IC\s*50|EC\s*50|Ki|Kd|value)"
 
 # What separates a symbol from its definition. `:` and `=` are the common
 # forms; US10376513 writes "+ refers to ≤10 nM" and states the key for all 348
 # of its compounds that way, so the verb forms are equally a separator.
-_DEFINES = r"(?:\s*[:=]\s*|\s+(?:refers?\s+to|means|indicates?|represents?|denotes?)\s+)"
+#
+# The last three alternatives are the ones that were missing, and between them
+# they account for more unresolved records than every other cause in this file
+# combined. A legend is not required to punctuate itself:
+#
+#   `+ (greater than 10 microMolar)`   US9682141, US11547697   4,619 records
+#   `A ≦ 10 nM;`                       US9656988               1,351 records
+#   `*** is less than 100 nM;`         US10030020, US9133148   1,568 records
+#
+# None of these carry a colon, an equals sign or one of the verbs, so the cheap
+# pre-filter rejected them and the parser that could read every one was never
+# reached. The bare-comparison form is a LOOKAHEAD: it consumes nothing, so the
+# operator it detects is still there for the bound parser to read.
+_DEFINES = (
+    r"(?:"
+    r"\s*[:=]\s*"
+    r"|\s+(?:refers?\s+to|means|indicates?|represents?|denotes?|is|are)\s+"
+    r"|\s*\(\s*"
+    r"|\s*(?=[<>≤≥≦≧⩽⩾])"
+    r")"
+)
+
+# How a patent says "this range is written with this symbol" when it states the
+# range FIRST. `is marked` was the only form read; each of the others appears in
+# this corpus and reads identically to a chemist.
+_MARKED = (
+    r"(?:is|are)\s+(?:marked|labell?ed|designated|indicated|denoted|shown|"
+    r"reported|represented)(?:\s+(?:as|by|with))?"
+)
 
 # Form 1 — compact key:  "++++: IC50 ≥ 1 uM"  /  "+++: 1 uM > IC50 ≥ 0.1 uM"
 #                        "++ refers to >10 nM to 50 nM"
@@ -49,12 +154,28 @@ _DEFINES = r"(?:\s*[:=]\s*|\s+(?:refers?\s+to|means|indicates?|represents?|denot
 # causes, so the tail is captured rather than tolerated. US10626094 writes the
 # same range as "A: IC 50 >200 nM−<800 nM" with a U+2212 MINUS between the
 # bounds, and read every one of its bins as unbounded above until this landed.
+#
+# The trailing bound is OPTIONAL, and that is not cosmetic. `D: 10 uM >= Ki`
+# states its only bound BEFORE the metric and puts nothing after it. While a
+# number was required there, the leading group could not be kept — the engine
+# backtracked, gave up `hi=10`, and re-matched the same `10` as `lo`, turning
+# `Ki <= 10 uM` into `Ki >= 10 uM`. An inverted bin, silently, on every row
+# written in that order. Both bounds optional; the caller drops a match that
+# yields neither.
+#
+# The LEADING group is a third place a bound can sit: before the symbol itself.
+# US9656988 brackets each grade from both sides — `10 nM < B ≦ 100 nM` — and
+# reading left-to-right from `B` sees only the upper bound, so every interior
+# grade came out unbounded below. `A ≦ 10 nM` and `E > 10 μM`, the two ends of
+# the same scale, have nothing on the left and were already right, which is why
+# the scale looked plausible while three of its five bins were wrong.
 _KEY_COMPACT = re.compile(
-    rf"({_SYMBOL}){_DEFINES}"
+    rf"(?:(?P<pre>{_NUM})\s*(?P<preu>{_UNIT})?\s*(?P<preop>>=|>|≥|≧|⩾|≤|≦|⩽|<=|<)\s*)?"
+    rf"{_SYM_Q}(?P<sep>{_DEFINES})"
     rf"(?:(?P<hi>{_NUM})\s*(?P<hiu>{_UNIT})?\s*(?P<hiop>>=|>|≥|≧|⩾|≤|≦|⩽|<=|<)\s*)?"
-    rf"(?:IC\s*50|EC\s*50|Ki|Kd|value)?\s*"
-    rf"(?P<loop>>=|>|≥|≧|⩾|≤|≦|⩽|<=|<)?\s*(?P<lo>{_NUM})\s*(?P<lou>{_UNIT})?"
-    rf"(?:\s*(?:to|[-–—−])\s*[<>≤≥≦≧⩽⩾]?\s*(?P<hi2>{_NUM})\s*(?P<hi2u>{_UNIT})?)?",
+    rf"{_METRIC}?\s*"
+    rf"(?:(?P<loop>>=|>|≥|≧|⩾|≤|≦|⩽|<=|<)?\s*(?P<lo>{_NUM})\s*(?P<lou>{_UNIT})?"
+    rf"(?:\s*(?:to|[-–—−])\s*[<>≤≥≦≧⩽⩾]?\s*(?P<hi2>{_NUM})\s*(?P<hi2u>{_UNIT})?)?)?",
     re.I)
 
 # Form 2 — prose:  "a value greater than 0.01 μM and less than or equal to
@@ -65,9 +186,13 @@ _KEY_COMPACT = re.compile(
 # be spanned without crossing a '.', so the lower bound was being dropped and
 # every bin came out unbounded-below. Clauses in these legends are separated by
 # semicolons, which is the boundary that actually holds.
+#
+# `is marked` was one phrasing of many. US11286268 writes "IC50 values of less
+# than 0.05 μM are labelled as "+++"" — the same sentence, the same meaning,
+# and it read as prose because the verb did not match. See `_MARKED`.
 _KEY_PROSE = re.compile(
     rf"(?P<body>(?:greater|less|more)[^;]{{0,200}}?{_NUM}\s*{_UNIT}[^;]{{0,200}}?)"
-    rf"is\s+marked\s*[\"“'`]?({_SYMBOL})[\"”'`]?",
+    rf"{_MARKED}\s*{_SYM_Q}",
     re.I)
 
 # Form 3 — the symbol is defined by a prose clause: "A = IC50 of less than
@@ -77,12 +202,38 @@ _KEY_PROSE = re.compile(
 # lookahead, `+ refers to ≤10 nM ++ refers to >10 nM to 50 nM` gives `+` a body
 # running through `++`'s clause, and `+` comes out as 10..10 — the exact bleed
 # that made `following` unusable for keys, reappearing inside a single string.
-_NEXT_DEF = rf"(?:(?!{_SYMBOL}{_DEFINES})[^;])"
+_NEXT_DEF = rf"(?:(?!{_SYM_QN}{_DEFINES})[^;])"
 _KEY_WORDY = re.compile(
-    rf"({_SYMBOL}){_DEFINES}(?P<body>{_NEXT_DEF}{{0,60}}?"
+    rf"{_SYM_Q}(?P<sep>{_DEFINES})(?P<body>{_NEXT_DEF}{{0,60}}?"
     rf"(?:greater\s+than|less\s+than|at\s+least|at\s+most|[<>≤≥≦≧⩽⩾])"
     rf"{_NEXT_DEF}{{0,240}})",
     re.I)
+
+# Form 4 — the range is stated FIRST and the symbol assigned to it:
+#   "<1.00 nM=A; 1.01-10.0 nM=B; 10.01-100.0 nM=C; >100 nM=D"
+# Forms 1-3 all read left-to-right from the symbol, so every one of them reads
+# this backwards: `=A` has nothing after it to bound, and the number before is
+# never reached. US9688680 states both of its scales this way and resolved none
+# of its 950 records.
+_RANGE_EXPR = re.compile(
+    rf"(?:^|[;,:])\s*"
+    rf"(?P<op>[<>≤≥≦≧⩽⩾]|greater\s+than|less\s+than|at\s+least|at\s+most)?\s*"
+    rf"(?P<a>{_NUM})\s*(?P<au>{_UNIT})?"
+    rf"(?:\s*(?:to|[-–—−])\s*(?P<b>{_NUM})\s*(?P<bu>{_UNIT})?)?"
+    rf"\s*=\s*{_SYM_Q}", re.I)
+
+# A value sitting immediately BEFORE a symbol, with no comparison between them.
+# That is the `value | symbol` table shape — `80-100 A`, `60-79 B`, `40-59 C`,
+# `<40 D` — and once flattened to prose it reads left-to-right as `C` followed
+# by `<40`, which is the value from D's ROW. US9221791 rates fungicides that
+# way and every grade came out holding the next grade's number.
+#
+# The trailing `[<>...]?` in the middle matters: `10 nM < B ≦ 100 nM` also puts
+# a value before the symbol, but with an operator pointing AT the symbol, which
+# is a real lower bound. This pattern only fires when nothing points anywhere.
+_VALUE_BEFORE = re.compile(
+    rf"(?:^|[\s;,])[<>≤≥≦≧⩽⩾]?\s*{_NUM}(?:\s*(?:to|[-–—−])\s*{_NUM})?"
+    rf"\s*(?:{_UNIT})?\s*$")
 
 _GT = re.compile(rf"(?:greater than or equal to|at least|≥|≧|⩾|>=)\s*({_NUM})\s*({_UNIT})?", re.I)
 _GT_STRICT = re.compile(rf"(?:greater than|>)\s*({_NUM})\s*({_UNIT})?", re.I)
@@ -123,6 +274,23 @@ class BinRange:
 _SCALE = {"pM": 1e-3, "nM": 1.0, "uM": 1e3, "mM": 1e6}
 
 
+def _reconcile(lo, lo_u, hi, hi_u):
+    """Put a bound pair on ONE scale: (lo, hi, unit).
+
+    A clause is free to state its two bounds in different units, and the two
+    readings differ by whatever the ratio between them is — 1,000x for the
+    nM/uM pair that actually occurs. Converting to the finer of the two keeps
+    integers integral and never rounds a bound toward zero.
+    """
+    if (lo is not None and hi is not None and lo_u and hi_u and lo_u != hi_u
+            and lo_u in _SCALE and hi_u in _SCALE):
+        if _SCALE[lo_u] <= _SCALE[hi_u]:
+            hi, hi_u = hi * _SCALE[hi_u] / _SCALE[lo_u], lo_u
+        else:
+            lo, lo_u = lo * _SCALE[lo_u] / _SCALE[hi_u], hi_u
+    return lo, hi, lo_u or hi_u
+
+
 def _prose_bounds(body: str) -> tuple[float | None, float | None, str | None]:
     """Pull (lo, hi, unit) out of one prose clause.
 
@@ -144,16 +312,39 @@ def _prose_bounds(body: str) -> tuple[float | None, float | None, str | None]:
             lo, lo_u = val, u
         elif not is_lo and hi is None:
             hi, hi_u = val, u
-    # Reconcile a clause whose two bounds are stated in different units by
-    # converting to the finer of the two. `1 μM` and `100 nM` describe the same
-    # interval only once one of them moves.
-    if (lo is not None and hi is not None and lo_u and hi_u and lo_u != hi_u
-            and lo_u in _SCALE and hi_u in _SCALE):
-        if _SCALE[lo_u] <= _SCALE[hi_u]:
-            hi, hi_u = hi * _SCALE[hi_u] / _SCALE[lo_u], lo_u
-        else:
-            lo, lo_u = lo * _SCALE[lo_u] / _SCALE[hi_u], hi_u
-    return lo, hi, lo_u or hi_u
+    return _reconcile(lo, lo_u, hi, hi_u)
+
+
+def _adopt(here: dict, conflicts: set, br: BinRange) -> None:
+    """Take a symbol's definition, or mark it as contested.
+
+    A legend defines each grade ONCE. When the same pass reads a second,
+    different definition of the same symbol, the text in scope is not one
+    legend — it is two, and nothing here says which governs a given column.
+
+    That case is common and it is the expensive one. US9688680 states two
+    scales in one paragraph, `for D816V activity` and `For wild-type Kit
+    activity`, and `A` is `<1.00 nM` in the first and `<10 nM` in the second.
+    US9133148 grades potency in nM and inhibition in percent with the same
+    `***`. Taking the first and applying it to every column is a silent 10x on
+    half the records; taking neither costs the records and states the truth.
+    """
+    prev = here.get(br.symbol)
+    if prev is None:
+        here[br.symbol] = br
+    elif (prev.lo, prev.hi, prev.unit) != (br.lo, br.hi, br.unit):
+        conflicts.add(br.symbol)
+
+
+def _merge(out: dict, here: dict) -> None:
+    """Fold one pass's readings in. An earlier pass's reading always wins."""
+    for sym, br in here.items():
+        out.setdefault(sym, br)
+
+
+def _alphabet(symbol: str) -> str:
+    """Which family a symbol belongs to. `*` and `#` are different scales."""
+    return symbol[0] if symbol[0] in "+*#" else "A"
 
 
 def parse_bin_key(text: str) -> dict[str, BinRange]:
@@ -166,18 +357,52 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
     if not text:
         return {}
     out: dict[str, BinRange] = {}
+    # Symbols this text defines MORE THAN ONCE, incompatibly. See `_adopt`.
+    conflicts: set[str] = set()
 
-    # Prose form first — it is unambiguous when present.
+    # Form 4 first — `<1.00 nM=A` pins both its bound and its symbol with no
+    # room to read either wrongly, and running it ahead of the left-to-right
+    # forms means none of them can claim the symbol on a partial reading.
+    here: dict[str, BinRange] = {}
+    for m in _RANGE_EXPR.finditer(text):
+        sym = m.group("sym")
+        lo = hi = None
+        unit = _canon_unit(m.group("bu") or m.group("au"))
+        a = float(m.group("a"))
+        if m.group("b") is not None:
+            lo, hi = a, float(m.group("b"))
+        else:
+            op = (m.group("op") or "").lower()
+            if op in ("<", "≤", "≦", "⩽", "less than", "at most"):
+                hi = a
+            elif op in (">", "≥", "≧", "⩾", "greater than", "at least"):
+                lo = a
+            else:
+                # A bare `100 nM=B` states no direction. It is a bin edge with
+                # no side, and choosing one would be inventing the interval.
+                continue
+        _adopt(here, conflicts, BinRange(sym, lo, hi, unit))
+    _merge(out, here)
+
+    # Prose form — unambiguous when present.
+    here = {}
     for m in _KEY_PROSE.finditer(text):
         lo, hi, unit = _prose_bounds(m.group("body"))
-        sym = m.group(2)
-        if (lo is not None or hi is not None) and sym not in out:
-            out[sym] = BinRange(sym, lo, hi, unit)
+        sym = m.group("sym")
+        if lo is not None or hi is not None:
+            _adopt(here, conflicts, BinRange(sym, lo, hi, unit))
+    _merge(out, here)
 
     # Compact form: "++++: IC50 ≥ 1 uM", "+++: 1 uM > IC50 ≥ 0.1 uM"
+    here = {}
     for m in _KEY_COMPACT.finditer(text):
-        sym = m.group(1)
-        if sym in out:
+        sym = m.group("sym")
+        # The bare-comparison separator consumes nothing, so a symbol can be
+        # bound to a value that is not its own. It is only a separator when
+        # nothing else already sits between the symbol and the number — and
+        # when the symbol is not itself the tail of a `value symbol` pair.
+        if not (m.group("sep") or "").strip() \
+                and _VALUE_BEFORE.search(text[:m.start("sym")]):
             continue
         # A grade, a colon and a number is not a key. Every part of Form 1
         # except the symbol is optional, so `A: 4` and `E=20` match it — and a
@@ -195,28 +420,46 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
         # itself the evidence, and `A: 4` / `E=20` have neither.
         if not (m.group("lou") or m.group("hiu") or m.group("hi2u")
                 or m.group("loop") or m.group("hiop") or m.group("hi2")
-                or re.search(r"IC\s*50|EC\s*50|Ki|Kd|value", m.group(0), re.I)):
+                or m.group("preop")
+                or re.search(_METRIC, m.group(0), re.I)):
             continue
+        # Each bound carries its OWN unit, for the reason `_prose_bounds`
+        # documents: a single clause may state its two bounds on different
+        # scales. US9656988 writes `100 nM < C ≦ 1 μM`, and taking one unit for
+        # the pair reported C as `100..1 uM` — an interval whose lower bound is
+        # above its upper, 1,000x out, and still shaped like a valid answer.
         lo = hi = None
-        unit = _canon_unit(m.group("lou") or m.group("hiu") or m.group("hi2u"))
+        lo_u = hi_u = None
+        # A bound stated BEFORE the symbol. `10 nM < B` reads "10 nM is less
+        # than B", so the number is B's LOWER bound — the operator points at
+        # the symbol, and the sense is therefore the reverse of the same
+        # operator written after it.
+        if m.group("pre") is not None:
+            v, u = float(m.group("pre")), _canon_unit(m.group("preu"))
+            if m.group("preop") in ("<", "<=", "≤", "≦", "⩽"):
+                lo, lo_u = v, u
+            else:
+                hi, hi_u = v, u
         lo_op, lo_val = m.group("loop"), m.group("lo")
         if lo_val is not None:
-            v = float(lo_val)
+            v, u = float(lo_val), _canon_unit(m.group("lou"))
             if lo_op in (">", ">=", "≥", "≧", "⩾", None):
-                lo = v
+                lo, lo_u = v, u
             else:
-                hi = v
+                hi, hi_u = v, u
         if m.group("hi") is not None:
-            v = float(m.group("hi"))
+            v, u = float(m.group("hi")), _canon_unit(m.group("hiu"))
             # "1 uM > IC50" means 1 uM is the UPPER bound.
             if m.group("hiop") in (">", ">=", "≥", "≧", "⩾"):
-                hi = v
+                hi, hi_u = v, u
             else:
-                lo = v
+                lo, lo_u = v, u
         if m.group("hi2") is not None and hi is None:
-            hi = float(m.group("hi2"))
+            hi, hi_u = float(m.group("hi2")), _canon_unit(m.group("hi2u"))
+        lo, hi, unit = _reconcile(lo, lo_u, hi, hi_u)
         if lo is not None or hi is not None:
-            out[sym] = BinRange(sym, lo, hi, unit)
+            _adopt(here, conflicts, BinRange(sym, lo, hi, unit))
+    _merge(out, here)
 
     # Form 3 — a symbol defined by a prose CLAUSE rather than an operator:
     #   "A = IC50 of less than 10 nM; B = IC50 less than 100 nM but greater
@@ -225,11 +468,21 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
     # separator and finds neither, so US11752149's whole key parsed as {} and
     # all 47 of its graded records came back with no value. Runs last, so a
     # clause Form 1 can already read keeps Form 1's reading.
+    seen_wordy: dict[str, BinRange] = {}
     for m in _KEY_WORDY.finditer(text):
-        sym = m.group(1)
+        sym = m.group("sym")
+        # Same `value symbol` guard as Form 1 — this pass reads the identical
+        # span through a different pattern and would re-adopt what that one
+        # refused.
+        if not (m.group("sep") or "").strip() \
+                and _VALUE_BEFORE.search(text[:m.start("sym")]):
+            continue
         lo, hi, unit = _prose_bounds(m.group("body"))
         if lo is None and hi is None:
             continue
+        # Same contest test as the other passes, applied to this pass's own
+        # readings so a REFINEMENT of an earlier pass is not mistaken for one.
+        _adopt(seen_wordy, conflicts, BinRange(sym, lo, hi, unit))
         prev = out.get(sym)
         if prev is None:
             out[sym] = BinRange(sym, lo, hi, unit)
@@ -250,14 +503,230 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
         if tighter:
             out[sym] = BinRange(sym, lo, hi, unit or prev.unit)
 
+    # A symbol the text defines two incompatible ways yields nothing. Dropped
+    # BEFORE the unit backfill below, so a contested reading cannot be the one
+    # unit that the backfill then spreads over the rest of the key.
+    for sym in conflicts:
+        out.pop(sym, None)
+
     # A key defined without units on every line usually states it once; adopt
     # the single unit seen, rather than leaving most entries unitless.
-    units = {b.unit for b in out.values() if b.unit}
-    if len(units) == 1:
-        only = units.pop()
-        for b in out.values():
-            if not b.unit:
-                b.unit = only
+    #
+    # Scoped to ONE SYMBOL FAMILY, because a document that grades with two
+    # alphabets is grading two different things. US10030020 uses `*` for IC50
+    # in nM and `#` for percent inhibition, in one legend; pooling their units
+    # left `%` looking like the odd one out and stamped `nM` across both.
+    # A family is the smallest group the document itself keeps together.
+    for family in {_alphabet(s) for s in out}:
+        bins = [b for s, b in out.items() if _alphabet(s) == family]
+        units = {b.unit for b in bins if b.unit}
+        if len(units) == 1:
+            only = units.pop()
+            for b in bins:
+                if not b.unit:
+                    b.unit = only
+    return out
+
+
+# A legend heading is a label, not a sentence. Anything longer is prose that
+# happens to sit between two definition rows.
+_HEADING_MAX = 120
+
+# A heading's parenthetical qualifier describes the ASSAY FORMAT, not the
+# target: `DNA-PK (enzymatic)` and `pDNA-PK (cellular)` differ by the letter p,
+# not by the words in brackets. Matching on the bracketed text would pair
+# `pDNA-PK (cellular)` with a column reading `cellular IC50` for a different
+# target entirely, so it is dropped before matching.
+_QUALIFIER = re.compile(r"\([^)]*\)|\[[^\]]*\]")
+
+
+def _norm_match(text: str) -> str:
+    """Letters and digits only, lowercased — the form headings are matched in.
+
+    Punctuation is noise here and dropping it is what makes the match survive
+    the patent's own typo: US10172859 heads the legend section `Kv11.1 hERG`
+    and the data column `Ki [Kv1.11 hERG]`, transposing the digits around the
+    decimal point. Both normalise to `kv111herg`.
+    """
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+# A line that OPENS with a grade symbol and a separator is a definition row,
+# whether or not the parser managed to read it.
+_LOOKS_DEFINED = re.compile(rf"^\W*{_SYMBOL}{_DEFINES}", re.I)
+
+
+def _clean_heading(line: str) -> str:
+    """A section heading, or "" when the line is not one.
+
+    A definition row the parser could not read must NOT become a heading. It
+    would open a section that does not exist and push the rows below it out of
+    the section they belong to — so one unreadable grade mislabels a whole
+    scale rather than costing its own row. Failing closed here means a parser
+    gap stays a gap.
+    """
+    h = line.strip().rstrip(":").strip()
+    if not h or not re.search(r"[A-Za-z]", h) or _LOOKS_DEFINED.match(line.strip()):
+        return ""
+    return h
+
+
+def parse_sectioned_key(rows) -> dict[str, dict[str, BinRange]]:
+    """Split a legend into its per-column scales: {heading: {symbol: range}}.
+
+    `rows` is the legend's lines in document order, each already joined across
+    its cells. A line that defines bins extends the current section; a short
+    line that does not opens a new one.
+
+    A legend with several sections is not a stylistic variation — it is a
+    different scale per column, using THE SAME LETTERS. US10172859 defines
+    `A`-`D` three times over: `B` is 3-7 nM for enzymatic DNA-PK, 0.5-5 uM for
+    the cellular assay, and 15-25 uM for hERG. Flattening the three and calling
+    `parse_bin_key` returns the first, because that function takes the first
+    definition of each symbol by design — so every hERG bin would come out on a
+    nM scale, a 1,000x error applied uniformly and invisibly to 431 records.
+
+    Sections are therefore kept apart and matched to a column by name, and a
+    column that matches none keeps no range at all.
+    """
+    sections: dict[str, dict[str, BinRange]] = {}
+    current = ""
+    for line in rows:
+        line = (line or "").strip()
+        if not line:
+            continue
+        bins = parse_bin_key(line) if looks_like_key(line) else {}
+        if bins:
+            slot = sections.setdefault(current, {})
+            for sym, br in bins.items():
+                # First definition of a symbol within a section wins, which is
+                # `parse_bin_key`'s own rule applied one level up.
+                slot.setdefault(sym, br)
+        elif len(line) <= _HEADING_MAX:
+            heading = _clean_heading(line)
+            if heading:
+                current = heading
+    return {k: v for k, v in sections.items() if v}
+
+
+def section_for_column(column: str, sections) -> str | None:
+    """Which legend section governs `column`, or None when it is not decidable.
+
+    Matching is by containment of the normalised heading in the normalised
+    column, and the LONGEST match wins. Length is what settles the case this
+    exists for: `DNA-PK` is a substring of `pDNA-PK`, so the column
+    `IC50 pDNA-PK` matches both headings, and the shorter one is the wrong one
+    by exactly the margin that makes it look right.
+
+    A tie returns None. Two headings that fit a column equally well means the
+    document does not say which scale applies, and guessing is the failure this
+    module is written to prevent.
+    """
+    col = _norm_match(column or "")
+    if not col:
+        return None
+    best: str | None = None
+    best_len = 0
+    tied = False
+    for heading in sections:
+        core = _norm_match(_QUALIFIER.sub(" ", heading))
+        if not core or core not in col:
+            continue
+        if len(core) > best_len:
+            best, best_len, tied = heading, len(core), False
+        elif len(core) == best_len and heading != best:
+            tied = True
+    return None if tied else best
+
+
+# What kind of quantity a unit measures. A bin key and the column it is applied
+# to must agree on this much, or they are not describing the same measurement.
+_DIMENSION = {
+    "pM": "conc", "nM": "conc", "uM": "conc", "mM": "conc",
+    "%": "percent", "mg/kg": "dose", "fold": "ratio",
+}
+
+
+# The markers that name a dimension in a column heading outright.
+_HEADER_MARK = {"%": "percent", "mg/kg": "dose", "fold": "ratio"}
+
+
+def compatible(column_unit: str | None, key_unit: str | None,
+               column_header: str = "") -> bool:
+    """May a bin stated in `key_unit` be attached to a column in `column_unit`?
+
+    Unknown on either side is permitted — most columns state no unit and most
+    keys are read from text that does. Only a stated DISAGREEMENT refuses.
+
+    This is the last guard before a range reaches a record, and it catches what
+    the parser cannot: a key that is read perfectly and then applied to the
+    wrong column. US12351648 defines `*`-`****` twice, once for Ki in μM and
+    once for a MASP-2-versus-thrombin selectivity ratio in fold, and the
+    selectivity scale reached three columns headed `Ki (μM)` — 774 records
+    carrying a fold-change where the patent prints a concentration. The column
+    header said `μM` the whole time.
+
+    `column_header` can only ever OVERRULE A REFUSAL, never cause one. A
+    heading names a condition as often as a unit, and the column unit reader
+    cannot always tell which: `MAGL % Inh 1 μM (mouse)` reports a percentage AT
+    a concentration of 1 μM, and reads as a μM column, so a percent key was
+    refused for 807 records that state their dimension in the heading itself.
+    When the heading spells out the key's own dimension, that is the patent
+    agreeing, and it settles the question.
+    """
+    a, b = _DIMENSION.get(column_unit or ""), _DIMENSION.get(key_unit or "")
+    if not (a and b) or a == b:
+        return True
+    return any(mark in (column_header or "").lower() and dim == b
+               for mark, dim in _HEADER_MARK.items())
+
+
+def parse_bin_key_lines(lines) -> dict[str, BinRange]:
+    """Resolve a key from table rows, each row read ON ITS OWN.
+
+    Rows are a list, not a paragraph, and joining them lets a definition take
+    its number from the row below. US9221791 prints its legend as a two-column
+    table — `40-59 | C`, `<40 | D` — and concatenated that reads as `40-59 C
+    <40 D`, so `C` is followed by `<40` and comes out as "under 40", which is
+    verbatim the D bin. The value belongs to the row it is printed on.
+
+    Rows still contest each other: a symbol two rows define differently is two
+    scales in one block, and `_adopt` drops it.
+    """
+    out: dict[str, BinRange] = {}
+    conflicts: set[str] = set()
+    for line in lines:
+        for sym, br in parse_bin_key(line).items():
+            _adopt(out, conflicts, br)
+    for sym in conflicts:
+        out.pop(sym, None)
+    return out
+
+
+def parse_bin_key_layered(parts) -> dict[str, BinRange]:
+    """Resolve a key from ordered sources, nearest first.
+
+    `parts` are a block's legend sources in priority order — its caption, its
+    own legend fragments, its rows, the key printed above it. Each is parsed
+    ALONE and the first reading of a symbol wins, which is the precedence the
+    concatenated form had by accident and this states on purpose.
+
+    Parsing them apart is what makes the contest test in `_adopt` usable. Two
+    definitions in ONE source are two legends with equal claim, and neither can
+    be trusted. Two definitions in DIFFERENT sources are a near one and a far
+    one, and the near one is simply right: US11566007 prints a four-grade key
+    directly above TABLE-US-00006 and the FIVE-grade key of the table that
+    follows in rows at its foot, so `++++` is `≥1 uM` in one and `1-10 uM` in
+    the other. Flattened, that reads as a contradiction and costs 192 records;
+    layered, the key above the table wins and the trailing rows are what they
+    are — the next table's.
+    """
+    out: dict[str, BinRange] = {}
+    for part in parts:
+        if not part:
+            continue
+        for sym, br in parse_bin_key(part).items():
+            out.setdefault(sym, br)
     return out
 
 
@@ -279,9 +748,20 @@ def nearest_key_before(text: str) -> str:
     """
     if not text:
         return ""
-    hits = [(m.start(), (m.group(1) or "").strip())
-            for m in re.finditer(r"(?:[*\s]|^)(?:Key\s*:\s*)?(" + _SYMBOL + r")"
-                                 + _DEFINES, text, re.I)]
+    # A symbol that merely FOLLOWS a value does not begin a key, and rejecting
+    # it here matters more than rejecting it later. The span this returns is
+    # cut at the first hit, so a false start does not just add noise — it
+    # amputates the value that would have exposed it. US9221791's rating table
+    # flattens to `... 40-59 C <40 D ...`; `C` looked like a key start, the
+    # span began at `C`, and `40-59` was left outside it, so the guard in
+    # `parse_bin_key` saw a symbol at the head of a string with nothing before.
+    hits = []
+    for m in re.finditer(r"(?:[*\s]|^)(?:Key\s*:\s*)?(" + _SYMBOL + r")"
+                         + rf"(?P<sep>{_DEFINES})", text, re.I):
+        if not (m.group("sep") or "").strip() \
+                and _VALUE_BEFORE.search(text[:m.start(1)]):
+            continue
+        hits.append((m.start(), (m.group(1) or "").strip()))
     if not hits:
         return ""
     # A key is a RUN of grade definitions, not one. Taking the last match alone
@@ -327,9 +807,22 @@ def nearest_key_before(text: str) -> str:
 # flags are the same on both, and only the boolean is used — which alternative
 # matched, and where, was never read. Built where `_SYMBOL`/`_DEFINES`/`_NUM`
 # are already defined, so a capability patch to any of those still lands.
+#
+# The follow-set must list the PROSE comparisons too, not only the operator
+# glyphs. `+ (greater than 10 microMolar)` and `*** is less than 100 nM` reach
+# the parser's own patterns cleanly and were rejected one step earlier, because
+# what follows the separator is the word "greater", which was not in the set.
+# A filter in front of a parser has to accept everything the parser accepts;
+# every record lost to this file was lost at a filter, not at a parser.
+_CMP = r"(?:greater|less|more|at\s+least|at\s+most|between|about|under|over)"
 _KEY_HINT = re.compile(
-    r"(?:is\s+marked|\bkey\s*:|\*\s*key)"
-    rf"|(?:{_SYMBOL}{_DEFINES}(?:IC\s*50|EC\s*50|{_NUM}|[<>≤≥≦≧⩽⩾]))", re.I)
+    rf"(?:{_MARKED}\s*{_QUOTE}?{_SYMBOL}|\bkey\s*:|\*\s*key)"
+    # `(?:[a-z]+\s+){0,4}` — a few filler words may sit between the separator
+    # and the evidence. US20240166635 writes `"A" represents a calculated IC50
+    # value of less than 10 nM`: two words, "a calculated", and the hint said no
+    # while the parser read it perfectly.
+    rf"|(?:{_SYM_QN}{_DEFINES}(?:[a-z]+\s+){{0,4}}(?:{_METRIC}|{_CMP}|{_NUM}|[<>≤≥≦≧⩽⩾]))"
+    rf"|(?:{_NUM}\s*{_UNIT}?\s*=\s*{_QUOTE}?{_SYMBOL})", re.I)
 
 
 def looks_like_key(text: str) -> bool:

@@ -1826,10 +1826,78 @@ def _best_per_block(raw: list[Table]) -> list[Table]:
     return out
 
 
+# How many populated cells a row may have and still be read as legend text.
+_LEGEND_MAX_CELLS = 3
+
+
+def _legend_lines(tables) -> list[str]:
+    """A block's rows in document order, each joined across its cells.
+
+    A legend is laid out as a table as often as it is written as a sentence,
+    and when it is, the symbol and its range are usually different CELLS of the
+    same row. Testing cells one at a time cannot see such a key: neither `A:`
+    nor `IC50 < 3 nM` is a key, and their concatenation is.
+
+    Order is preserved because `parse_sectioned_key` reads it — a heading
+    governs the rows BELOW it, so shuffling the rows re-assigns the scales.
+
+    Only NARROW rows are joined, and that limit is what keeps the join safe.
+    Joining a data row fabricates keys: US20250163063 grades four kinase
+    columns and prints a literal `>10 uM` beside each grade, so the joined row
+    reads `... A >10 uM ...` — which is exactly the shape of `A ≦ 10 nM`, a
+    symbol followed by a comparison. Every data row in the block then defined
+    every grade, all four came out as `>10 uM`, and 2,977 records took the
+    first one. A legend row carries a symbol and its meaning and nothing else;
+    a data row carries a compound and its results. Three populated cells is the
+    line between them, and every legend shape in this corpus sits under it —
+    `['', 'A:', 'IC50 < 3 nM']` is two, and a full-span footnote row is one.
+    """
+    out: list[str] = []
+    for t in tables:
+        for row in t.body_rows:
+            cells = [c.text.strip() for c in row if c.text and c.text.strip()]
+            if cells and len(cells) <= _LEGEND_MAX_CELLS:
+                out.append(" ".join(cells))
+    return out
+
+
+def _document_legend(by_block, records) -> dict[str, dict]:
+    """Per-column bin scales stated ONCE for the whole document.
+
+    A block-local key is always preferred and is resolved first; this only
+    fills what that left empty. The distinction matters because a document may
+    redefine a symbol per table, and the nearest definition is the right one —
+    so this reads only blocks that publish a scale and no data of their own.
+
+    US10172859 prints `An overview of the working examples is given by Tables
+    1-7. The following ranges apply to the biological data reproduced therein:`
+    and then one legend block, 31,600 characters before the first data row. The
+    key was never in scope: keys resolve per block, and the look-back is 6,000
+    characters. The legend was parsed, produced nothing, and cost 1,293
+    records that the patent defines in full on its own first page.
+    """
+    from . import bin_legend
+
+    graded_blocks = {r.table_id for r in records if r.letter_grade}
+    sections: dict[str, dict] = {}
+    for block_id, raw_block in by_block.items():
+        # A block that carries data of its own is not a document-scope legend;
+        # whatever key it states belongs to its own rows and was already used.
+        if block_id in graded_blocks:
+            continue
+        found = bin_legend.parse_sectioned_key(_legend_lines(raw_block))
+        for heading, key in found.items():
+            # LAST definition wins, matching `nearest_key_before`: a scale
+            # restated later in the document supersedes the earlier one.
+            sections[heading] = key
+    return sections
+
+
 def extract_from_patent(xml: str) -> list[AssayRecord]:
     """Full extraction for one patent.
 
     Three passes, because patents publish assay data in three shapes:
+    (see `_legend_lines` for how a legend's rows are read)
       1. row per compound, value in a cell        (the common case)
       2. row per potency bin, compound ids listed (inverted; US11566007)
       3. bin symbols in a normal table, defined by a legend (US11292791)
@@ -1885,15 +1953,41 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
         # like a free +2,261 records and would have silently rewritten an
         # upper-bounded bin as an unbounded one. Each block's own key is the only
         # safe answer, and each block has one.
-        text = " ".join(
-            [raw_block[0].caption] + [table_legend(t) for t in raw_block]
-            + [c.text for t in raw_block for r in t.body_rows for c in r
-               if bin_legend.looks_like_key(c.text)]
-            + [bin_legend.nearest_key_before(raw_block[0].preceding or "")]
-        )
+        #
+        # Rows are joined ACROSS THEIR CELLS before the key test, and that join
+        # is the whole reason US10172859 read no scale at all. Its legend is a
+        # three-column table: the symbol is in one cell and its range in the
+        # next, so `A:` and `IC50 < 3 nM` were tested separately and neither
+        # half is a key. Testing the joined row — `A: IC50 < 3 nM` — reads it.
+        # The cells themselves are still offered, because a legend written as
+        # one cell per grade is equally common.
+        #
+        # ORDER IS PRECEDENCE, nearest first, and the block's OWN ROWS are
+        # nearest of all. Two blocks settle the order between them, and the
+        # evidence is the data rather than the layout: US11566007
+        # TABLE-US-00006 holds 221 records graded `+++++`, which the FIVE-grade
+        # key in its own footer explains and the four-grade key printed above
+        # it cannot — that key belongs to the table before. US20230365584A1
+        # TABLE-US-00014 is the same shape: its own footer says `C ≥ 1000 nM`
+        # while the key above it, for the previous table, says `C ≥ 10 nM`.
+        # The caption comes last because it is not a caption so much as a blob
+        # of the text around the table, and routinely spans its neighbours.
+        key_lines = [ln for ln in _legend_lines(raw_block)
+                     if bin_legend.looks_like_key(ln)]
+        prose = [
+            " ".join(table_legend(t) for t in raw_block),
+            bin_legend.nearest_key_before(raw_block[0].preceding or ""),
+            raw_block[0].caption,
+        ]
+        text = " ".join([*key_lines, *(p for p in prose if p)])
         if not bin_legend.looks_like_key(text):
             continue
-        key = bin_legend.parse_bin_key(text)
+        # The block's own rows first, each read alone; then the prose sources
+        # in order of distance. Rows are a list and prose is a paragraph, and
+        # they have to be read that way round — see `parse_bin_key_lines`.
+        key = bin_legend.parse_bin_key_lines(key_lines)
+        for sym, br in bin_legend.parse_bin_key_layered(prose).items():
+            key.setdefault(sym, br)
         if not key:
             continue
         name, unit = caption_assay_hint(raw_block[0].caption)
@@ -1908,6 +2002,11 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
             if r.table_id == block_id and r.letter_grade and r.range_lo is None \
                     and r.range_hi is None and r.letter_grade in key:
                 br = key[r.letter_grade]
+                # The column and the key must measure the same KIND of thing.
+                # A block may state two scales, and the one that parsed is not
+                # necessarily the one that governs this column.
+                if not bin_legend.compatible(r.unit, br.unit, r.column_header):
+                    continue
                 r.range_lo, r.range_hi = br.lo, br.hi
                 # The bounds come from the key, so the unit must come from the
                 # key too. Letting a column-derived unit stand over a key-
@@ -1918,6 +2017,40 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
                     r.unit, r.unit_source = br.unit, "bin_key"
                 elif not r.unit:
                     r.unit = br.unit
+
+    # PASS 3b: a legend block that governs the whole document.
+    #
+    # Runs LAST of the bin passes and only fills a range that is still empty,
+    # so a block that stated its own key keeps it. Nearest definition wins;
+    # this is the fallback for a document that states the scale once.
+    #
+    # A record is matched to a section BY THE NAME of the column it came from,
+    # and a column matching no section keeps no range. That refusal is the
+    # point. US10172859 defines `A`-`D` three times, once per assay, and `B` is
+    # 3-7 nM, 0.5-5 uM or 15-25 uM depending on which column it sits in — so
+    # the single-key path that works everywhere else would be wrong here by
+    # three orders of magnitude, uniformly, with nothing in the output to show
+    # for it. A single-section legend is applied without a name match, because
+    # one scale is not ambiguous; two or more must be told apart or dropped.
+    doc_sections = _document_legend(by_block, records)
+    if doc_sections:
+        only = next(iter(doc_sections.values())) if len(doc_sections) == 1 else None
+        for r in records:
+            if not r.letter_grade or r.range_lo is not None or r.range_hi is not None:
+                continue
+            key = only
+            if key is None:
+                heading = bin_legend.section_for_column(
+                    r.column_header or r.assay_name or "", doc_sections)
+                if heading is None:
+                    continue
+                key = doc_sections[heading]
+            br = key.get(r.letter_grade)
+            if br is None or not bin_legend.compatible(r.unit, br.unit, r.column_header):
+                continue
+            r.range_lo, r.range_hi = br.lo, br.hi
+            if br.unit:
+                r.unit, r.unit_source = br.unit, "bin_key"
 
     # PASS 4: vertical-record blocks — one compound per RUN of rows.
     #

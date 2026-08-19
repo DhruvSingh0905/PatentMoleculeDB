@@ -35,7 +35,15 @@ PID = "US8952177"
 # retry tests is unambiguous. US8952177 cannot be used for those: it extracts
 # completely (359/359 usable) and raises no gap at all, so `propose` is never
 # reached and every assertion about retries passes vacuously.
-GAP_PID = "US10870641"
+#
+# Was US10870641 until `bin_legend` learned to read `"+" is <0.1 μM` — a quoted
+# symbol, the verb `is`, and a bare comparison, none of which the key grammar
+# accepted. That patent now extracts 855 of 855 with a range and raises no gap
+# at all, so both escalation tests below passed vacuously against it. A fixture
+# that stops being a gap is the good outcome; it just cannot go on standing in
+# for one. US10953012 raises exactly one, and a column_map over it mints 11
+# records, so the retry and escalation paths are both really exercised.
+GAP_PID = "US10953012"
 # A block whose column 3 is headed `MS` and whose cells PARSE, so mapping it as
 # an assay really does mint 83 records. US9493446's ms columns are the wrong
 # fixture: its cells read `MS (ESI) m/z 489.2 [M+H]+`, which `parse_value`
