@@ -366,8 +366,21 @@ A subagent's claim is not evidence. Verify it against the artifact first.
   To revert a rule, delete its entry by fingerprint.
 - `data/BindingDB_All.tsv` — BDB reference. Never a source of corrections.
 
-Clear `output_v3/cache/` when you change a prompt. A stale response hides the
-change. Never clear `output_v2/`.
+**Do not keep an LLM response cache. Delete `output_v3/cache/` freely.** The
+repair loop fixes one small error per gap, and re-running it is quick and
+deterministic, so a cached answer buys very little and costs the one thing that
+matters: a stale response hides the change you just made. That is not
+hypothetical — a gap detector and a prompt fix were both measured as "the loop
+cannot do this" across three runs, at $0.00 each, because the cache was
+replaying an answer to the previous question. The correct answer appeared on
+the first attempt once the cache was cold.
+
+**The only results worth caching are the ones that are expensive to produce
+again:** the drawings. `output_v3/recognise/`, `images/`, `gp_images/`,
+`decimer/` and `image_results.tsv` hold GPU output and fetched assets — keep
+those. `output_v3/cache/` holds nothing but model responses; the three modules
+that read it are `repair/synthesize.py`, `repair/name_synthesize.py` and
+`repair/name_capability.py`. Never clear `output_v2/`.
 
 ## Documents
 
