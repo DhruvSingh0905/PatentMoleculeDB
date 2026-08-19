@@ -86,7 +86,14 @@ _UNIT_CANON = {
 # `the following designations are used: <1.00 nM=A` defines `A`, and also
 # matched `d` — the tail of "used", followed by a colon, followed by a range.
 # A grade that exists only inside another word is always a false positive.
-_SYMBOL = r"(?:\++|\*+|#+|(?-i:[A-E]))"
+# U+2212 MINUS is a grade too. A two-level scale writes `+` and `−`, and
+# leaving `−` out cost twice over: its own rows were dropped, and — worse —
+# `_NEXT_DEF` could not see where the next grade's clause began, so the
+# prose body for `+` ran straight through `− indicates ≥10 μm`, read BOTH
+# bounds, and overwrote `≤10 μM` with the point interval `10..10`.
+# US10953012 shipped 270 records saying a compound is exactly 10 μM.
+# Only U+2212, never the ASCII hyphen: that is a range separator here.
+_SYMBOL = r"(?:\++|\*+|#+|\u2212|(?-i:[A-E]))"
 
 # Patents quote the symbol as often as not: `"A" represents ...`, `is marked
 # "+++"`. Straight and curly, single and double.
@@ -133,7 +140,7 @@ _METRIC = r"(?:IC\s*50|EC\s*50|Ki|Kd|value)"
 _DEFINES = (
     r"(?:"
     r"\s*[:=]\s*"
-    r"|\s+(?:refers?\s+to|means|indicates?|represents?|denotes?|is|are)\s+"
+    r"|\s+(?:refers?\s+to|means|indicates?|represents?|denotes?|is|are|provided?|gave|gives?|showed?|shows|had|has|exhibited?|exhibits)\s+"
     r"|\s*\(\s*"
     r"|\s*(?=[<>≤≥≦≧⩽⩾])"
     r")"
@@ -192,7 +199,7 @@ _KEY_COMPACT = re.compile(
 # than 0.05 μM are labelled as "+++"" — the same sentence, the same meaning,
 # and it read as prose because the verb did not match. See `_MARKED`.
 _KEY_PROSE = re.compile(
-    rf"(?P<body>(?:greater|less|more)[^;]{{0,200}}?{_NUM}\s*{_UNIT}[^;]{{0,200}}?)"
+    rf"(?P<body>(?:greater|less|more|from)[^;]{{0,200}}?{_NUM}\s*{_UNIT}[^;]{{0,200}}?)"
     rf"{_MARKED}\s*{_SYM_Q}",
     re.I)
 
@@ -206,7 +213,7 @@ _KEY_PROSE = re.compile(
 _NEXT_DEF = rf"(?:(?!{_SYM_QN}{_DEFINES})[^;])"
 _KEY_WORDY = re.compile(
     rf"{_SYM_Q}(?P<sep>{_DEFINES})(?P<body>{_NEXT_DEF}{{0,60}}?"
-    rf"(?:greater\s+than|less\s+than|at\s+least|at\s+most|[<>≤≥≦≧⩽⩾])"
+    rf"(?:greater\s+than|less\s+than|at\s+least|at\s+most|[<>≤≥≦≧⩽⩾]|or\s+(?:greater|less|more|higher|lower|below|above))"
     rf"{_NEXT_DEF}{{0,240}})",
     re.I)
 
@@ -232,10 +239,35 @@ _RANGE_EXPR = re.compile(
 # The trailing `[<>...]?` in the middle matters: `10 nM < B ≦ 100 nM` also puts
 # a value before the symbol, but with an operator pointing AT the symbol, which
 # is a real lower bound. This pattern only fires when nothing points anywhere.
+# Form 5 — the whole INTERVAL is stated first and the symbol assigned after it:
+#     `1000 nM < IC50 <= 10000 nM: +++`
+# Form 4 reads `<value> = <symbol>` and stops at the first number, so a bound on
+# each side leaves it nothing to bind. US11229631 states its whole scale this
+# way in a footer under the table — 308 records.
+_KEY_SPAN_FIRST = re.compile(
+    rf"({_NUM})\s*({_UNIT})?\s*[<>≤≥≦≧⩽⩾]\s*[^;:]{{0,40}}?"
+    rf"[<>≤≥≦≧⩽⩾]\s*({_NUM})\s*({_UNIT})?\s*[:=]\s*{_SYM_Q}", re.I)
+
+# Form 6 — the symbol, then an interval whose middle names an ARBITRARY metric:
+#     `A 0 < PI3K Delta Activity < 50 nM`
+# `_METRIC` lists the four metric names a bin definition normally uses, and this
+# patent puts the assay's own name there instead. Bounded to 40 characters so it
+# cannot span into the next grade's clause.
+_KEY_SPAN_AFTER = re.compile(
+    rf"{_SYM_Q}\s+({_NUM})\s*({_UNIT})?\s*[<>≤≥≦≧⩽⩾]\s*[A-Za-z][^;:<>]{{0,40}}?"
+    rf"[<>≤≥≦≧⩽⩾]\s*({_NUM})\s*({_UNIT})?", re.I)
+
 _VALUE_BEFORE = re.compile(
     rf"(?:^|[\s;,])[<>≤≥≦≧⩽⩾]?\s*{_NUM}(?:\s*(?:to|[-–—−])\s*{_NUM})?"
     rf"\s*(?:{_UNIT})?\s*$")
 
+# A bound whose direction is stated after it: `1 μM or greater`, `10 nM or
+# less`. US20240166635 defines its top grade that way and nothing else in
+# this file reads right-to-left.
+_GT_AFTER = re.compile(rf"({_NUM})\s*({_UNIT})?\s+or\s+(?:greater|more|higher|above)", re.I)
+_LT_AFTER = re.compile(rf"({_NUM})\s*({_UNIT})?\s+or\s+(?:less|lower|below|fewer)", re.I)
+# `from 1 to 0.05 μM` — a range written high-to-low. Read in order it inverts.
+_SPAN = re.compile(rf"from\s+({_NUM})\s*({_UNIT})?\s+to\s+({_NUM})\s*({_UNIT})?", re.I)
 _GT = re.compile(rf"(?:greater than or equal to|at least|≥|≧|⩾|>=)\s*({_NUM})\s*({_UNIT})?", re.I)
 _GT_STRICT = re.compile(rf"(?:greater than|>)\s*({_NUM})\s*({_UNIT})?", re.I)
 _LT = re.compile(rf"(?:less than or equal to|at most|≤|≦|⩽|<=)\s*({_NUM})\s*({_UNIT})?", re.I)
@@ -303,6 +335,25 @@ def _prose_bounds(body: str) -> tuple[float | None, float | None, str | None]:
     """
     lo = hi = None
     lo_u = hi_u = None
+    # `from 1 to 0.05 μM` — a span written high-to-low. Read left to right it
+    # inverts, so the ends are sorted rather than assigned by position.
+    m = _SPAN.search(body)
+    if m:
+        a, b = float(m.group(1)), float(m.group(3))
+        u = _canon_unit(m.group(4) or m.group(2))
+        lo, hi = min(a, b), max(a, b)
+        lo_u = hi_u = u
+        return _reconcile(lo, lo_u, hi, hi_u)
+    # A bound whose direction is stated after the value.
+    for pat, is_lo in ((_GT_AFTER, True), (_LT_AFTER, False)):
+        m = pat.search(body)
+        if not m:
+            continue
+        v, u = float(m.group(1)), _canon_unit(m.group(2))
+        if is_lo:
+            lo, lo_u = v, u
+        else:
+            hi, hi_u = v, u
     for pat, is_lo in ((_GT, True), (_GT_STRICT, True), (_LT, False), (_LT_STRICT, False)):
         m = pat.search(body)
         if not m:
@@ -384,6 +435,21 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
                 continue
         _adopt(here, conflicts, BinRange(sym, lo, hi, unit))
     _merge(out, here)
+
+    # Forms 5 and 6 — an interval with a bound on EACH side of a metric name.
+    # Run before the left-to-right forms for the same reason Form 4 is: both
+    # ends are pinned, so there is nothing for a partial reading to claim.
+    for pat, sym_first in ((_KEY_SPAN_FIRST, False), (_KEY_SPAN_AFTER, True)):
+        here = {}
+        for m in pat.finditer(text):
+            a, au, b, bu = (m.group(i) for i in (2, 3, 4, 5)) if sym_first \
+                else (m.group(1), m.group(2), m.group(3), m.group(4))
+            lo, hi = float(a), float(b)
+            unit = _canon_unit(bu or au)
+            if lo > hi:
+                lo, hi = hi, lo
+            _adopt(here, conflicts, BinRange(m.group("sym"), lo, hi, unit))
+        _merge(out, here)
 
     # Prose form — unambiguous when present.
     here = {}

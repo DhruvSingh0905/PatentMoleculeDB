@@ -562,3 +562,61 @@ def test_a_synthesis_method_column_is_not_an_assay():
     labels = {r.assay_name for r in ex(_xml("US9611261"))}
     assert not any("meth" in (a or "").lower() for a in labels), \
         f"a method column is still an assay: {labels}"
+
+
+# ── J. legend forms found by the corpus-wide audit ───────────────────────
+
+@pytest.mark.parametrize("text,expected", [
+    # The whole INTERVAL first, the symbol assigned after it. US11229631 states
+    # its scale this way in a footer; Form 4 reads `<value> = <symbol>` and
+    # stops at the first number, so a bound on each side left it nothing.
+    ("1000 nM < IC50 ≤ 10000 nM: +++",
+     {"+++": (1000.0, 10000.0, "nM")}),
+    # The symbol, then an interval whose middle names an ARBITRARY metric —
+    # here the assay's own name rather than one of IC50/EC50/Ki/Kd.
+    ("A 0 < PI3K Delta Activity < 50 nM", {"A": (0.0, 50.0, "nM")}),
+    # A bound whose direction is stated AFTER the value.
+    ("“D” represents a calculated IC50 value of 1 μM or greater",
+     {"D": (1.0, None, "uM")}),
+    # A span written high-to-low. Read in order it inverts.
+    ('from 1 to 0.05 μM are labelled as "++"', {"++": (0.05, 1.0, "uM")}),
+    # A verb this file did not know. US9987276 defines two scales this way.
+    ('"A" provided an IC50 ≤10 nM', {"A": (None, 10.0, "nM")}),
+])
+def test_the_forms_the_audit_found(text, expected):
+    assert _bins(text) == expected
+
+
+def test_a_minus_grade_does_not_swallow_the_grade_before_it():
+    """U+2212 MINUS is a grade: a two-level scale writes `+` and `−`. Leaving
+    it out cost twice — its own rows were dropped, and the prose body for `+`
+    ran straight through `− indicates ≥10 μm`, read BOTH bounds, and overwrote
+    `≤10 μM` with the point interval `10..10`. US10953012 shipped 270 records
+    saying a compound is exactly 10 μM."""
+    got = _bins("IC50 Kinase Domain + indicates ≤10 μm − indicates ≥10 μm")
+    assert got["+"] == (None, 10.0, "uM")
+    assert got["−"] == (10.0, None, "uM")
+
+
+@pytest.mark.parametrize("text,expected", [
+    # The ASCII hyphen and U+2212 are still range separators between numbers.
+    ("A: 10−50 nM", {"A": (10.0, 50.0, "nM")}),
+    ("A: IC 50 >200 nM−<800 nM", {"A": (200.0, 800.0, "nM")}),
+])
+def test_a_minus_between_two_numbers_is_still_a_range(text, expected):
+    assert _bins(text) == expected
+
+
+def test_no_compound_is_given_a_point_interval_by_a_bin_key():
+    """A bin is an interval. `lo == hi` is not a measurement the patent made —
+    it is two bounds read out of two different grades' clauses."""
+    from patentdb3.core import config
+    from patentdb3.sources.uspto_assays import extract_from_patent
+    for pid in ("US10953012", "US10172859", "US9656988"):
+        path = config.XML_INPUT_DIR / f"{pid}.xml"
+        if not path.exists():
+            continue
+        for r in extract_from_patent(path.read_text(errors="ignore")):
+            if r.letter_grade and r.range_lo is not None and r.range_hi is not None:
+                assert r.range_lo < r.range_hi, \
+                    f"{pid} {r.cid} {r.letter_grade}: {r.range_lo}-{r.range_hi}"
