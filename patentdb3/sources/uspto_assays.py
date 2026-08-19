@@ -128,6 +128,16 @@ _MEAN_SD = re.compile(
 
 _NRUNS_ONLY = re.compile(r"^\s*\(\s*(\d{1,3})\s*\)\s*$")
 _LETTER_BIN = re.compile(r"^\s*([A-E])\s*$")
+# Any single letter, whether or not it is a grade. A GRADE ALPHABET IS CLOSED:
+# the legend defines A-E and the column uses nothing else. A column that also
+# holds `G`, `N` and `W` is enumerating something — US9221791's `HPLC Method`
+# column runs A through W, and 80% of it lands inside A-E purely because `A` is
+# the most-used method. On a 60% threshold that is an assay column, and it
+# minted 82 records of method letters presented as potency grades.
+_ANY_LETTER = re.compile(r"^\s*([A-Za-z])\s*$")
+# How much of a grade column may sit outside the grade alphabet. Not zero: a
+# stray `N` for "not tested" should not disqualify a real scale.
+_STRAY_LETTER_MAX = 0.05
 
 # A compound id may be written bare (`12`, `I-2300`, `Z1`, `A1`, `5a`) or
 # spelled out with a label (`Example 1`, `Cpd. No. 5`, `Ex. 7`). Rejecting the
@@ -255,6 +265,31 @@ _HEADER_NRUNS = re.compile(r"^\s*\(?\s*n\s*\)?\s*$|\bn\s*=|\bruns?\b|\breps?\b",
 # STOP a block-level unit being stamped onto it — never to reject the column.
 # A composite unit (`uL/min/mg`, `mL/min/10^6 cells`) is matched by the slash:
 # whatever it is, it is not the nM the caption was talking about.
+# A `%` that is the unit of the column's VALUE, not part of a threshold.
+#
+# `_unit_from` takes the first unit token in a header, and a percent-inhibition
+# column routinely names a concentration too — the one the assay was RUN at.
+# `MAGL % Inh 1 μM (mouse)` reports a percentage AT 1 μM, and read left to
+# right the first unit is `μM`, so 1,032 records across 11 patents carried a
+# concentration unit on a percentage. `at 10 μM (%)` holding `104.0` came out
+# as `104 uM` — a dead compound rather than complete inhibition, from the same
+# digits.
+#
+# The lookbehind is what separates the two uses of `%`. Bound to a number it
+# states a threshold and the value is something else: US9987276's
+# `>50% occupancy` column holds the CONCENTRATION at which 50% is reached, and
+# is correctly nM. Standing alone — `% inh`, `(%)`, `[% Qh]` — it is the unit.
+_PCT_VALUE = re.compile(r"(?<![\d.])%")
+# `FKBP12 Ki (μM) or %` says the column holds either. Neither answer is right
+# for every row, so the header's own hedge is honoured and nothing changes.
+_PCT_ALT = re.compile(r"\bor\s*\(?\s*%", re.I)
+
+
+def _percent_header(h: str) -> bool:
+    """Does this header say its values are percentages?"""
+    return bool(h) and bool(_PCT_VALUE.search(h)) and not _PCT_ALT.search(h)
+
+
 _DIMENSIONLESS = re.compile(
     r"\bratio\b|\bselectivit|\bfold\b|\bindex\b|\bsel\.|\bshift\b|"
     r"\bclint\b|\bcl\b|\bt1/2\b|\bauc\b|\bpapp\b|"
@@ -950,6 +985,21 @@ def _unit_from(text: str) -> str | None:
 # must be the first thing in a pattern and `re.compile` is where it belongs.
 _CID_NOT_P_METRIC = re.compile(r"\bp?(?:ic|ec)\s*50|p(?:ki|kd|k_?i|k_?d)\b", re.I)
 _PCT_INH = re.compile(r"%\s*inh")
+# A percentage column is an assay when the header names what was MEASURED.
+#
+# The gate below reads `is_assay or (unit and unit != "%")`, so a column whose
+# only claim to being an assay was a unit now correctly read as `%` falls
+# through it. That cost 113 real records — `% Effect at 30 μM relative to
+# 2'3'-cGAMP` and `% amount of pSer376-SLP-76 @ 20 μM` — which are assay
+# results by any reading.
+#
+# Stated as a REQUIREMENT rather than an exclusion, because the set of things a
+# patent reports as a bare percentage and does not mean as an assay is open:
+# yield, purity, enantiomeric excess, recovery. None of them names a measured
+# activity, so none of them matches, and a new one does not have to be foreseen.
+_PCT_MEASURED = re.compile(
+    r"\b(?:inhibit\w*|inh\.?|effect|activit\w*|occupanc\w*|amount|response|"
+    r"reduction|stabilit\w*|remaining|conversion|displacement|control)\b", re.I)
 _P_METRIC = re.compile(r"\bp\s*(?:ic|ec)\s*50\b|\bp\s*(?:ki|kd|k_?i|k_?d)\b", re.I)
 
 # How many distinct (header, samples) pairs to remember. A patent's whole
@@ -1083,6 +1133,9 @@ def classify_column(header: str, samples: list[str]) -> Column:
     # caught by the standard assay regex or lemma list.
     if not is_assay and _PCT_INH.search(low):
         is_assay = True
+    # ...and any other percentage whose header names what was measured.
+    if not is_assay and _percent_header(h) and _PCT_MEASURED.search(low):
+        is_assay = True
     # p-prefixed potency metrics: "pIC50", "pEC50", "pKi", "pKd" etc.
     # The 'p' is directly attached to the metric name so word-boundary-based
     # patterns miss them. These are dimensionless (-log10 of a concentration).
@@ -1092,7 +1145,8 @@ def classify_column(header: str, samples: list[str]) -> Column:
     _p_metric_match = _P_METRIC.search(low)
     if not is_assay and _p_metric_match:
         is_assay = True
-    unit = _unit_from(h)
+    # A percentage column takes `%`, not the concentration it was run at.
+    unit = "%" if _percent_header(h) else _unit_from(h)
     # For p-prefixed metrics the header IS the unit (e.g. "pIC50"). When
     # _unit_from returns nothing (because pIC50 is not a concentration unit),
     # use the header text itself as the unit so downstream records are not
@@ -1150,7 +1204,12 @@ def classify_column(header: str, samples: list[str]) -> Column:
                 if (_LETTER_BIN.match(v) or _PLUS_BIN.match(v)
                         or _STAR_HASH_BIN.match(v.strip())):
                     plus_or_letter += 1
-            if plus_or_letter > len(vals) * 0.6:
+            # A grade alphabet is closed. Letters outside it mean the column
+            # enumerates rather than grades — see `_ANY_LETTER`.
+            stray = sum(1 for v in vals
+                        if _ANY_LETTER.match(v) and not _LETTER_BIN.match(v))
+            if (plus_or_letter > len(vals) * 0.6
+                    and stray <= len(vals) * _STRAY_LETTER_MAX):
                 return Column(-1, h, ASSAY, assay_name=h if h else "unnamed assay (letter bin)")
     return Column(-1, h, UNKNOWN)
 
@@ -1852,13 +1911,64 @@ def _legend_lines(tables) -> list[str]:
     line between them, and every legend shape in this corpus sits under it —
     `['', 'A:', 'IC50 < 3 nM']` is two, and a full-span footnote row is one.
     """
-    out: list[str] = []
+    return [" ".join(cells) for cells in _legend_rows(tables)]
+
+
+def _legend_rows(tables) -> list[list[str]]:
+    """The same rows, kept as CELLS.
+
+    A legend table's two orders — symbol first or range first — can only be
+    told apart cell by cell, so `parse_bin_table` needs the row unflattened.
+    See `_legend_lines` for why only narrow rows qualify.
+    """
+    out: list[list[str]] = []
     for t in tables:
         for row in t.body_rows:
             cells = [c.text.strip() for c in row if c.text and c.text.strip()]
             if cells and len(cells) <= _LEGEND_MAX_CELLS:
-                out.append(" ".join(cells))
+                out.append(cells)
     return out
+
+
+def _prose_sections_for(prose, records, block_id) -> dict[str, dict]:
+    """{column header: key} when a block's prose states one scale per column.
+
+    Returns {} unless the prose introduces two or more, so the ordinary
+    single-key path is untouched by this.
+    """
+    from . import bin_legend
+
+    sections: dict[str, dict] = {}
+    for part in prose:
+        for heading, body in bin_legend.split_prose_sections(part or ""):
+            bins = bin_legend.parse_bin_key(body)
+            if bins:
+                sections.setdefault(heading, bins)
+    if len(sections) < 2:
+        return {}
+    columns = sorted({r.assay_name for r in records
+                      if r.table_id == block_id and r.letter_grade and r.assay_name})
+    pairing = bin_legend.assign_sections(columns, list(sections))
+    return {col: sections[h] for col, h in pairing.items()}
+
+
+def _apply_per_column(records, block_id, per_column) -> None:
+    """Attach each column's own scale, and never another column's."""
+    from . import bin_legend
+
+    if not per_column:
+        return
+    for r in records:
+        if r.table_id != block_id or not r.letter_grade:
+            continue
+        if r.range_lo is not None or r.range_hi is not None:
+            continue
+        br = (per_column.get(r.assay_name) or {}).get(r.letter_grade)
+        if br is None or not bin_legend.compatible(r.unit, br.unit, r.column_header):
+            continue
+        r.range_lo, r.range_hi = br.lo, br.hi
+        if br.unit:
+            r.unit, r.unit_source = br.unit, "bin_key"
 
 
 def _document_legend(by_block, records) -> dict[str, dict]:
@@ -1890,6 +2000,22 @@ def _document_legend(by_block, records) -> dict[str, dict]:
             # LAST definition wins, matching `nearest_key_before`: a scale
             # restated later in the document supersedes the earlier one.
             sections[heading] = key
+        # A WHOLE BLOCK that is one scale, named by its own caption. US9221791
+        # publishes two, as `value | Rating` tables — `In each case of Table 3
+        # the Septoria rating scale is as follows:` and the same for Puccinia —
+        # and Table 3 then has a `Septoria Rating` and a `Puccinia Rating`
+        # column. Nothing inside either legend says which is which; the caption
+        # is the only place the document says it.
+        caption = (raw_block[0].caption or "").strip()
+        if caption:
+            # The heading rows name the quantity AND its unit; the body rows
+            # carry bare numbers under them.
+            head = " ".join(c.text for t in raw_block for r in t.header_rows
+                            for c in r if c.text)
+            table_key = bin_legend.parse_bin_table(_legend_rows(raw_block),
+                                                   unit_hint=head)
+            if table_key:
+                sections.setdefault(caption, {}).update(table_key)
     return sections
 
 
@@ -1985,11 +2111,20 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
         # The block's own rows first, each read alone; then the prose sources
         # in order of distance. Rows are a list and prose is a paragraph, and
         # they have to be read that way round — see `parse_bin_key_lines`.
-        key = bin_legend.parse_bin_key_lines(key_lines)
+        key = bin_legend.parse_bin_table(_legend_rows(raw_block))
+        for sym, br in bin_legend.parse_bin_key_lines(key_lines).items():
+            key.setdefault(sym, br)
+
+        # PROSE THAT STATES SEVERAL SCALES, one per column. Read as one key
+        # they contest each other and none survives, which is right but
+        # needlessly poor: the prose names the column each governs.
+        # See `split_prose_sections` and `assign_sections`.
+        per_column = _prose_sections_for(prose, records, block_id)
         for sym, br in bin_legend.parse_bin_key_layered(prose).items():
             key.setdefault(sym, br)
-        if not key:
+        if not key and not per_column:
             continue
+        _apply_per_column(records, block_id, per_column)
         name, unit = caption_assay_hint(raw_block[0].caption)
         name = name or _assay_name_from(text) or "assay (binned)"
         records.extend(extract_inverted(

@@ -302,6 +302,108 @@ def test_each_block_keeps_its_own_scale():
     assert any(u == {"%"} for u in units.values()), "the percent scale vanished"
 
 
+# ── E. a legend laid out as a table, in either column order ──────────────
+
+SEPTORIA = [["", "≦0.5", "A"], ["", ">1.5-1.5", "B"],
+            ["", ">1.5-4", "C"], ["", ">4", "D"], ["", "Not tested", "E"]]
+PUCCINIA = [["", "80-100", "A"], ["", "60-79", "B"],
+            ["", "40-59", "C"], ["", "<40", "D"], ["", "Not tested", "E"]]
+
+
+def test_a_legend_table_reads_in_either_column_order():
+    """US10172859 prints `A: | IC50 < 3 nM`; US9221791 prints `≦0.5 | A`.
+    Whichever cell is nothing but a symbol is the symbol."""
+    forward = bin_legend.parse_bin_table(
+        [["", "A:", "IC50 < 3 nM"], ["", "B:", "3 nM ≤ IC50 < 7 nM"]])
+    assert {s: (b.lo, b.hi) for s, b in forward.items()} == {
+        "A": (None, 3.0), "B": (3.0, 7.0)}
+    reverse = bin_legend.parse_bin_table(PUCCINIA)
+    assert {s: (b.lo, b.hi) for s, b in reverse.items()} == {
+        "A": (80.0, 100.0), "B": (60.0, 79.0), "C": (40.0, 59.0),
+        "D": (None, 40.0)}
+
+
+def test_a_legend_table_takes_the_unit_from_its_own_heading():
+    """The rows carry bare numbers; the heading carries the unit. US9221791
+    heads them `MIC (μg/mL` — the bracket is lost in the CALS split — and
+    `% Disease Control @ 50 ppm`."""
+    sep = bin_legend.parse_bin_table(SEPTORIA, unit_hint="MIC (μg/mL Rating")
+    puc = bin_legend.parse_bin_table(
+        PUCCINIA, unit_hint="% Disease Control @ 50 ppm Rating")
+    assert {b.unit for b in sep.values()} == {"ug/mL"}
+    assert {b.unit for b in puc.values()} == {"%"}
+
+
+# ── F. one scale per column, when the prose says which ───────────────────
+
+US9688680_PROSE = (
+    "In the Table below, for D816V activity, the following designations are "
+    "used: <1.00 nM=A; 1.01-10.0 nM=B; 10.01-100.0 nM=C; >100 nM=D; and "
+    "ND=not determined. For wild-type Kit activity, the following "
+    "designations are used: <10 nM=A; 11-100 nM=B; 100-1000 nM=C; "
+    ">1000 nM=D; and ND=not determined.")
+
+
+def test_prose_that_states_two_scales_is_split_before_it_is_parsed():
+    secs = dict(bin_legend.split_prose_sections(US9688680_PROSE))
+    assert list(secs) == ["D816V activity", "wild-type Kit activity"]
+    a = bin_legend.parse_bin_key(secs["D816V activity"])
+    b = bin_legend.parse_bin_key(secs["wild-type Kit activity"])
+    assert (a["A"].lo, a["A"].hi) == (None, 1.0)
+    assert (b["A"].lo, b["A"].hi) == (None, 10.0)
+
+
+def test_one_scale_stated_alone_is_not_split():
+    """A single scale keeps the ordinary path — splitting is only for the
+    ambiguous case."""
+    assert bin_legend.split_prose_sections(
+        "the following designations are used: <10 nM=A; 11-100 nM=B") == []
+
+
+def test_the_last_column_is_settled_by_counting_when_names_run_out():
+    """`WT` shares not one character with `wild-type`, so no amount of name
+    matching pairs them. `D816V` pins the first column and excludes the
+    second, which leaves the second pairing determined rather than guessed."""
+    sections = ["D816V activity", "wild-type Kit activity"]
+    assert bin_legend.section_for_column("D816V IC50 (nM)", sections) == \
+        "D816V activity"
+    assert bin_legend.section_for_column("WT IC50 (nM)", sections) is None
+    assert bin_legend.assign_sections(
+        ["D816V IC50 (nM)", "WT IC50 (nM)"], sections) == {
+            "D816V IC50 (nM)": "D816V activity",
+            "WT IC50 (nM)": "wild-type Kit activity"}
+
+
+def test_counting_settles_nothing_when_the_counts_disagree():
+    """Two scales and three columns is not a pairing. Guessing one would put a
+    scale on a column the document never assigned it to."""
+    got = bin_legend.assign_sections(
+        ["D816V IC50 (nM)", "WT IC50 (nM)", "Phospho IC50 (nM)"],
+        ["D816V activity", "wild-type Kit activity"])
+    assert got == {"D816V IC50 (nM)": "D816V activity"}
+
+
+def test_two_scales_land_on_their_own_columns_end_to_end():
+    """US9688680 Table 2 grades D816V and wild-type Kit in one table with the
+    same letters. `A` is <1.00 nM in one column and <10 nM in the other."""
+    recs = [r for r in extract_from_patent(_xml("US9688680")) if r.letter_grade]
+    b = {(r.assay_name, r.letter_grade): (r.range_lo, r.range_hi)
+         for r in recs if r.range_lo is not None or r.range_hi is not None}
+    assert b[("D816V IC50 (nM)", "B")] == (1.01, 10.0)
+    assert b[("WT IC50 (nM)", "B")] == (11.0, 100.0)
+
+
+def test_a_caption_names_the_column_a_whole_legend_block_governs():
+    """US9221791 publishes its two scales as separate `value | Rating` tables,
+    captioned `... the Septoria rating scale is as follows:` and the same for
+    Puccinia. Nothing inside either legend says which column it means."""
+    recs = [r for r in extract_from_patent(_xml("US9221791")) if r.letter_grade]
+    b = {(r.assay_name, r.letter_grade): (r.range_lo, r.range_hi, r.unit)
+         for r in recs if r.range_lo is not None or r.range_hi is not None}
+    assert b[("Puccinia Rating", "C")] == (40.0, 59.0, "%")
+    assert b[("Septoria Rating", "C")] == (1.5, 4.0, "ug/mL")
+
+
 def test_a_selectivity_ratio_never_lands_on_a_concentration_column():
     """US12351648 defines `*`-`****` twice — once for Ki in μM and once for a
     MASP-2-versus-thrombin selectivity in fold. The fold scale reached three
@@ -312,3 +414,56 @@ def test_a_selectivity_ratio_never_lands_on_a_concentration_column():
         if r.unit == "fold":
             assert "selectivity" in (r.assay_name or "").lower(), \
                 f"a fold range landed on {r.assay_name!r}"
+
+
+# ── G. what the column measures, versus what it was measured AT ──────────
+#
+# These live beside the bin tests because they are the same question asked of
+# the other half of the record. A bin key states a dimension and a column
+# states a dimension, and the reader has to get both right before it can
+# compare them — see `compatible`.
+
+@pytest.mark.parametrize("header,percent", [
+    # The `%` stands alone: it is the unit of the value.
+    ("MAGL % Inh 1 μM (mouse)", True),
+    ("BACE1 inhibition at 10 μM (%)", True),
+    ("CYP 450 % INH @ 10 μM", True),
+    ("micro-somal stability Cl [% Qh]", True),
+    ("ROCK2 % inh. @ [conc]", True),
+    # The `%` is bound to a number: it states a THRESHOLD, and the value is
+    # the concentration at which that threshold is reached. US9987276's
+    # `>50% occupancy` column holds nM and is right to.
+    (">50% occupancy", False),
+    (">90% occupancy", False),
+    # The patent itself says the column holds either. Neither answer fits
+    # every row, so its own hedge stands.
+    ("FKBP12 Ki (μM) or %", False),
+    # No percent at all.
+    ("BACE1 Ki (nM)", False),
+])
+def test_a_percent_sign_is_a_unit_only_when_it_is_not_a_threshold(header, percent):
+    from patentdb3.sources.uspto_assays import _percent_header
+    assert _percent_header(header) is percent
+
+
+def test_a_percentage_column_is_not_labelled_with_the_concentration_it_ran_at():
+    """`at 10 μM (%)` holding 104.0 read as `104 uM` — a dead compound rather
+    than complete inhibition, from the same digits. The first unit token in
+    the header is the assay's CONDITION, not the value's unit."""
+    recs = [r for r in extract_from_patent(_xml("US10004738"))
+            if "(%)" in (r.assay_name or "")]
+    assert recs, "no percent column found"
+    assert {r.unit for r in recs} == {"%"}
+
+
+def test_a_percentage_column_is_still_an_assay():
+    """The assay gate reads `is_assay or (unit and unit != "%")`, so a column
+    whose only claim was a unit now correctly read as `%` falls through it.
+    That cost 113 records — `% Effect at 30 μM relative to 2'3'-cGAMP` and
+    `% amount of pSer376-SLP-76 @ 20 μM` are assay results by any reading."""
+    for pid, needle in [("US10730849", "% Effect"),
+                        ("US11427578", "% amount of")]:
+        recs = [r for r in extract_from_patent(_xml(pid))
+                if needle in (r.assay_name or "")]
+        assert recs, f"{pid}: {needle!r} column produced nothing"
+        assert {r.unit for r in recs} == {"%"}

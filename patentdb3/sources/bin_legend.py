@@ -64,11 +64,12 @@ import re
 # stamped `nM` on them, and 1,243 records claimed a nanomolar potency the
 # patent never measured. A dimension we cannot name must stay unnamed.
 _UNIT = (r"(?:nM|pM|mM|[μuµ]M|micromolar|nanomolar|millimolar|picomolar"
-         r"|%|mg/kg|[-\s]?fold)")
+         r"|%|mg/kg|[μuµ]g/m[lL]|[-\s]?fold)")
 _UNIT_CANON = {
     "um": "uM", "µm": "uM", "μm": "uM", "nm": "nM", "mm": "mM", "pm": "pM",
     "micromolar": "uM", "nanomolar": "nM", "millimolar": "mM", "picomolar": "pM",
     "%": "%", "mg/kg": "mg/kg", "fold": "fold", "-fold": "fold",
+    "μg/ml": "ug/mL", "µg/ml": "ug/mL", "ug/ml": "ug/mL",
 }
 
 # The symbol a bin is written with: a run of '+', '*' or '#', or a letter grade.
@@ -571,6 +572,92 @@ def _clean_heading(line: str) -> str:
     return h
 
 
+# A cell holding nothing but a grade symbol, with optional trailing colon.
+_BARE_SYMBOL = re.compile(rf"^\W*{_QUOTE}?({_SYMBOL}){_QUOTE}?\s*:?\s*$")
+
+
+# The unit a legend table states in its own heading, not on its rows.
+# US9221791 heads its columns `MIC (μg/mL` — the closing bracket is lost in
+# the CALS split — and `% Disease Control @ 50 ppm`, then prints bare numbers
+# beneath. Without this the bins are correct intervals of nothing.
+_TABLE_UNIT = re.compile(rf"\(?\s*({_UNIT})", re.I)
+
+
+def parse_bin_table(rows, unit_hint: str = "") -> dict[str, BinRange]:
+    """Read a legend laid out as a TABLE, in either column order.
+
+    `rows` is a list of cell lists. A legend table puts the symbol in one cell
+    and its range in another, and patents disagree about which comes first:
+
+        ['', 'A:', 'IC50 < 3 nM']        symbol then range   US10172859
+        ['', '≦0.5', 'A']                range then symbol   US9221791
+
+    Reading a row's cells is what makes the second order safe. Flattened into
+    text it is unreadable — `40-59 C <40 D` binds `C` to the value printed on
+    D's row, which is why `_VALUE_BEFORE` refuses that shape in prose. Inside
+    one row there is no such ambiguity: whichever cell is nothing but a symbol
+    is the symbol, and the other is its range.
+    """
+    out: dict[str, BinRange] = {}
+    conflicts: set[str] = set()
+    for row in rows:
+        cells = [c.strip() for c in row if c and c.strip()]
+        if len(cells) != 2:
+            continue
+        head, tail = cells
+        m_head, m_tail = _BARE_SYMBOL.match(head), _BARE_SYMBOL.match(tail)
+        if m_tail and not m_head:
+            sym, expr = m_tail.group(1), head
+        elif m_head:
+            sym, expr = m_head.group(1), tail
+        else:
+            continue
+        # `sym: expr` is the form every pattern in this module already reads,
+        # so the two orders converge here rather than growing a second parser.
+        bins = parse_bin_key(f"{sym}: {expr}")
+        br = bins.get(sym)
+        if br is not None:
+            _adopt(out, conflicts, br)
+    for sym in conflicts:
+        out.pop(sym, None)
+    m = _TABLE_UNIT.search(unit_hint or "")
+    if m:
+        unit = _canon_unit(m.group(1))
+        for br in out.values():
+            if not br.unit:
+                br.unit = unit
+    return out
+
+
+# How a patent introduces one of several scales in running prose:
+#   "In the Table below, for D816V activity, the following designations are
+#    used: ...  For wild-type Kit activity, the following designations are
+#    used: ..."
+# The subject of the `for` clause names the column the scale governs.
+_PROSE_SECTION = re.compile(
+    r"\b(?:for|in)\s+(?P<subject>[^,.;:]{2,60}?)\s*,?\s+"
+    r"the\s+following\s+\w+\s+(?:are|is)\s+used\s*:?", re.I)
+
+
+def split_prose_sections(text: str):
+    """[(heading, body)] for prose that states more than one scale.
+
+    Returns [] when the text introduces fewer than two, so the caller keeps
+    its ordinary single-key path. US9688680 states both of its scales in one
+    paragraph and they use THE SAME LETTERS with different numbers, so read as
+    one key they contest each other and neither survives — correct, and worth
+    950 records to improve on.
+    """
+    marks = list(_PROSE_SECTION.finditer(text or ""))
+    if len(marks) < 2:
+        return []
+    out = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        out.append((m.group("subject").strip(), text[m.end():end]))
+    return out
+
+
 def parse_sectioned_key(rows) -> dict[str, dict[str, BinRange]]:
     """Split a legend into its per-column scales: {heading: {symbol: range}}.
 
@@ -609,14 +696,33 @@ def parse_sectioned_key(rows) -> dict[str, dict[str, BinRange]]:
     return {k: v for k, v in sections.items() if v}
 
 
+# Words that appear in a heading without telling you which column it means.
+_STOP_WORD = {
+    "activity", "assay", "assays", "data", "value", "values", "inhibition",
+    "rating", "scale", "the", "and", "of", "for", "in", "a", "an", "results",
+}
+
+
+def _heading_tokens(heading: str) -> list[str]:
+    """The parts of a heading that could name a column, longest first."""
+    words = re.findall(r"[A-Za-z0-9]+", _QUALIFIER.sub(" ", heading or ""))
+    keep = [w.lower() for w in words if w.lower() not in _STOP_WORD]
+    return sorted(set(keep), key=len, reverse=True)
+
+
 def section_for_column(column: str, sections) -> str | None:
     """Which legend section governs `column`, or None when it is not decidable.
 
-    Matching is by containment of the normalised heading in the normalised
-    column, and the LONGEST match wins. Length is what settles the case this
-    exists for: `DNA-PK` is a substring of `pDNA-PK`, so the column
-    `IC50 pDNA-PK` matches both headings, and the shorter one is the wrong one
-    by exactly the margin that makes it look right.
+    A heading matches a column when one of its distinctive WORDS appears in
+    that column, and the LONGEST such word wins. Length settles the case this
+    exists for: `DNA-PK` is a substring of `pDNA-PK`, so `IC50 pDNA-PK` matches
+    both headings, and the shorter one is wrong by exactly the margin that
+    makes it look right.
+
+    Words, rather than the whole heading, because a heading is a phrase and a
+    column is an abbreviation of it. US9688680 heads a scale `for D816V
+    activity` and the column `D816V IC50 (nM)`; nothing contains anything, and
+    the one word that matters is in both.
 
     A tie returns None. Two headings that fit a column equally well means the
     document does not say which scale applies, and guessing is the failure this
@@ -629,14 +735,42 @@ def section_for_column(column: str, sections) -> str | None:
     best_len = 0
     tied = False
     for heading in sections:
-        core = _norm_match(_QUALIFIER.sub(" ", heading))
-        if not core or core not in col:
-            continue
-        if len(core) > best_len:
-            best, best_len, tied = heading, len(core), False
-        elif len(core) == best_len and heading != best:
+        hit = max((len(t) for t in _heading_tokens(heading)
+                   if _norm_match(t) and _norm_match(t) in col), default=0)
+        if hit > best_len:
+            best, best_len, tied = heading, hit, False
+        elif hit == best_len and hit and heading != best:
             tied = True
     return None if tied else best
+
+
+def assign_sections(columns, sections) -> dict[str, str]:
+    """{column: heading}, pairing each graded column with the scale it takes.
+
+    Name matching first. What it cannot reach, COUNTING can: when the legend
+    states exactly as many scales as the table has graded columns, and all but
+    one column has been claimed by name, the last pairing is forced rather than
+    guessed. US9688680 needs that step and nothing else will do it — its two
+    scales are headed `D816V activity` and `wild-type Kit activity`, its two
+    columns are `D816V IC50 (nM)` and `WT IC50 (nM)`, and `WT` shares not one
+    character with `wild-type`. `D816V` pins the first column and excludes the
+    second, so the remainder is determined.
+
+    Anything short of determined returns nothing for that column, which leaves
+    its grades without a range — the outcome this module prefers to a guess.
+    """
+    out: dict[str, str] = {}
+    for col in columns:
+        heading = section_for_column(col, sections)
+        if heading is not None:
+            out[col] = heading
+    if len(sections) != len(columns):
+        return out
+    free_cols = [c for c in columns if c not in out]
+    free_secs = [s for s in sections if s not in out.values()]
+    if len(free_cols) == 1 and len(free_secs) == 1:
+        out[free_cols[0]] = free_secs[0]
+    return out
 
 
 # What kind of quantity a unit measures. A bin key and the column it is applied
