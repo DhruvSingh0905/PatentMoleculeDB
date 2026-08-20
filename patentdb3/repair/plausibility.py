@@ -470,6 +470,71 @@ def check_drawn_but_unnumbered(patent_id: str, xml: str, records) -> list[Flag]:
     return flags
 
 
+def check_columns_not_grouped(patent_id: str, xml: str, records) -> list[Flag]:
+    """A table with several compound-id columns, read as if it had one.
+
+    THE SHAPE THIS CATCHES IS NOT A BUG, IT IS A CLASS OF BUG. A specialised
+    reader refuses a table it cannot handle safely, and control falls to a
+    general path with WEAKER guarantees — which emits anyway, and wrongly.
+    The refusal itself is silent, so nothing downstream can tell the difference
+    between "read carefully" and "read by the fallback".
+
+    US11708332 TABLE-US-00016 is the worked case: `Compound | Ki (nM)` three
+    times across. `build_columns` types all six columns correctly, but
+    `_column_groups` returned None — `_id_family` blanked digits and not the
+    trailing letter, so `161e` and `162c` landed in different families and no
+    family reached the purity floor. The ordinary path then took the FIRST
+    compound column and hung all three `Ki (nM)` columns off it, filing `28f`'s
+    value under `161e`.
+
+    Only the rows whose borrowed value happened to be IDENTICAL showed up, as
+    13 `indistinguishable_records`. The rest were invisible: 72 records over 59
+    compounds, and no check could see the 13 were a floor.
+
+    Measured over 137 patents: 131 tables carry two or more compound-id
+    columns. The grouped reader handles 16 and refuses 115, and on 10 of those
+    the fallback emitted records regardless. That is the population this flag
+    reports, and it is why the fix for one table is not the fix for the class.
+    """
+    from ..sources.uspto_assays import (CID, _column_groups, _split_rows,
+                                        build_columns)
+    from ..sources.uspto_xml import assemble_blocks, parse_tables
+
+    try:
+        tables = assemble_blocks(parse_tables(xml))
+    except Exception:                       # never cost a run over an audit
+        return []
+    by_table: dict[str, int] = {}
+    for r in records:
+        by_table[r.table_id] = by_table.get(r.table_id, 0) + 1
+
+    flags: list[Flag] = []
+    for t in tables:
+        if not by_table.get(t.table_id):
+            continue                        # emitted nothing; nothing to doubt
+        try:
+            cols = build_columns(t)
+            body = _split_rows(t)[1]
+        except Exception:
+            continue
+        id_cols = [c for c in cols if c.kind == CID]
+        if len(id_cols) < 2:
+            continue
+        if _column_groups(cols, body):
+            continue                        # read by the reader built for it
+        flags.append(Flag(
+            kind="columns_not_grouped", patent_id=patent_id,
+            table_id=t.table_id, rows_at_stake=by_table[t.table_id],
+            examples=[f"{len(id_cols)} compound-id columns: "
+                      + ", ".join(repr(c.header[:24]) for c in id_cols[:4])],
+            detail=(f"{t.table_id} has {len(id_cols)} compound-id columns and "
+                    f"the grouped reader refused it, so {by_table[t.table_id]} "
+                    f"record(s) were produced by the ordinary path — which "
+                    f"assumes ONE compound column and will attach an assay to "
+                    f"the wrong compound")))
+    return flags
+
+
 CHECKS = (check_n_runs_dropped, check_potency_out_of_range,
           check_unconvertible_unit, check_unnamed_assay,
           check_same_assay_disagrees,
@@ -480,4 +545,7 @@ CHECKS = (check_n_runs_dropped, check_potency_out_of_range,
           # A fact about the DOCUMENT, not about our output. It holds whether
           # the reader handles the shape well or badly, which is what makes it
           # a guard rather than a regression test.
-          check_drawn_but_unnumbered)
+          check_drawn_but_unnumbered,
+          # A specialised reader refusing, and a laxer one emitting
+          # in its place. See the docstring — this is a CLASS.
+          check_columns_not_grouped)
