@@ -1,226 +1,84 @@
--- patentdb3 -> Supabase. The staging schema.
+-- patentdb3 -> Supabase. ONE joined table.
 --
--- THE PROBLEM THIS SHAPE SOLVES. Every patent names its own assays. There are
--- 553 distinct assay headings over 137 documents and almost none of them
--- agree: `PI3K alpha IC50 (nM)`, `FLAP Binding wild type HTRF Ki (uM)`,
--- `% inhibition of IL6`, `Septoria Rating`. A wide table would need a column
--- per heading and would grow one every time a patent is added.
+-- The pipeline's normalised shape — compounds, assays, measurements — mirrors
+-- how the EXTRACTOR works, not how anyone reads the result. Three tables and
+-- two views to answer "what did this patent measure" is the wrong deliverable.
+-- Those stay local. What ships is the joined set: one row per compound with
+-- its assays nested.
 --
--- So the measurement table is LONG — one row per value — and the heading is
--- data, not schema. What makes it queryable anyway is that the AXES are lifted
--- out of the heading into their own columns:
+-- WHY JSONB AND NOT A COLUMN PER ASSAY. 553 distinct assay headings over 137
+-- patents, and a new one with every patent added. The heading is DATA, not
+-- schema. What keeps it queryable is that the axes are lifted out of each
+-- heading — `metric`, `target`, and a value converted to one unit — so a
+-- question crosses documents that spell the assay differently:
 --
---     assays.metric      IC50 / Ki / EC50 / Kd / percent      parsed
---     assays.target_raw  the target token the patent used     parsed
---     measurements.value_um    every value in one unit        converted
+--     where assays @> '[{"metric":"IC50"}]'
+--     where 'IC50' = any(metrics)          -- flat arrays for the common case
+--     where best_um < 1.0                  -- lifted out, so sorting is free
 --
--- That is the whole trick. Ask for "every IC50 against BTK under 1 uM" across
--- all 137 patents and it is one WHERE clause, even though no two documents
--- spell the assay the same way. The patent's own words survive verbatim in
--- `assays.assay_name`, so nothing is lost to the normalisation.
---
--- Units are micromolar because that is the unit the deliverable asks for. The
--- number the patent actually printed stays beside it in `value_numeric` and
--- `unit`, so a reader can always get back to the source.
+-- The patent's own words survive verbatim in each object's `assay`.
 
-create table if not exists compounds (
-    patent_id    text    not null,
-    cid          text    not null,           -- the patent's own compound number
-    name         text,                       -- IUPAC, as the document states it
-    smiles       text,
-    inchikey     text,
-    source       text,                       -- cid_first | table | heading
-    -- What the document itself says this compound weighs, and whether our
-    -- structure agrees. `mass_check` is the only correctness signal here that
-    -- needs no external reference.
-    reported_mz  numeric,
-    mass_check   text,                       -- agrees | contradicts | (blank)
-    mass_delta   numeric,
-    markush      boolean not null default false,
-    drawn_only   boolean not null default false,
+create table compounds (
+    patent_id      text not null,
+    -- Kept because a later join needs it and nothing else stands in for it.
+    -- ABSENT from `compound_data`, the reading surface: the patent's own
+    -- number tells a reader nothing, and two patents both numbering a
+    -- compound `7` invites exactly the wrong comparison.
+    cid            text not null,
+    name           text,
+    smiles         text,
+    inchikey       text,
+
+    -- WHERE THE STRUCTURE CAME FROM. Not equivalent, and a reader filtering
+    -- on quality wants this before anything else.
+    --   xml        read from the document's text; OPSIN parsed the name
+    --   molscribe  the patent DREW it and named it nowhere
+    --   markush    a scaffold plus substituent columns
+    --   gp         a Google Patents annotation: no compound number, no assays
+    route          text,
+    -- Whether it is finished, in plain english. A drawn row is not a failure —
+    -- it is work queued behind image recognition, and it says so.
+    status         text,
+    -- The drawing, for rows that have one and no structure yet. Carrying the
+    -- filename is what lets someone fill these in later without going back to
+    -- the XML to find out which picture to read.
+    image_file     text,
+    image_ref      text,
+
+    -- The mass the document prints for this compound, and whether our
+    -- structure agrees with it. The only correctness signal here that needs
+    -- no external reference.
+    reported_mz    numeric,
+    mass_check     text,
+    mass_delta     numeric,
+
+    n_assays       integer not null default 0,
+    n_measurements integer not null default 0,
+    best_um        numeric,
+    metrics        text[],
+    targets        text[],
+    assays         jsonb   not null default '[]'::jsonb,
     primary key (patent_id, cid)
 );
 
--- One row per distinct heading per patent. This is where a heading stops being
--- free text and becomes something you can filter on.
-create table if not exists assays (
-    assay_id    bigint generated always as identity primary key,
-    patent_id   text not null,
-    assay_name  text not null,               -- VERBATIM. The patent's own words.
-    metric      text,                        -- IC50 | EC50 | Ki | Kd | percent
-    target_raw  text,                        -- the target token, as written
-    unit        text,                        -- the unit the patent printed
-    table_id    text,
-    unique (patent_id, assay_name, table_id)
-);
+create index ix_cmp_route   on compounds (route);
+create index ix_cmp_status  on compounds (status);
+create index ix_cmp_key     on compounds (inchikey);
+create index ix_cmp_best    on compounds (best_um);
+create index ix_cmp_assays  on compounds using gin (assays);
+create index ix_cmp_metrics on compounds using gin (metrics);
+create index ix_cmp_targets on compounds using gin (targets);
 
--- The long table. One row per measurement.
-create table if not exists measurements (
-    id            bigint generated always as identity primary key,
-    patent_id     text    not null,
-    cid           text    not null,
-    assay_id      bigint  not null references assays (assay_id),
-    -- as the patent printed it
-    value_numeric numeric,
-    qualifier     text,                      -- < > = ~ etc
-    unit          text,
-    -- normalised, so two patents can be compared
-    value_um      numeric,
-    -- a graded value carries an interval instead of a number
-    letter_grade  text,
-    range_lo_um   numeric,
-    range_hi_um   numeric,
-    n_runs        integer,
-    table_id      text,
-    column_header text,
-    foreign key (patent_id, cid) references compounds (patent_id, cid)
-);
+-- Reference data, not user data: every row is already public in a granted
+-- patent, and nothing writes through the API. A load opens an INSERT policy
+-- and drops it again; the resting state is read-only.
+alter table compounds enable row level security;
+create policy "read compounds" on compounds for select using (true);
 
--- Structures from Google Patents' own annotations. NO compound number by
--- construction, so these join to nothing and live apart — extra molecules the
--- document mentions, not measurements.
-create table if not exists gp_compounds (
-    id        bigint generated always as identity primary key,
-    patent_id text not null,
-    gp_name   text,
-    smiles    text,
-    inchikey  text,
-    label     text,                           -- compound | reagent | fragment
-    finished  boolean not null default false, -- survived the conservative filter
-    unique (patent_id, inchikey)
-);
-
-create index if not exists ix_meas_compound on measurements (patent_id, cid);
-create index if not exists ix_meas_assay    on measurements (assay_id);
-create index if not exists ix_meas_value    on measurements (value_um);
-create index if not exists ix_assays_metric on assays (metric);
-create index if not exists ix_assays_target on assays (target_raw);
-create index if not exists ix_cmp_inchikey  on compounds (inchikey);
-create index if not exists ix_gp_inchikey   on gp_compounds (inchikey);
-
--- The join everyone actually wants: one row per measurement with its compound
--- and its assay already attached.
-create or replace view v_measurements as
-select m.patent_id,
-       m.cid,
-       c.name,
-       c.smiles,
-       c.inchikey,
-       a.assay_name,
-       a.metric,
-       a.target_raw,
-       m.qualifier,
-       m.value_um,
-       m.unit          as printed_unit,
-       m.value_numeric as printed_value,
-       m.letter_grade,
-       m.range_lo_um,
-       m.range_hi_um,
-       m.n_runs,
-       c.reported_mz,
-       c.mass_check,
-       m.table_id
-  from measurements m
-  join assays    a on a.assay_id = m.assay_id
-  join compounds c on c.patent_id = m.patent_id and c.cid = m.cid;
-
--- Read-only for anyone with the anon key. This is reference data, not user
--- data: nobody writes to it through the API, and every row is already public
--- in a granted patent.
-alter table compounds     enable row level security;
-alter table assays        enable row level security;
-alter table measurements  enable row level security;
-alter table gp_compounds  enable row level security;
-
-create policy "read compounds"    on compounds    for select using (true);
-create policy "read assays"       on assays       for select using (true);
-create policy "read measurements" on measurements for select using (true);
-create policy "read gp_compounds" on gp_compounds for select using (true);
-
--- ─────────────────────────────────────────────────────────────────────────
--- ONE ROW PER COMPOUND. This is the table to read.
---
--- `v_measurements` is one row per MEASUREMENT, so a compound with nine assays
--- appears nine times with its name and SMILES repeated. Right for aggregating,
--- wrong for reading, and not what anyone wants to open.
---
--- A column per assay is impossible — 553 distinct headings, and a new one with
--- every patent added. So the assays collapse into a JSONB array on the
--- compound's own row: one object per measurement, each carrying the heading
--- verbatim plus the parsed metric and target and the normalised value.
---
--- JSONB rather than text because it stays QUERYABLE, and the GIN indexes make
--- it cheap:
---
---     where assays @> '[{"metric": "IC50"}]'
---     where 'IC50' = any(metrics)          -- flat arrays for the common case
---     where best_um < 1.0                  -- lifted out so sorting is free
---
--- REFRESH IT after any reload: `refresh materialized view compound_profiles;`
--- It is materialised rather than a plain view because it aggregates 119,306
--- measurements and is read far more often than the data changes.
---
--- The linter warns that a materialized view is readable by `anon` and sits
--- outside row level security. That is accepted here rather than missed: every
--- base table's policy is already `for select using (true)`, so this exposes
--- exactly the data it is meant to and nothing further.
-create materialized view if not exists compound_profiles as
-select c.patent_id, c.cid, c.name, c.smiles, c.inchikey,
-       c.reported_mz, c.mass_check, c.markush,
-       count(m.id)                                         as n_measurements,
-       count(distinct a.assay_name)                        as n_assays,
-       min(m.value_um)                                     as best_um,
-       array_remove(array_agg(distinct a.metric), null)     as metrics,
-       array_remove(array_agg(distinct a.target_raw), null) as targets,
-       coalesce(jsonb_agg(jsonb_build_object(
-           'assay', a.assay_name, 'metric', a.metric, 'target', a.target_raw,
-           'qualifier', m.qualifier, 'value_um', m.value_um,
-           'value', m.value_numeric, 'unit', m.unit,
-           'grade', m.letter_grade, 'lo_um', m.range_lo_um,
-           'hi_um', m.range_hi_um, 'n_runs', m.n_runs, 'table', m.table_id)
-         order by a.assay_name) filter (where m.id is not null),
-         '[]'::jsonb)                                      as assays
-  from compounds c
-  left join measurements m on m.patent_id = c.patent_id and m.cid = c.cid
-  left join assays a on a.assay_id = m.assay_id
- group by c.patent_id, c.cid, c.name, c.smiles, c.inchikey,
-          c.reported_mz, c.mass_check, c.markush;
-
-create unique index if not exists ix_prof_pk      on compound_profiles (patent_id, cid);
-create index if not exists ix_prof_assays  on compound_profiles using gin (assays);
-create index if not exists ix_prof_metrics on compound_profiles using gin (metrics);
-create index if not exists ix_prof_targets on compound_profiles using gin (targets);
-create index if not exists ix_prof_best    on compound_profiles (best_um);
-create index if not exists ix_prof_key     on compound_profiles (inchikey);
-
--- ─────────────────────────────────────────────────────────────────────────
--- WHERE A STRUCTURE CAME FROM. Four routes, and they are not equivalent:
---
---   xml        read from the document's own text and parsed by OPSIN
---   molscribe  the patent DREW it and named it nowhere; image recognition is
---              the route that will resolve it, and until that runs the row has
---              a compound number and no structure
---   markush    assembled from a scaffold plus substituent columns
---   gp         a Google Patents annotation, in `gp_compounds`, with no
---              compound number by construction
-alter table compounds    add column if not exists route text;
-alter table gp_compounds add column if not exists route text not null default 'gp';
-create index if not exists ix_cmp_route on compounds (route);
-create index if not exists ix_gp_route  on gp_compounds (route);
-
--- ─────────────────────────────────────────────────────────────────────────
--- THE ONE TO READ. Everything joined, one row per compound, no internal id.
---
--- The compound number is the patent's own label — `A194`, `Example 12`, `7`.
--- It is load-bearing INSIDE the pipeline: it is the only key the assay reader
--- and the identity routes share, and every measurement hangs off it. It tells
--- a reader of the finished data nothing, and two patents both numbering a
--- compound `7` invites exactly the wrong comparison.
---
--- So it stays in `compounds`, `measurements` and `compound_profiles`, where
--- joining needs it, and it is absent here, where reading happens.
+-- THE READING SURFACE. Everything, minus the patent's internal number.
 create or replace view compound_data as
-select patent_id, name, smiles, inchikey, route, reported_mz, mass_check,
-       n_measurements, n_assays, best_um, metrics, targets, assays
-  from compound_profiles;
+select patent_id, name, smiles, inchikey, route, status,
+       image_file, reported_mz, mass_check,
+       n_assays, n_measurements, best_um, metrics, targets, assays
+  from compounds;
 alter view compound_data set (security_invoker = true);
