@@ -537,6 +537,15 @@ class AssayRecord:
     column_header: str = ""
     source: str = "uspto_xml_table"
     unit_source: str = "column"   # "column" | "caption" | "description"
+    # THE MASS THE PATENT PRINTS FOR THIS COMPOUND, carried on every one of its
+    # rows. It is read once per patent by `mass_gate.reported_masses` and
+    # stamped in `verify.dump`; it costs nothing extra because the gate already
+    # runs there for the structures.
+    #
+    # It is a FILTER, not a check. A reader who wants only the rows whose
+    # compound the document also weighed can now say so in the sheet, and a row
+    # whose mass is absent is one nothing independent can confirm.
+    reported_mz: float | None = None
 
     def as_dict(self) -> AssayRow:
         """Serialise under the ONE schema both binned paths now share.

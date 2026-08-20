@@ -80,6 +80,7 @@ from .core.cost_tracker import cost_tracker
 from .repair.loop import repair_patent
 from .repair.rules import RuleLibrary
 from .sources import image_ocr, losses, mass_gate
+from .sources.uspto_assays import normalize_cid
 from .sources.cid_first import extract_by_cid
 from .sources.iupac_names import NamedCompound, extract_names
 from .sources.table_names import TableName, extract_table_names
@@ -97,7 +98,11 @@ DUMP_PATH = config.DUMP
 STRUCT_PATH = config.STRUCTURES
 MANIFEST_PATH = config.MANIFEST
 FIELDS = ("cid", "assay_name", "value_numeric", "qualifier", "unit", "n_runs",
-          "letter_grade", "range_lo", "range_hi", "table_id", "column_header")
+          "letter_grade", "range_lo", "range_hi", "table_id", "column_header",
+          # The mass the document prints for this compound. See
+          # `AssayRecord.reported_mz` — a cheap filter, carried at no cost
+          # because the gate already reads it for the structures.
+          "reported_mz")
 
 # Read off the dataclasses themselves rather than hardcoded, so an attribute
 # added to either later shows up in the dump on its own — this script must not
@@ -259,7 +264,15 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                     flags.append(f)
             except Exception as e:                      # a broken check must
                 print(f"  {pid}: audit skipped ({e!r})")  # never cost a run
+            # STAMP THE PRINTED MASS ONTO EVERY ROW OF ITS COMPOUND. One
+            # dictionary per patent, already built for the structures below.
+            try:
+                _mz = mass_gate.reported_masses(xml)
+            except Exception:
+                _mz = {}
             for r in recs:
+                if r.reported_mz is None:
+                    r.reported_mz = _mz.get(normalize_cid(str(r.cid or "")))
                 vals = [str(getattr(r, f, "") if getattr(r, f, None) is not None else "")
                         .replace("\t", " ").replace("\n", " ") for f in FIELDS]
                 fh.write(pid + "\t" + "\t".join(vals) + "\n")
