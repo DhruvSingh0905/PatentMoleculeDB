@@ -260,3 +260,110 @@ def test_a_flagged_answer_is_demoted_not_used_as_truth(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "XML_INPUT_DIR", tmp_path)   # no XML -> no rows
     out = images.emit(path=tmp_path / "wl.tsv")
     assert out["demoted_mass_contradicts"] == 1
+
+
+# ── D. the prose shape ────────────────────────────────────────────────────
+#
+# Every string below is the real shape from the patent named in its docstring.
+# The gate read `<row>` elements and nothing else, so a document that states
+# its masses in prose had no reference at all: 3,735 of 38,402 structures
+# carried a verdict, and the documents with the most defects carried none.
+
+
+def test_a_mass_stated_under_a_heading_is_read():
+    """US10245267. The id is in the heading, the mass in the `<p>` below it."""
+    xml = ('<heading>Example 418: N-(4-cyanophenyl)benzamide</heading>'
+           '<p><chemistry><img file="C00536.TIF"/></chemistry></p>'
+           '<p>1H NMR (400 MHz) 7.17-7.32 (m, 2H). '
+           'LCMS (m/z) (M+H)=477.2, Rt=0.78 min.</p>'
+           '<heading>Example 419: N-(4-cyanophenyl)pyridine-4-carboxamide'
+           '</heading>'
+           '<p>1H NMR (400 MHz) 8.84 (d, 1H). '
+           'LCMS (m/z) (M+H)=473.2, Rt=0.76 min.</p>')
+    assert mass_gate.reported_masses(xml) == {"418": 477.2, "419": 473.2}
+
+
+def test_a_molecular_formula_subscript_is_not_a_mass():
+    """US10280164 and US10722495.
+
+    `LCMS calculated for C 12 H 18 ClIN 3 OSi (M+H) + m/z=410.0` gave 12 — the
+    carbon count — because the gap between the instrument and the mass has
+    digits in it. Every compound in both documents read as contradicting.
+    """
+    xml = ('<heading>Example 7. 6-Chloro-3-iodopyrazolo[4,3-c]pyridine</heading>'
+           '<p>The crude product was purified by chromatography (3.20 g, 60%). '
+           'LCMS calculated for C 12 H 18 ClIN 3 OSi (M+H) '
+           '<sup>+</sup> m/z=410.0; found 410.0.</p>')
+    assert mass_gate.reported_masses(xml) == {"7": 410.0}
+
+
+def test_an_instrument_word_used_as_a_verb_states_no_mass():
+    """US20250163061A1 writes `monitored by LCMS control). Then a water
+    solution ... was stirred for 30 minutes`. A bare window reads the 30.
+
+    Distance from the instrument has to be earned by a formula in the way.
+    """
+    xml = ('<heading>Example 9. tert-Butyl piperazine-1-carboxylate</heading>'
+           '<p>The mixture was stirred (LCMS control). Then a water solution '
+           'of sodium bicarbonate was added and stirred for 30 minutes.</p>')
+    assert mass_gate.reported_masses(xml) == {}
+
+
+def test_the_last_mass_in_a_synthesis_is_the_one_the_heading_names():
+    """US9694016. A heading section is a whole synthesis, and the first mass
+    belongs to Step 1's intermediate.
+
+    Reading the first reported every multi-step example as contradicting by
+    the mass of everything the last step still had to add — a constant 243 Da
+    on cids 1, 3 and 6 alike, which is the signature of comparing against the
+    wrong molecule rather than of a wrong structure.
+    """
+    xml = ('<heading>Example 1: Synthesis of N-(4-methylphenyl)benzamide</heading>'
+           '<p>Step 1. The residue gave a white solid in 93% yield. '
+           'LCMS (m/z) (M+H)=200.0/201.8, Rt=0.35 min.</p>'
+           '<p>Step 2. The title compound was obtained. '
+           'LCMS (m/z) (M+H)=443.2, Rt=0.88 min.</p>')
+    assert mass_gate.reported_masses(xml) == {"1": 443.2}
+
+
+def test_a_preparation_does_not_donate_its_mass_to_an_example():
+    """US20250163061A1 numbers `Preparation 16` and `Example 16` separately.
+
+    Both normalise to the cid `16`, so the intermediate's mass landed on the
+    example's structure and reported a correct molecule as contradicting. The
+    name route already refuses these headings; the referee refuses the same
+    set, so the two cannot disagree about which headings assert a compound.
+    """
+    xml = ('<heading>Preparation 16. tert-Butyl 4-cyanopiperazine-1-carboxylate'
+           '</heading><p>LCMS (ESI) [MH]<sup>+</sup>: 727.</p>'
+           '<heading>Example 16. N-(4-cyanophenyl)benzamide</heading>'
+           '<p>LCMS (ESI) [MH]<sup>+</sup>: 620.</p>')
+    assert mass_gate.reported_masses(xml) == {"16": 620.0}
+
+
+def test_the_key_is_normalised_on_both_sides():
+    """A document numbering its examples `007` produced a dict keyed `007`
+    while every lookup asked for `7`. Zero overlap, and the gate reported
+    those rows unchecked — the same shape as `cid_first`'s raw-cell dict.
+    """
+    xml = ('<heading>Example 007. N-(4-cyanophenyl)benzamide</heading>'
+           '<p>LCMS (ESI) m/z 238.1 (M+H).</p>')
+    assert mass_gate.reported_masses(xml) == {"7": 238.1}
+
+    rows = [NamedCompound(patent_id="US1", cid="7", name="benzamide",
+                          smiles="O=C(N)c1ccccc1", inchikey="", start=0)]
+    mass_gate.check(rows, xml, "US1")
+    assert rows[0].mass_check in (mass_gate.VERDICT_AGREES,
+                                  mass_gate.VERDICT_CONTRADICTS,
+                                  mass_gate.VERDICT_UNAVAILABLE)
+
+
+def test_a_mass_inside_a_table_belongs_to_its_row_not_to_the_heading():
+    """A heading section may CONTAIN a table. The row shape already owns
+    anything printed inside one, so the section is read with tables cut out.
+    """
+    xml = ('<heading>Example 5. N-(4-cyanophenyl)benzamide</heading>'
+           '<tables><table><row><entry>91</entry>'
+           '<entry>MS (ESI) 561 (M + H)</entry></row></table></tables>'
+           '<p>LCMS (ESI) m/z 238.1 (M+H).</p>')
+    assert mass_gate.reported_masses(xml) == {"91": 561.0, "5": 238.1}

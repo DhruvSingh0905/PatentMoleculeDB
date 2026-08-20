@@ -77,6 +77,8 @@ import html
 import logging
 import re
 
+from .uspto_assays import normalize_cid as _normalize_cid
+
 logger = logging.getLogger(__name__)
 
 # `MS (ESI) 561 (M+H)`, `MS (ESI+) m/z 561.2 (M+H)+`, `MS(ESI) 561`. The mass
@@ -109,6 +111,45 @@ REPORTED_ALT = re.compile(
     r"[^0-9]{0,10}(?:[\[(][^\])]{0,14}[\])])?[^0-9]{0,10}"
     r"(\d{2,4}(?:\.\d+)?)", re.I)
 
+# WHERE A MASS STATEMENT STARTS. The union of the two anchors above, with the
+# number left off: finding the statement and reading its number are separate
+# jobs, because the text in between is not empty and not fixed.
+_INSTRUMENT = re.compile(
+    r"MS\s*\(ESI[^)]*\)|\b(?:ESI|APCI|LC|HR|HPLC)[\s/-]*MS\b", re.I)
+
+# A MOLECULAR FORMULA'S SUBSCRIPT IS A NUMBER, AND IT SITS EXACTLY WHERE THE
+# MASS SITS. `LCMS calculated for C 12 H 18 ClIN 3 OSi (M+H) + m/z=410.0` gave
+# 12 — the carbon count — because a `[^0-9]` run reaches the first digit it
+# finds and that digit belongs to the formula. Every compound in US10280164
+# (16 of 16) and US10722495 (48 of 51) read as contradicting on nothing but
+# this. 4,772 of 26,332 instrument mentions in the corpus print `calculated
+# for`, so it is not one vendor's habit.
+#
+# Same family as the adduct digits this file already steps over, and as
+# `&#x2212;` being read as 2,212: THE GAP BETWEEN THE INSTRUMENT AND THE MASS
+# HAS NUMBERS IN IT, AND THEY ARE NOT MASSES. Enumerating the things that can
+# appear in the gap is what failed twice; this asks about the number instead.
+#
+# A subscript follows its ELEMENT SYMBOL. A mass follows `=`, `:`, `,`, a
+# bracket, or `m/z`. So a candidate whose preceding text ends in an element
+# symbol is not a mass, and the scan moves to the next number.
+_ELEMENT_TAIL = re.compile(r"(?:^|[^A-Za-z])[A-Z][a-z]?\s*$")
+
+# Two digits minimum: a single digit is a subscript, a stoichiometry or a
+# locant, never an m/z this gate can use.
+_NUMBER = re.compile(r"\d{2,4}(?:\.\d+)?")
+
+# How far past the instrument name the mass may sit. A formula plus an adduct
+# is long — `calculated for C 23 H 33 ClN 5 OSi (M+H) + m/z=` is 46 characters
+# — so the window has to clear one, and stopping short is what made the old
+# patterns settle for the formula's first digit.
+_MASS_WINDOW = 80
+
+# How close a mass sits when NO formula is in the way. `MS (ESI) 485 (M+H)`,
+# `LC-MS: 412 (M+1)`, `m/z=477.2` — the number follows the statement almost
+# immediately. See `printed_mass` for why the far window has to be earned.
+_MASS_NEAR = 24
+
 # A COLUMN, not a sentence: `MS (m/e)` over `481.0 (M + H), CP`, or
 # `[m/z (M+H)]` over `450.24`. 22 of 137 patents print their mass only in this
 # shape, including every markush substituent table — which is why the wiki's
@@ -125,6 +166,13 @@ _MASS_CELL = re.compile(r"^\s*(\d{2,4}(?:\.\d+)?)\s*(?:[(\[]|,|\s|$)")
 # letter suffix. Same shape `uspto_assays` reads, and deliberately strict —
 # a row whose first cell is prose states no compound number.
 _ROW_CID = re.compile(r"\s*(\d+[A-Za-z]?)\s")
+
+# CALS table markup, in either spelling. A heading section may CONTAIN a table,
+# and a mass printed inside one belongs to that table's own row — the first
+# shape below already owns it. Cutting the tables out of the section leaves
+# only the prose the heading itself introduces.
+_TABLE_BLOCK = re.compile(r"<tables\b.*?</tables>|<table\b.*?</table>",
+                          re.S | re.I)
 
 PROTON = 1.00728
 
@@ -156,6 +204,41 @@ PROTON = 1.00728
 # exhaustively and freezes another without noticing it had one.
 _ADDUCT_MINUS = re.compile(
     r"[\[(]\s*M\s*(?:&#x2212;|&#8722;|&minus;|[-−–])\s*(?:H|1)\s*[\])]", re.I)
+
+
+def _mass_hits(flat: str):
+    """Every m/z the text states, as `(mass, index in flat)`, in reading order.
+
+    `flat` is tag-stripped and entity-unescaped. Each instrument mention yields
+    at most one mass — the first number after it that is not a molecular-formula
+    subscript, see `_ELEMENT_TAIL`.
+    """
+    for m in _INSTRUMENT.finditer(flat):
+        window = flat[m.end():m.end() + _MASS_WINDOW]
+        skipped = False
+        for n in _NUMBER.finditer(window):
+            if _ELEMENT_TAIL.search(window[:n.start()]):
+                skipped = True            # a subscript, not a mass
+                continue
+            # THE ONLY REASON TO LOOK FAR IS A FORMULA IN THE WAY. Without one,
+            # a mass sits right after the instrument — `MS (ESI) 485 (M+H)`. A
+            # number 60 characters downstream with no formula between is a
+            # different sentence: US20250163061A1 writes `monitored by LCMS
+            # control). Then a water solution ... stirred for 30 minutes`, and
+            # a bare window reads the 30. So distance has to be earned by the
+            # subscripts skipped to reach it.
+            if n.start() <= _MASS_NEAR or skipped:
+                yield float(n.group(0)), m.end() + n.start()
+            break
+
+
+def printed_mass(flat: str) -> "float | None":
+    """The m/z this text states, or `None`. The FIRST one it states.
+
+    For a table row, which is one compound. A heading section is a synthesis
+    and states several — see `_heading_masses`.
+    """
+    return next((mass for mass, _pos in _mass_hits(flat)), None)
 
 
 def _shift(row_markup: str) -> float:
@@ -240,10 +323,13 @@ def reported_masses(xml: str) -> dict[str, float]:
     same compound, and the alternative (last wins) would silently prefer
     whichever table the parser happened to reach last.
 
-    THREE SHAPES, IN PRIORITY ORDER. A sentence naming the instrument
+    FOUR SHAPES, IN PRIORITY ORDER. A sentence naming the instrument
     (`REPORTED`, then `REPORTED_ALT`) beats a bare column, because a sentence
     says what it is measuring and a column says it only in its header. The
     column shape is read last and only for rows the sentences did not answer.
+    A sentence in a table row and a sentence in a heading section are the same
+    kind of statement; the row is tried first only because it is the narrower
+    scope.
     """
     return {cid: mass for cid, (mass, _shift_) in _scan(xml).items()}
 
@@ -261,6 +347,13 @@ def _scan(xml: str) -> dict[str, tuple[float, float]]:
     tight cluster at 2.1-2.3 Da that is the signature of exactly this mistake.
 
     A shape either yields both numbers or neither.
+
+    EVERY KEY IS NORMALISED, ON BOTH SIDES. `check` looks up `r.cid`, and the
+    heading route stores a cid that has been through `normalize_cid`, so a
+    document numbering its examples `007` produced a dict keyed `007` and a
+    lookup asking for `7`. Zero overlap, and the gate simply reported those
+    rows unchecked — the same shape as `cid_first`'s raw-cell dict, which cost
+    US12065407 every drawn marker it had.
     """
     out: dict[str, tuple[float, float]] = {}
     for m in re.finditer(r"<row>.*?</row>", xml, re.S):
@@ -273,14 +366,97 @@ def _scan(xml: str) -> dict[str, tuple[float, float]]:
         # A referee that can invent a 2,212 Da compound is worse than no
         # referee, because it discredits right answers.
         flat = html.unescape(re.sub(r"<[^>]+>", " ", raw))
-        hit = REPORTED.search(flat) or REPORTED_ALT.search(flat)
-        if not hit:
+        mass = printed_mass(flat)
+        if mass is None:
             continue
         cid = _ROW_CID.match(flat)
-        if cid:
-            out.setdefault(cid.group(1), (float(hit.group(1)), _shift(raw)))
-    for cid, pair in _column_masses(xml).items():
+        if cid and (key := _normalize_cid(cid.group(1))):
+            out.setdefault(key, (mass, _shift(raw)))
+    for cid, pair in _heading_masses(xml).items():
         out.setdefault(cid, pair)
+    for cid, pair in _column_masses(xml).items():
+        if key := _normalize_cid(cid):
+            out.setdefault(key, pair)
+    return out
+
+
+def _heading_masses(xml: str) -> dict[str, tuple[float, float]]:
+    """The heading-section shape. `{compound number -> (printed m/z, shift)}`.
+
+    `<heading>Example 418: <name></heading>`, then the characterisation data in
+    the `<p>` elements beneath it, up to the next heading:
+
+        <heading>Example 418: N-(4-cyano-3-(...)phenyl)-2-(...)isonicotinamide
+        <p><chemistry><img .../></chemistry></p>
+        <p>1H NMR (400 MHz, cd3od) ... LCMS (m/z) (M+H)=477.2, Rt=0.78 min.</p>
+
+    THE GATE COULD NOT SEE ANY OF THIS. `_scan` read `<row>` elements and
+    nothing else, so a document that prints its masses in prose — which is most
+    of them — had no reference at all. 3,735 of 38,402 structures carried a
+    verdict; this brings 7,326 more compounds into range, and the documents it
+    reaches are the ones that need it: US10245267 states the SAME NAME under
+    Examples 415, 418 and 419 while printing 484.2, 477.2 and 473.2 beneath
+    them. The name is repeated, the masses are not, and the paragraph disproves
+    the name it sits under.
+
+    Attribution is bounded exactly as the row shape is. The section ends at the
+    next heading, so a mass can only ever reach the compound whose heading
+    introduces it, never a neighbour's.
+
+    The id comes from `iupac_names._HEADING_ID` — the SAME cue that names the
+    compound — rather than a second pattern of this module's own. A referee
+    that disagreed with the route it referees about which compound a heading
+    names would be worse than no referee.
+    """
+    # Imported here, not at module scope: this file is otherwise a leaf, and
+    # `iupac_names` pulls in OPSIN, the anchor index and the repair library.
+    from .iupac_names import (_HEADING_EL, _HEADING_ID,
+                              _NOT_A_FINISHED_COMPOUND)
+
+    out: dict[str, tuple[float, float]] = {}
+    heads = list(_HEADING_EL.finditer(xml))
+    for i, h in enumerate(heads):
+        title = html.unescape(re.sub(r"<[^>]+>", " ", h.group(1))).strip()
+        idm = _HEADING_ID.match(title)
+        if not idm:
+            continue
+        # `Preparation 16` AND `Example 16` ARE TWO DIFFERENT COMPOUNDS. They
+        # are separate numbering series, and normalising both gives the cid
+        # `16` twice — so an intermediate's mass lands on the example's
+        # structure and reports a correct molecule as contradicting. 89 of
+        # US20250163061A1's 167 structures failed on exactly that.
+        #
+        # The name route already refuses these headings, so the referee refuses
+        # the same ones, by the same set. Two rules for which headings assert a
+        # compound would eventually disagree, and the referee would lose.
+        if (idm.group("label") or "").lower() in _NOT_A_FINISHED_COMPOUND:
+            continue
+        cid = _normalize_cid(idm.group("cid"))
+        if not cid:
+            continue
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(xml)
+        raw = _TABLE_BLOCK.sub(" ", xml[h.end():end])
+        flat = html.unescape(re.sub(r"<[^>]+>", " ", raw))
+        # THE LAST MASS, NOT THE FIRST. A heading section is a whole synthesis:
+        #
+        #     Example 1: Synthesis of N-(4-methyl-3-(6-morpholinopyrimidin-4-yl)
+        #                phenyl)-3-(trifluoromethyl)benzamide
+        #     ... Step 1 ... LCMS (m/z) (M+H)=200.0/201.8 ...
+        #     ... Step 2 ... LCMS (m/z) (M+H)=443.2 ...
+        #
+        # 200.0 is Step 1's intermediate. The heading names what the section
+        # PRODUCES, so the mass that belongs to it is the one stated last.
+        # Taking the first reported every multi-step example as contradicting
+        # by the mass of everything the last step still had to add — 243 Da on
+        # US9694016 cids 1, 3 and 6 alike, a constant offset that is the
+        # signature of comparing against the wrong molecule rather than of a
+        # wrong structure.
+        hits = list(_mass_hits(flat))
+        if hits:
+            mass, at = hits[-1]
+            # The adduct for THAT statement, not for whichever step happened to
+            # run in negative mode. Same both-or-neither rule as `_scan`.
+            out.setdefault(cid, (mass, _shift(flat[max(0, at - 60):at + 60])))
     return out
 
 
@@ -437,11 +613,13 @@ def check(rows: list, xml: str, patent_id: str = "") -> dict[str, int]:
     # no information. Rows that had something to check against are stamped
     # `gate_unavailable`, and one record per patent lands in the loss log.
     if not available():
-        n = sum(1 for r in rows if ms.get(str(getattr(r, "cid", "") or "")))
+        n = sum(1 for r in rows
+                if ms.get(_normalize_cid(str(getattr(r, "cid", "") or ""))))
         for r in rows:
             try:
                 r.mass_check = (VERDICT_UNAVAILABLE
-                                if ms.get(str(getattr(r, "cid", "") or ""))
+                                if ms.get(_normalize_cid(
+                                    str(getattr(r, "cid", "") or "")))
                                 else VERDICT_UNCHECKED)
                 r.mass_delta = ""
             except AttributeError:
@@ -457,7 +635,7 @@ def check(rows: list, xml: str, patent_id: str = "") -> dict[str, int]:
     tally = {VERDICT_AGREES: 0, VERDICT_CONTRADICTS: 0, "unchecked": 0}
     for r in rows:
         cid = getattr(r, "cid", None)
-        key = str(cid) if cid else ""
+        key = _normalize_cid(str(cid)) if cid else ""
         v, d = verdict(getattr(r, "smiles", ""), ms.get(key),
                        shifts.get(key, PROTON))
         try:
@@ -470,7 +648,7 @@ def check(rows: list, xml: str, patent_id: str = "") -> dict[str, int]:
             _losses.record(
                 "mass_contradicts_patent", patent_id, cid=cid,
                 name=getattr(r, "name", "")[:120], source=getattr(r, "source", ""),
-                reported_mh=ms.get(str(cid)), delta=round(d or 0, 2))
+                reported_mh=ms.get(key), delta=round(d or 0, 2))
     if tally[VERDICT_CONTRADICTS]:
         logger.info("mass_gate: %s — %d of %d weighable structures contradict "
                     "the mass their own row prints", patent_id,
