@@ -381,6 +381,14 @@ def _adopt(here: dict, conflicts: set, br: BinRange) -> None:
     `***`. Taking the first and applying it to every column is a silent 10x on
     half the records; taking neither costs the records and states the truth.
     """
+    # WHY AN IMPOSSIBLE INTERVAL IS NOT REFUSED HERE. US9221791 prints its own
+    # scale with a typo — `>1.5-1.5 B` where `B` should read `>0.5-1.5` — so
+    # 17 records carry lo == hi == 1.5. Refusing that reading was tried and
+    # REVERTED: a later pass then reads the same text as the open-ended `>1.5`,
+    # which is wrong in the other direction (a B compound is at most 1.5, not
+    # above it) and silently overlaps C and D. `check_impossible_interval`
+    # already reports lo == hi, so the defect is visible; the refusal traded a
+    # flagged defect for a hidden one, which is the worse of the two.
     prev = here.get(br.symbol)
     if prev is None:
         here[br.symbol] = br

@@ -469,6 +469,32 @@ _PROSE_CELL = re.compile(
 # chemical shift always cites a number (`δ 8.11 (s, 1H)`); a Greek letter in a
 # target name never does, and targets are full of them — PI3Kδ, PKCδ, PI3Kγ.
 
+# THE SAME MISTAKE, ONE LEVEL UP: A COLUMN IS NAMED AFTER WHAT IT HOLDS.
+#
+# A table that reports masses has a column headed `[M + H]`. One that reports
+# retention times has `Rt` and `(min)`. One that names its method has `HPLC`.
+# Every one of those is a literal cell above, so the row that NAMES the columns
+# was read as an MS trace and thrown away:
+#
+#     ['No.', 'Structure', 'Interm.', '[M + H]', '(min)', 'Method']
+#     ['Interm.', 'LCMS', 'Ret', 'HPLC']
+#
+# 895 declared multi-cell header rows corpus-wide, 788 of them on `M + H`;
+# 862 have no cell longer than 24 characters. US9718790 loses 565 of them —
+# essentially every one of its 565 blocks — which is the same 2.6 MB document
+# CLAUDE.md already names for the `_drawing_refs` `cells[0]` defect.
+#
+# WHAT SEPARATES THEM IS A NUMBER. Prose that mentions a mass STATES the mass;
+# an NMR list states its shifts; a retention time states its minutes. A column
+# name states the marker and nothing else. Prose long enough to carry the
+# marker without a number is caught by the 60-character test beside this one,
+# so requiring a digit costs nothing there.
+#
+# Same family as `\besi\b` matching "Synthesis" and a formula subscript being
+# read as a mass: a pattern that recognises a WORD, applied where the word is
+# the label rather than the thing.
+_PROSE_STATES_A_NUMBER = re.compile(r"\d")
+
 
 # A compound-identifier cell: "1", "12a", "A-7", "Ex. 203". Deliberately tight —
 # it is used to tell a data row from an interleaved annotation row, so admitting
@@ -664,7 +690,9 @@ def _is_namelike(cells: list["Cell"], *, declared: bool = False,
     texts = [c.text.strip() for c in cells if c.text.strip()]
     if len(texts) < 2 and not (declared and _spans_one_name(texts)):
         return False
-    if any(_PROSE_CELL.search(t) or len(t) > 60 for t in texts):
+    if any(len(t) > 60 or (_PROSE_CELL.search(t)
+                           and _PROSE_STATES_A_NUMBER.search(t))
+           for t in texts):
         return False
 
     # A ROW OF MEASUREMENTS IS DATA, WHATEVER ITS FIRST CELL SAYS. Every test

@@ -108,11 +108,19 @@ from patentdb3.sources.uspto_assays import extract_from_patent
 
 CLEAN_PID = "US8952177"
 DUAL_ROUTE_PID = "US10214537"
-# US9718825 held this role until the marker learned to read a scaffold
-# introduced in prose. Its 8 `drawn_ref` rows were Table 4's, and Table 4 is a
-# substituent table — so they became markush rows, correctly, and this patent
-# stopped having both kinds. US11548900 now does: 20 and 88, measured.
-MARKUSH_DRAWN_PID = "US11548900"
+# ONE PATENT PER MARKER, because carrying both is a property of a document and
+# no cached document has both any more.
+#
+# US9718825 held the both-kinds role until the marker learned to read a
+# scaffold introduced in prose: its 8 `drawn_ref` rows were Table 4's, Table 4
+# is a substituent table, so they became markush rows — correctly. US11548900
+# took over, then lost its substituent side for the same kind of reason: its
+# header `No. | R1X | Compound name | (M + H)+` was being thrown away as an MS
+# trace, and once it survived, `_markush_cids` could see the `Compound name`
+# column and stopped calling that table a substituent table. Both times the
+# invariant held and only the exemplar moved.
+MARKUSH_DRAWN_PID = "US11548900"       # 108 drawn_ref, 0 substituent, measured
+SUBSTITUENT_PID = "US9718825"          # 601 substituent, 0 drawn_ref, measured
 HEAL_PID = "US10030020"
 
 
@@ -335,20 +343,27 @@ def test_drawn_ref_and_substituent_table_markush_are_mutually_exclusive(monkeypa
 
     A row asserting both would be self-contradictory: "here is an openable
     picture of the whole molecule" and "the only picture on this row is a
-    substituent" cannot both be true of the same row. MARKUSH_DRAWN_PID is the
-    one cached patent (of 137 scanned) where cid_first emits BOTH kinds in the
-    same document — 20 `drawn_ref` rows and 88 `substituent_table:` rows,
-    directly measured — so the check has real teeth on both sides rather than
-    passing vacuously because one side is empty. It asserts non-vacuity for
-    that reason: when US9718825 held this role, a marker fix emptied its
-    drawn_ref side and this test said so rather than quietly passing.
+    substituent" cannot both be true of the same row.
+
+    NON-VACUITY IS ASSERTED ACROSS TWO DOCUMENTS, NOT ONE. This test used to
+    read a single patent that emitted both kinds, and that is a property of a
+    document rather than of the code: US11548900 held the role until its
+    `No. | R1X | Compound name | (M + H)+` header stopped being thrown away as
+    an MS trace, at which point `_markush_cids` could finally see the
+    `Compound name` column and — correctly, per its own docstring, "a table
+    with a Name column is NOT included" — stopped calling that table a
+    substituent table at all. The invariant did not change; the exemplar did.
+    So each side now comes from the document that actually exercises it, and
+    both are still asserted non-empty for the reason the single-patent version
+    was: when US9718825 held this role, a marker fix emptied its drawn_ref side
+    and this test said so rather than quietly passing.
     """
     pytest.importorskip("py2opsin")
     assert config.GP_ENABLED is False, (
         "this test's drawn_url assertion below assumes GP is off by default; "
         "turning it on here would be the wrong way to find that out")
-    xml = _xml(MARKUSH_DRAWN_PID)
-    names = extract_by_cid(xml, MARKUSH_DRAWN_PID)
+    names = extract_by_cid(_xml(MARKUSH_DRAWN_PID), MARKUSH_DRAWN_PID)
+    names += extract_by_cid(_xml(SUBSTITUENT_PID), SUBSTITUENT_PID)
 
     drawn = [n for n in names if n.drawn_ref]
     substituent = [n for n in names if n.markush_reason.startswith("substituent_table:")]
@@ -370,8 +385,12 @@ def test_drawn_ref_and_substituent_table_markush_are_mutually_exclusive(monkeypa
             f"row's picture is one fragment, never the whole structure, so "
             f"drawn_ref must stay empty on it")
 
-    # the two sets must be disjoint by cid as well as by construction
-    assert not ({n.cid for n in drawn} & {n.cid for n in substituent})
+    # The two sets must be disjoint by compound as well as by construction.
+    # Keyed on (patent, cid): a cid is unique only WITHIN a document, and both
+    # of these number their examples from 1, so comparing bare cids across the
+    # two would report every low number as a collision.
+    assert not ({(n.patent_id, n.cid) for n in drawn}
+                & {(n.patent_id, n.cid) for n in substituent})
 
 
 # ── assay records actually join structures on cid ─────────────────────────

@@ -405,10 +405,79 @@ def check_label_names_nothing(patent_id: str, xml: str, records) -> list[Flag]:
                 f"index. The value is right; the target is not stated"))]
 
 
+def check_drawn_but_unnumbered(patent_id: str, xml: str, records) -> list[Flag]:
+    """Rows that DRAW a compound and state no number for it.
+
+    THE CONDITION UNDER WHICH A COMPOUND NUMBER GETS INVENTED. US9682141
+    TABLE-US-00002 prints numbers 1-53 and then leaves the id cell empty for
+    the remaining 476 drawn compounds:
+
+        <row><entry>53</entry><entry><chemistry C00243/></entry><entry>++</entry>
+        <row><entry/>         <entry><chemistry C00244/></entry><entry>++</entry>
+
+    Carry-forward gave all of them the number 53, and cid 53 shipped 474
+    PI3K-alpha readings carrying four different letter grades — every one a
+    real measurement of a DIFFERENT molecule, filed under one number. The
+    reader now refuses that row, but nothing SAID the document had stopped
+    numbering, so the same shape in the next document would be found the same
+    way: by hand, downstream, after it shipped.
+
+    This is a fact about the DOCUMENT, not about our output, so it holds
+    whether the reader handles the shape well or badly. It needs no reference
+    database. Measured over 137 patents: 3,197 such rows in 106 table blocks
+    over 13 patents, led by US9682141 (476), US9303033 TABLE-US-00060 (354)
+    and US20240166635 TABLE-US-00002 (209).
+
+    THE FLAG IS NOT ALWAYS A BUG. Most of these blocks are structure-only
+    tables, where the document's own way of identifying a compound IS the
+    drawing — that is the image track's work, and the flag sizes it per table
+    rather than asserting a defect. What it always means is that this table
+    holds compounds no compound number can reach.
+
+    Three is the floor because one or two unnumbered drawn rows is a spacer or
+    a scheme illustration, not a numbering convention.
+    """
+    from ..sources.uspto_assays import normalize_cid
+    from ..sources.uspto_xml import parse_tables
+
+    try:
+        tables = parse_tables(xml)
+    except Exception:                     # never cost a run over an audit
+        return []
+    flags: list[Flag] = []
+    for t in tables:
+        drawn = unnumbered = 0
+        for row in t.body_rows:
+            if not any(getattr(c, "chemistry_id", "") for c in row):
+                continue
+            drawn += 1
+            # The id sits in the first cell, or the second when the drawing
+            # leads — US9718790 lays its tables out `Structure | Compound No.`
+            if not any(normalize_cid(c.text.strip()) for c in row[:2]):
+                unnumbered += 1
+        if unnumbered < 3:
+            continue
+        held = len({r.cid for r in records if r.table_id == t.table_id})
+        flags.append(Flag(
+            kind="drawn_but_unnumbered", patent_id=patent_id,
+            table_id=t.table_id, rows_at_stake=unnumbered,
+            examples=[f"{drawn} drawn row(s), {held} compound number(s) emitted"],
+            detail=(f"{unnumbered} row(s) in {t.table_id} draw a compound and "
+                    f"state no number for it ({drawn} drawn row(s) in the "
+                    f"table, {held} compound number(s) emitted). Any number "
+                    f"attached to those rows was carried from a neighbour, "
+                    f"and the document does not support it")))
+    return flags
+
+
 CHECKS = (check_n_runs_dropped, check_potency_out_of_range,
           check_unconvertible_unit, check_unnamed_assay,
           check_same_assay_disagrees,
           # Invariants over the OUTPUT — none of these needs a reference,
           # and each one names a state that cannot be true of real data.
           check_impossible_interval, check_duplicate_facts,
-          check_label_names_nothing)
+          check_label_names_nothing,
+          # A fact about the DOCUMENT, not about our output. It holds whether
+          # the reader handles the shape well or badly, which is what makes it
+          # a guard rather than a regression test.
+          check_drawn_but_unnumbered)
