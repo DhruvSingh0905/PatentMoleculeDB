@@ -192,3 +192,35 @@ create index if not exists ix_prof_metrics on compound_profiles using gin (metri
 create index if not exists ix_prof_targets on compound_profiles using gin (targets);
 create index if not exists ix_prof_best    on compound_profiles (best_um);
 create index if not exists ix_prof_key     on compound_profiles (inchikey);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- WHERE A STRUCTURE CAME FROM. Four routes, and they are not equivalent:
+--
+--   xml        read from the document's own text and parsed by OPSIN
+--   molscribe  the patent DREW it and named it nowhere; image recognition is
+--              the route that will resolve it, and until that runs the row has
+--              a compound number and no structure
+--   markush    assembled from a scaffold plus substituent columns
+--   gp         a Google Patents annotation, in `gp_compounds`, with no
+--              compound number by construction
+alter table compounds    add column if not exists route text;
+alter table gp_compounds add column if not exists route text not null default 'gp';
+create index if not exists ix_cmp_route on compounds (route);
+create index if not exists ix_gp_route  on gp_compounds (route);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- THE ONE TO READ. Everything joined, one row per compound, no internal id.
+--
+-- The compound number is the patent's own label — `A194`, `Example 12`, `7`.
+-- It is load-bearing INSIDE the pipeline: it is the only key the assay reader
+-- and the identity routes share, and every measurement hangs off it. It tells
+-- a reader of the finished data nothing, and two patents both numbering a
+-- compound `7` invites exactly the wrong comparison.
+--
+-- So it stays in `compounds`, `measurements` and `compound_profiles`, where
+-- joining needs it, and it is absent here, where reading happens.
+create or replace view compound_data as
+select patent_id, name, smiles, inchikey, route, reported_mz, mass_check,
+       n_measurements, n_assays, best_um, metrics, targets, assays
+  from compound_profiles;
+alter view compound_data set (security_invoker = true);
