@@ -315,6 +315,95 @@ def test_no_gp_blocks_is_a_clean_empty_result_not_an_error():
     assert stats.net_new == 0
 
 
+# ── finished-compound filter ────────────────────────────────────────────
+#
+# See `gp_names.py`'s own measurement section (immediately above
+# `_finished_verdict`) for the evidence behind each rule: ring>=1, no boron,
+# heavy-atom count >= `_FINISHED_HAC_FLOOR` (20) — measured against 10,734
+# `reagents.classify`-labeled-`"compound"` GP rows and validated against
+# `structures.tsv`'s own resolved population.
+
+TOLUENE = "Cc1ccccc1"                 # HAC 7, one ring, no boron — too small
+HEXANE = "CCCCCC"                     # HAC 6, no ring — acyclic
+PINACOL_BORONATE = "CC1(C)OB(c2ccccc2)OC1(C)C"   # phenylboronic acid pinacol
+                                                   # ester — a ring, but boron
+# A real, complex, drug-shaped molecule: two chlorophenyl rings + a
+# piperazine ring + an amide linker, HAC 24 — confirmed by
+# `patentdb3.sources.opsin` to resolve from the IUPAC name
+# "N-(4-chlorophenyl)-2-[4-(4-chlorophenyl)piperazin-1-yl]acetamide", and by
+# `reagents.classify` to carry label `"compound"` (not in `REAGENT_LEXICON`,
+# and far above the HAC<=3 structural backstop).
+DRUG_SHAPED = "ClC1=CC=C(C=C1)NC(CN1CCN(CC1)C1=CC=C(C=C1)Cl)=O"
+
+
+def test_finished_verdict_short_circuits_on_a_non_compound_label():
+    fin, reason = gp_names.finished_verdict("reagent", TOLUENE)
+    assert fin is False
+    assert reason == "reagents_classify:reagent"
+
+    fin, reason = gp_names.finished_verdict("trace_fragment", "C")
+    assert fin is False
+    assert reason == "reagents_classify:trace_fragment"
+
+
+def test_finished_verdict_rejects_an_acyclic_compound_labeled_structure():
+    fin, reason = gp_names.finished_verdict("compound", HEXANE)
+    assert fin is False
+    assert reason.startswith("no_ring:")
+
+
+def test_finished_verdict_rejects_boron_even_with_a_ring():
+    fin, reason = gp_names.finished_verdict("compound", PINACOL_BORONATE)
+    assert fin is False
+    assert reason.startswith("boron:")
+
+
+def test_finished_verdict_rejects_below_the_hac_floor():
+    fin, reason = gp_names.finished_verdict("compound", TOLUENE)  # HAC 7, ring>=1, no B
+    assert fin is False
+    assert reason.startswith("too_small:")
+    assert f"floor={gp_names._FINISHED_HAC_FLOOR}" in reason
+
+
+def test_finished_verdict_accepts_a_drug_shaped_compound_labeled_structure():
+    fin, reason = gp_names.finished_verdict("compound", DRUG_SHAPED)
+    assert fin is True
+    assert reason.startswith("kept:hac=24")
+
+
+def test_finished_verdict_unparseable_or_blank_smiles_is_never_finished():
+    assert gp_names.finished_verdict("compound", "") == (False, "unparseable")
+    assert gp_names.finished_verdict("compound", "not a smiles") == (
+        False, "unparseable")
+
+
+def test_new_structures_wires_finished_and_finished_reason_onto_the_row():
+    """End-to-end: a real OPSIN name that resolves to a drug-shaped,
+    non-lexicon structure comes back `finished=True`; `stats.finished_kept`
+    counts it. Real OPSIN (local Java, no network) — same pattern as
+    `test_opsin_is_the_hard_gate_real_resolver` above."""
+    blocks = [gp_names.GPBlock(
+        id="1", name="N-(4-chlorophenyl)-2-[4-(4-chlorophenyl)piperazin-1-yl]acetamide",
+        domain="Chemical compound", smiles=DRUG_SHAPED, inchikey="")]
+    rows, stats = gp_names.new_structures("US1", blocks=blocks, held={})
+    assert len(rows) == 1
+    assert rows[0].label == "compound"
+    assert rows[0].finished is True
+    assert rows[0].finished_reason.startswith("kept:")
+    assert stats.finished_kept == 1
+
+
+def test_new_structures_a_reagent_row_is_never_finished():
+    blocks = [gp_names.GPBlock(id="1", name="dichloromethane",
+                               domain="Chemical compound", smiles="ClCCl",
+                               inchikey="")]
+    rows, stats = gp_names.new_structures("US1", blocks=blocks, held={})
+    assert rows[0].label == "reagent"
+    assert rows[0].finished is False
+    assert rows[0].finished_reason == "reagents_classify:reagent"
+    assert stats.finished_kept == 0
+
+
 # ── writer ────────────────────────────────────────────────────────────────
 
 def test_write_tsv_round_trips_every_field(tmp_path):
@@ -322,7 +411,8 @@ def test_write_tsv_round_trips_every_field(tmp_path):
         patent_id="US1", gp_name="toluene", domain="Chemical compound",
         gp_smiles="Cc1ccccc1", gp_inchikey="", smiles="Cc1ccccc1",
         inchikey="YXFVVABEGXRONW-UHFFFAOYSA-N", label="reagent",
-        reason="lexicon:solvent:toluene")
+        reason="lexicon:solvent:toluene", finished=False,
+        finished_reason="reagents_classify:reagent")
     out = gp_names.write_tsv([row], tmp_path / "gp_names.tsv")
     text = out.read_text()
     lines = text.strip("\n").split("\n")
@@ -330,7 +420,7 @@ def test_write_tsv_round_trips_every_field(tmp_path):
     assert lines[1].split("\t") == [
         "US1", "toluene", "Chemical compound", "Cc1ccccc1", "",
         "Cc1ccccc1", "YXFVVABEGXRONW-UHFFFAOYSA-N", "reagent",
-        "lexicon:solvent:toluene"]
+        "lexicon:solvent:toluene", "False", "reagents_classify:reagent"]
 
 
 def test_write_tsv_default_path_is_a_new_artifact_not_structures_tsv():
