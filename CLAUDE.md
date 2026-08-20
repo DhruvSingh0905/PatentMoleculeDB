@@ -242,6 +242,16 @@ Each item below cost real time. Read this list before you measure anything.
   172-rule `layout_rules.json`.
 - **Measure at the stage where the code runs.** A repair in `name_repair`
   acts inside the extractor. It never reaches the heal loop.
+- **BindingDB's `Target Name` IS NOT AUTHORITATIVE, and it fails on exactly
+  the abbreviation collision a vocabulary is meant to prevent.** US9745328 is
+  titled `Flap modulators`, says `5-lipoxygenase` 21 times, `leukotriene` 32
+  times and `endonuclease` ZERO times — it is a FLAP (arachidonate
+  5-lipoxygenase-activating protein) patent. BindingDB labels **898 of its
+  rows `Flap endonuclease 1`**, an unrelated DNA-repair nuclease. US8952177,
+  the same target and the same assay heading, it labels correctly. So the
+  "free controlled vocabulary" that a structure join buys carries its own
+  curation errors, and adopting it blind would import them. Our heading was
+  right on both documents.
 - **`IC50` HAS THE SAME SHAPE AS A COMPOUND NUMBER.** `_ID_CELL` reads "up to
   three letters, then digits", which is `A7`, `Ex. 203` — and `IC50`, `EC50`,
   `GI50`, `pKi`. `assemble_block`'s header promotion stops at the first row
