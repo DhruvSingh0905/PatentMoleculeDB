@@ -969,3 +969,83 @@ def test_a_continuation_row_with_no_drawing_still_inherits():
     recs = extract_from_tables(parse_tables(xml))
     assert {r.cid for r in recs} == {"7"}
     assert sorted(r.value_numeric for r in recs) == [10, 20]
+
+
+# ── Q. a metric name is not a compound number ─────────────────────────────
+
+def test_a_metric_name_is_not_a_compound_id():
+    """`_ID_CELL` reads "up to three letters, then digits". That is the shape
+    of `A7` and `Ex. 203` — and equally of `IC50`, `EC50`, `GI50` and `pKi`.
+
+    `assemble_block`'s header promotion stops at the first row that opens with
+    an id, because a graded data row like `['1','D']` is name-like by shape and
+    claiming it would eat real data. Against a header row stating the metric
+    per column that guard fires on a HEADER, and the block keeps only the rows
+    above it.
+    """
+    from patentdb3.sources.uspto_xml import _opens_with_id, Cell
+
+    def row(*t):
+        return [Cell(text=s) for s in t]
+
+    assert not _opens_with_id(row("IC50", "IC50", "IC50", "eration"))
+    assert not _opens_with_id(row("EC50", "EC50"))
+    assert not _opens_with_id(row("pKi", "pKi"))
+    # a real compound number still opens a data row
+    assert _opens_with_id(row("1", "", "+++", "++++"))
+    assert _opens_with_id(row("12a", "3.4"))
+    assert _opens_with_id(row("Ex. 203", "17"))
+
+
+def test_a_sentence_is_not_a_compound_name():
+    """The name-as-id branch accepts any long cell carrying three of `-`, `[`
+    or `(`. A bin legend, an NMR shift list and an MS trace all clear that bar,
+    and reading one as a compound id puts its annotation tgroup into
+    `assemble_block`'s `kin` — so its prose leads the assembled body and stops
+    the header promotion on its first step.
+
+    A systematic name is one token; a sentence is many words.
+    """
+    from patentdb3.sources.uspto_xml import _opens_with_id, Cell
+
+    def row(*t):
+        return [Cell(text=s) for s in t]
+
+    assert not _opens_with_id(row(
+        "than 10 microMolar), ++ (less than 10 microMolar), +++ "
+        "(less than 1 microMolar), and ++++ (less than 100 nM)."))
+    assert not _opens_with_id(row("3.79-3.68 (m, 2H), 2.80-2.57"))
+    assert not _opens_with_id(row("MS: 469.1/471.1 (M + H+) (Cl isotopy)"))
+    # a real name-as-id row survives, wrapped fragments included
+    assert _opens_with_id(row("2-(4-chlorophenyl)-N-methylacetamide", "12"))
+    assert _opens_with_id(row("thiophene-2-carboxylic acid"))
+
+
+def test_a_four_row_header_keeps_all_four(_xml_or_skip=None):
+    """US11547697 TABLE-US-00002 heads four PI3K isoform columns over two rows
+    and declares no thead at all:
+
+        ['MTOR', 'PI3K', 'PI3K', 'PI3K', 'PI3K', 'PC3',     'T47D']
+        ['C',    'α',    'β',    'δ',    'γ',    'prolif-', 'prolif-']
+        ['IC50', 'IC50', 'IC50', 'IC50', 'IC50', 'eration', 'eration']
+        ['Structure', '(nM)', '(nM)', '(nM)', '(nM)', '(nM)', '(nM)*']
+
+    All four rows must survive into the header, or the Greek letters never join
+    and 2,071 records name a target that is not the one measured.
+    """
+    import pytest
+    from patentdb3.core import config
+    from patentdb3.sources.uspto_xml import parse_tables, assemble_block
+    from patentdb3.sources.uspto_assays import merge_header, _split_rows
+
+    path = config.XML_INPUT_DIR / "US11547697.xml"
+    if not path.exists():
+        pytest.skip("US11547697 not cached")
+    xml = path.read_text(errors="replace")
+    block = assemble_block(parse_tables(xml), "TABLE-US-00002")
+    assert block is not None
+    hdr, _ = _split_rows(block)
+    assert len(hdr) == 4, f"expected a four-row header, got {len(hdr)}"
+    names = merge_header(block, hdr)
+    for iso in ("α", "β", "δ", "γ"):
+        assert any(f"PI3K {iso}" in n for n in names), f"PI3K {iso} was lost"

@@ -510,6 +510,41 @@ _VALUE_CELL = re.compile(
 
 _ID_CELL = re.compile(r"(?:(?:Ex(?:ample)?\.?|Cpd|Compound)\s*)?[A-Za-z]{0,3}[-–]?\d{1,5}[-–]?[a-z]?", re.I)
 
+
+def _names_a_measurement(text: str) -> bool:
+    """Is this cell the NAME of a measurement rather than a compound id?
+
+    `_ID_CELL` reads "up to three letters, then digits". That is the shape of
+    `A7` and `Ex. 203` — and it is equally the shape of `IC50`, `EC50`, `GI50`
+    and `pKi`. So a header row stating the metric per column opens, by this
+    test, with a compound identifier:
+
+        ['IC50', 'IC50', 'IC50', 'IC50', 'IC50', 'eration', 'eration']
+
+    `assemble_block`'s header promotion stops at the first row that opens with
+    an id, because a graded data row like `['1', 'D']` is name-like by shape
+    and claiming it would eat real data. Against a metric row that guard fires
+    on a header, and the block keeps only the header rows above it. US11547697
+    keeps `['MTOR','PI3K','PI3K','PI3K','PI3K','PC3','T47D']` and loses the
+    three rows beneath it, so its four PI3K isoform columns all end up labelled
+    `PI3K` — 2,071 records naming a target that is not the one measured.
+
+    THE VOCABULARY IS ALREADY IN THE TREE and is already patent-agnostic:
+    `data/assay_vocabulary.json`, class `ASSAY_TYPE`, sourced from BindingDB
+    and ChEMBL. Restating it here would be a third copy of a decision this
+    repo has twice been bitten by keeping in two places. No patent numbers a
+    compound `IC50`, so this costs no real id.
+
+    Imported inside the function on purpose: `uspto_assays` imports THIS
+    module, so a module-level import would close the cycle. By the time any
+    row is read, that module is loaded, and `_vocab` is itself cached.
+    """
+    try:
+        from .uspto_assays import _vocab
+        return text.strip().lower() in _vocab()[0]
+    except Exception:                    # vocabulary is an optimisation
+        return False
+
 # Two chemical-name-substring lists, each used by a different caller below to
 # recognise a long cell as an IUPAC-style compound name rather than prose.
 # `_opens_with_id` uses the WIDE list (admitting a name-as-id row into the
@@ -537,6 +572,41 @@ def _looks_like_chem_name(name: str, pattern: re.Pattern) -> bool:
     expression, not the difference between the two call sites.
     """
     return bool(pattern.search(name)) or (name.count('-') + name.count('[') + name.count('(')) >= 3
+
+
+# A SYSTEMATIC NAME IS ONE TOKEN. PROSE IS MANY WORDS.
+#
+# `_looks_like_chem_name` accepts any long string carrying three of `-`, `[`
+# or `(`, and an NMR shift list, an MS trace and a bin legend all clear that
+# bar. Read as a name-as-id they become COMPOUND IDENTIFIERS, which puts the
+# annotation tgroup holding them into `assemble_block`'s `kin` — so its prose
+# rows lead the assembled body and stop the header promotion on its first
+# step. US11547697's title tgroup enters `kin` on the sentence
+# `than 10 microMolar), ++ (less than 10 microMolar), +++ ...`, and the block
+# keeps one header row of the four it has.
+#
+# Measured over 16,858 cells the name-as-id branch currently accepts:
+#
+#     no spaces at all                       9,602    a systematic name
+#     under 1 space per 20 characters        1,279    a name with a prefix
+#     1 space per 10-20 characters             651    `ethoxy-benzoic acid`,
+#                                                     `thiophene-2-carboxylic
+#                                                     acid` — wrapped names
+#     1 per 7-10                               956    `3.79-3.68 (m, 2H)`,
+#                                                     `Prep-HPLC-4, gradient:`
+#     more than 1 per 6                      2,991    plainly sentences
+#
+# The line falls between the third and fourth bands. WHAT IT CANNOT SEPARATE,
+# stated rather than tuned away: a real name fragment written with spaces —
+# `419 & 420: (S)-3-(2-((1-` — sits in the fourth band and is refused with the
+# prose. That is the cost, and it is smaller than reading a shift list as a
+# compound.
+_MAX_SPACE_RATE = 0.10
+
+
+def _is_one_token(name: str) -> bool:
+    """Is this a chemical name rather than a sentence? See `_MAX_SPACE_RATE`."""
+    return name.count(" ") < _MAX_SPACE_RATE * len(name)
 
 
 def _opens_with_id(cells: list["Cell"]) -> bool:
@@ -585,6 +655,10 @@ def _opens_with_id(cells: list["Cell"]) -> bool:
     # fixed cap of 5 hid it by stopping the damage at three rows rather than
     # forty \u2014 the misclassification was always there.
     first = first.rstrip(".")
+    # A METRIC NAME IS NOT A COMPOUND NUMBER, and it has the same shape.
+    # See `_names_a_measurement`.
+    if _names_a_measurement(first):
+        return False
     if _ID_CELL.fullmatch(first):
         return True
     # Name-as-id: long chemical name in col 0, with or without a value in col 1.
@@ -593,7 +667,8 @@ def _opens_with_id(cells: list["Cell"]) -> bool:
     # US9018217 TABLE-US-00001 where the full IUPAC name is the compound id.
     if 1 <= len(texts) <= 2:
         name = texts[0]
-        if len(name) > 15 and _looks_like_chem_name(name, _CHEM_SUBSTR_WIDE):
+        if (len(name) > 15 and _is_one_token(name)
+                and _looks_like_chem_name(name, _CHEM_SUBSTR_WIDE)):
             return True
     return False
 

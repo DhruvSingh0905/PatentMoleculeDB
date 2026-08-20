@@ -194,19 +194,29 @@ def test_states_unit(source, unit, grounded, why):
 
 
 def test_body_cells_count_as_the_document(table):
-    """The unit row our own header detection misfiled as data still grounds.
+    """A unit stated only in the BODY still grounds a repair.
 
-    US9682141's merged header is `mTO RC | PI3K α | …` while body rows 0-1 read
-    `IC50 | IC50 | …` and `(nM) | (nM) | …` — a three-row header of which
-    `_header_rows_of` claimed one. Excluding the body meant the model got blamed
-    for reassembling it correctly.
+    The rule under test is that grounding reads the whole block, not just the
+    rows our own header detection claimed. If it read the header alone, a model
+    that correctly reassembled a unit from further down the table would be
+    marked ungrounded and its repair thrown away.
+
+    THE EXEMPLAR MOVED, AND WHY IS THE POINT. This was US9682141
+    TABLE-US-00002, whose merged header read `mTO RC | PI3K α | …` while body
+    rows 0-1 held `IC50 | IC50 | …` and `(nM) | (nM) | …` — a header of which
+    `_header_rows_of` claimed one row. That was a defect in `_opens_with_id`,
+    not a property of the document: `IC50` full-matches `_ID_CELL`, so the
+    header promotion stopped on a header row believing it had reached data.
+    With that fixed the header states its own unit and the case no longer
+    demonstrates anything. US10030020 TABLE-US-00002 does — its unit is in the
+    body and nowhere in the header.
     """
     from patentdb3.sources.uspto_assays import _header_rows_of, table_legend
 
-    tbl = next((t for t in assemble_blocks(parse_tables(_xml("US9682141")))
+    tbl = next((t for t in assemble_blocks(parse_tables(_xml("US10030020")))
                 if t.table_id == "TABLE-US-00002"), None)
     if tbl is None:
-        pytest.skip("US9682141 not cached")
+        pytest.skip("US10030020 not cached")
     hr, data = _header_rows_of(tbl)
     header_only = " ".join(c.text for r in hr for c in r) + (tbl.caption or "")
     with_body = header_only + " " + " ".join(c.text for r in data for c in r)
