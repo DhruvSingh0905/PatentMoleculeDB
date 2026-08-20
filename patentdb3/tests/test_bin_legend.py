@@ -1049,3 +1049,30 @@ def test_a_four_row_header_keeps_all_four(_xml_or_skip=None):
     names = merge_header(block, hdr)
     for iso in ("α", "β", "δ", "γ"):
         assert any(f"PI3K {iso}" in n for n in names), f"PI3K {iso} was lost"
+
+
+def test_an_assay_name_may_not_begin_inside_a_number():
+    """US11566007 TABLE-US-00006 runs its bin key straight into its heading:
+
+        ... ++: 0.01 uM > IC50 ... KRAS G12S FRET data IC50
+
+    `_assay_name_from`'s character class excludes `.`, so the match began at
+    the FRACTIONAL DIGITS and all 825 of that table's records were named
+    `01 uM KRAS G12S FRET data IC50`. The `0.` was never lost upstream — it was
+    never inside the match.
+
+    Same family as `mass_gate._NUMBER` reading `69` out of `t_R=0.69`: a
+    pattern that can start mid-token will, and the result stays plausible.
+    """
+    from patentdb3.sources.uspto_assays import _assay_name_from
+
+    assert _assay_name_from("0.01 uM KRAS G12S FRET data IC50") == \
+        "KRAS G12S FRET data IC50"
+    # a leading concentration is the grade's SCALE, not the target's name
+    assert _assay_name_from("1 uM BTK IC50") == "BTK IC50"
+    assert _assay_name_from("IC50 >= 0.1 uM ++ 0.01 uM BTK enzyme IC50") == \
+        "BTK enzyme IC50"
+    # a name that never had one is untouched
+    assert _assay_name_from("PI3K alpha IC50") == "PI3K alpha IC50"
+    assert _assay_name_from("KRAS G12S FRET data IC50") == \
+        "KRAS G12S FRET data IC50"

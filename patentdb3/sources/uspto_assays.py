@@ -2439,10 +2439,39 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
     return records
 
 
+# A NAME MAY NOT BEGIN INSIDE A NUMBER, and this one did.
+#
+# The character class below excludes `.`, so a run of allowed characters can
+# start at the FRACTIONAL DIGITS of a decimal. The block text of US11566007
+# TABLE-US-00006 runs its bin key straight into its heading —
+# `... ++: 0.01 uM > IC50 ... KRAS G12S FRET data IC50` — and the match began
+# at `01`, giving the assay the name `01 uM KRAS G12S FRET data IC50` on all
+# 825 of its records. The `0.` was not lost by the reader upstream; it was
+# never inside the match.
+#
+# Same family as `_NUMBER` in `mass_gate` matching `69` out of `t_R=0.69`:
+# a pattern that can start mid-token will, and the result stays plausible.
+_NOT_MID_NUMBER = r"(?<![\d.])"
+
+# And the key sits next to the heading, so whatever survives the boundary above
+# may still open with a CONCENTRATION — `1 uM BTK IC50`. That is the scale the
+# grade is measured against, not part of the target's name.
+_LEADING_CONC = re.compile(r"^(?:[\d.]+\s*)?(?:[nuµμmp]?M|%)\b\s*", re.I)
+
+
 def _assay_name_from(text: str) -> str | None:
     """Best-effort assay name from a bin table's own heading text."""
-    m = re.search(r"([A-Za-z0-9 /()\-]{4,60}?(?:IC\s*50|EC\s*50|Ki|Kd))", text)
-    return re.sub(r"\s+", " ", m.group(1)).strip() if m else None
+    m = re.search(
+        _NOT_MID_NUMBER + r"([A-Za-z0-9 /()\-]{4,60}?(?:IC\s*50|EC\s*50|Ki|Kd))",
+        text)
+    if not m:
+        return None
+    name = re.sub(r"\s+", " ", m.group(1)).strip()
+    prev = None
+    while name != prev:                     # `0.1 uM 1 uM BTK IC50` stacks
+        prev = name
+        name = _LEADING_CONC.sub("", name).strip()
+    return name or None
 
 
 
