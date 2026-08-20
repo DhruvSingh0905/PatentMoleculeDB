@@ -215,6 +215,28 @@ PROTON = 1.00728
 _ADDUCT_MINUS = re.compile(
     r"[\[(]\s*M\s*(?:&#x2212;|&#8722;|&minus;|[-−–])\s*(?:H|1)\s*[\])]", re.I)
 
+# A THIRD ADDUCT, AND IT IS NOT RARE. `[M+Na]` appears 674 times over 37
+# patents. US9670157 prints `[M+H]+=421.05 (M+Na)` — the tag says protonated
+# and the trailing marker says sodiated, and the VALUE is the sodiated one.
+# Judged as `[M+H]` those rows read 21.98 Da light, which is exactly Na - H,
+# and six of them contradicted on nothing else.
+#
+# The sodium marker wins wherever it appears, because it is the more specific
+# statement: a row that says `(M+Na)` at all is reporting a sodium adduct, and
+# the `[M+H]` beside it is boilerplate the author did not clear.
+_ADDUCT_SODIUM = re.compile(r"[\[(]\s*M\s*\+\s*Na\s*[\])]", re.I)
+
+# Sodium ION, not the neutral atom: 22.98977 less one electron.
+SODIUM = 22.98922
+
+# AN INSTRUMENT NAME IS ALSO A PURIFICATION METHOD. `purified by preparative
+# LCMS (Waters Xbridge C18, 19x150 mm)` states no mass at all — and the gate
+# read 19, the column's DIAMETER IN MILLIMETRES, on 7 rows over two patents.
+# A statement introduced by `preparative`, `prep-`, `purified` or `column` is
+# describing how the compound was separated, not what it weighs.
+_PURIFICATION = re.compile(
+    r"\b(?:prep(?:arative|\.)?|purif\w*|column|chromatograph\w*)\b[\s-]*$", re.I)
+
 
 def _mass_hits(flat: str):
     """Every m/z the text states, as `(mass, index in flat)`, in reading order.
@@ -224,6 +246,9 @@ def _mass_hits(flat: str):
     subscript, see `_ELEMENT_TAIL`.
     """
     for m in _INSTRUMENT.finditer(flat):
+        # A purification method, not a measurement. See `_PURIFICATION`.
+        if _PURIFICATION.search(flat[max(0, m.start() - 24):m.start()]):
+            continue
         window = flat[m.end():m.end() + _MASS_WINDOW]
         skipped = False
         for n in _NUMBER.finditer(window):
@@ -262,6 +287,8 @@ def _shift(row_markup: str) -> float:
     what 331 of the 353 adduct-bearing rows in this corpus print — but the
     default is now a stated fallback rather than an assumption nobody checked.
     """
+    if _ADDUCT_SODIUM.search(row_markup):
+        return SODIUM
     return -PROTON if _ADDUCT_MINUS.search(row_markup) else PROTON
 
 VERDICT_AGREES = "agrees"
@@ -518,9 +545,16 @@ def _column_masses(xml: str) -> dict[str, tuple[float, float]]:
         # `m/z = (M + H)+` over bare numbers. A header is one string per table,
         # so it is read once — and the cell is still checked, because a table
         # printing `[M+H]` in its header may print `[M-H]` in a given row.
-        head_shift = {i: -PROTON if _ADDUCT_MINUS.search(
-            next((c.header or "" for c in cols if c.index == i), "")) else PROTON
-            for i in mass_cols}
+        #
+        # BOTH ASK `_shift`, RATHER THAN RE-DERIVING IT. This block used to test
+        # `_ADDUCT_MINUS` inline, in two places, so when `_shift` learned to
+        # read `[M+Na]` this shape did not: US9670157 prints its sodium masses
+        # in a COLUMN, and its six sodiated rows kept being judged as `[M+H]`
+        # and kept contradicting by Na - H. One rule, called twice, is the only
+        # arrangement where teaching it something teaches every caller.
+        head_shift = {i: _shift(next((c.header or "" for c in cols
+                                      if c.index == i), ""))
+                      for i in mass_cols}
         for row in t.body_rows:
             if len(row) <= id_col:
                 continue
@@ -533,7 +567,10 @@ def _column_masses(xml: str) -> dict[str, tuple[float, float]]:
                 cell = (row[i].text or "").strip()
                 hit = _MASS_CELL.match(cell)
                 if hit:
-                    shift = (-PROTON if _ADDUCT_MINUS.search(cell)
+                    # The cell wins only when it states an adduct of its own.
+                    stated = (_ADDUCT_MINUS.search(cell)
+                              or _ADDUCT_SODIUM.search(cell))
+                    shift = (_shift(cell) if stated
                              else head_shift.get(i, PROTON))
                     out.setdefault(cid[0], (float(hit.group(1)), shift))
                     break

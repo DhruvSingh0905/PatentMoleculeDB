@@ -414,3 +414,42 @@ def test_a_salt_is_weighed_as_its_free_base():
     # and the verdict follows: the patent prints the free base's [M+H]
     reported = mono_base + mass_gate.PROTON
     assert mass_gate.verdict(salt, reported)[0] == mass_gate.VERDICT_AGREES
+
+
+def test_a_sodium_adduct_is_not_judged_as_protonated():
+    """`[M+Na]` appears 674 times over 37 patents. US9670157 prints
+    `[M+H]+=421.05 (M+Na)` — the tag says protonated, the trailing marker says
+    sodiated, and the VALUE is the sodiated one. Judged as `[M+H]` those rows
+    read Na - H = 21.98 Da light.
+
+    THE COLUMN SHAPE MUST LEARN IT TOO. `_column_masses` tested `_ADDUCT_MINUS`
+    inline rather than calling `_shift`, so teaching `_shift` about sodium left
+    that shape behind — and US9670157 prints its sodium masses in a column.
+    """
+    assert mass_gate._shift("[M+H] + =421.05 (M+Na).") == mass_gate.SODIUM
+    assert mass_gate._shift("[M+H]+") == pytest.approx(mass_gate.PROTON)
+    assert mass_gate._shift("[M - H]-") == pytest.approx(-mass_gate.PROTON)
+
+    # the column shape, which is where that patent states them
+    xml = ('<tables id="TABLE-US-00001"><table><tgroup cols="2">'
+           '<colspec colwidth="20pt"/><colspec colwidth="40pt"/>'
+           '<thead><row><entry>Compound</entry>'
+           '<entry>LCMS [M+Na]</entry></row></thead>'
+           '<tbody><row><entry>7</entry><entry>203.03</entry></row>'
+           '</tbody></tgroup></table></tables>')
+    assert mass_gate.reported_shifts(xml)["7"] == mass_gate.SODIUM
+    # ASPIRIN is 180.04 neutral, so 203.03 as [M+Na] agrees
+    assert mass_gate.verdict(ASPIRIN, 203.03, mass_gate.SODIUM)[0] == \
+        mass_gate.VERDICT_AGREES
+
+
+def test_a_purification_method_states_no_mass():
+    """`purified by preparative LCMS (Waters Xbridge C18, 19x150 mm)` names an
+    instrument and reports nothing. The gate read 19 — the column's DIAMETER in
+    millimetres — on 7 rows over US10071079 and US10214537.
+    """
+    assert mass_gate.printed_mass(
+        "purified by preparative LCMS (Waters Xbridge C18, 19x150 mm)") is None
+    assert mass_gate.printed_mass("prep-HPLC-MS, column 19 x 150 mm") is None
+    # a real statement in the same document still reads
+    assert mass_gate.printed_mass("LCMS (m/z) (M+H)=477.2, Rt=0.78 min.") == 477.2
