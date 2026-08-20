@@ -1076,3 +1076,52 @@ def test_an_assay_name_may_not_begin_inside_a_number():
     assert _assay_name_from("PI3K alpha IC50") == "PI3K alpha IC50"
     assert _assay_name_from("KRAS G12S FRET data IC50") == \
         "KRAS G12S FRET data IC50"
+
+
+def test_a_trailing_letter_is_part_of_the_label_not_the_family():
+    """US11708332 TABLE-US-00016 is `Compound | Ki (nM)` repeated three times
+    across, and its ids carry a disambiguating letter: `161e`, `28f`, `77e`.
+
+    `_id_family` blanked only the digits, so those became `#e`, `#f`, `#e` — a
+    different family per ROW. No family could reach `_id_column_family`'s
+    purity floor, `_column_groups` bailed, and the ordinary path then hung all
+    three identically-labelled `Ki (nM)` columns off the FIRST compound column.
+
+    A suffix letter varies per compound exactly as the digits do. A prefix
+    letter does not.
+    """
+    from patentdb3.sources.uspto_assays import _id_family
+
+    assert _id_family("161e") == _id_family("162c") == _id_family("163g") == "#"
+    # a prefix still carries the family, which is what this function is for
+    assert _id_family("I-0268") == _id_family("I-1607") == "I-#"
+    assert _id_family("A104") == "A#"
+    assert _id_family("2-1-1") == "#-#-#"
+    # and the label strip still happens first
+    assert _id_family("compound 64") == _id_family("64") == "#"
+
+
+def test_a_repeating_column_table_gives_each_compound_its_own_value():
+    """The defect above, end to end: three `Compound | Ki` pairs across one
+    row must produce three records, not one compound holding three values.
+    """
+    import pytest
+    from patentdb3.core import config
+    from patentdb3.sources.uspto_xml import parse_tables, assemble_block
+    from patentdb3.sources import uspto_assays as A
+
+    path = config.XML_INPUT_DIR / "US11708332.xml"
+    if not path.exists():
+        pytest.skip("US11708332 not cached")
+    xml = path.read_text(errors="replace")
+    block = assemble_block(parse_tables(xml), "TABLE-US-00016")
+    cols = A.build_columns(block)
+    rows = A._split_rows(block)[1]
+    groups = A._column_groups(cols, rows)
+    assert groups is not None and len(groups) == 3, (
+        f"expected three repeating groups, got {groups and len(groups)}")
+
+    recs = [r for r in A.extract_from_patent(xml)
+            if r.table_id == "TABLE-US-00016"]
+    # every record its own compound — before the fix, 72 records shared 59 cids
+    assert len({r.cid for r in recs}) == len(recs)

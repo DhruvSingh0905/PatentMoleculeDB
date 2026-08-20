@@ -2600,9 +2600,24 @@ def _id_family(text: str) -> str:
     the prefix and separators carry all of it. The label is stripped first
     because `normalize_cid` strips it too — `compound 64` and `64` are the same
     compound written twice, and must be the same family.
+
+    A TRAILING LETTER IS PART OF THE LABEL, NOT THE FAMILY. `161e`, `162c` and
+    `163g` are one column of one table, and blanking only the digits gave them
+    the families `#e`, `#c` and `#g` — a different family per ROW, so no family
+    could reach `_id_column_family`'s purity floor and `_column_groups` bailed.
+
+    US11708332 TABLE-US-00016 is `Compound | Ki (nM)` repeated three times
+    across. `build_columns` types all six correctly. With the grouped reader
+    refused, the ordinary path takes the FIRST cid column and hangs all three
+    identically-labelled `Ki (nM)` columns off it: the table states about 318
+    compound/value pairs and the dump holds 72 records over 59 compounds.
+
+    A suffix letter varies per compound exactly as the digits do. A PREFIX
+    letter does not — `I-0268` is still `I-#` and `A104` is still `A#`.
     """
     s = _CID_LABEL.sub("", (text or "").strip().strip(_TYPO_QUOTES)).strip()
-    return _DIGITS.sub("#", s)
+    s = _DIGITS.sub("#", s)
+    return re.sub(r"#[A-Za-z]$", "#", s)
 
 
 def _id_column_family(rows, i: int, val_idx: list[int] | None = None) -> str | None:
