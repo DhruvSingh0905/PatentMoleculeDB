@@ -51,17 +51,99 @@ _UNIT_IN_NAME = re.compile(
     r"\(\s*(?:n|u|µ|μ|m|p)?M\s*\)|\(\s*%\s*\)|\bnM\b|\buM\b|\bµM\b|\bμM\b", re.I)
 
 
+# THE TARGET IS WHAT COMES BEFORE THE METRIC.
+#
+# Stripping was the wrong shape. Removing the metric, then the unit, then the
+# dose, and calling the residue a target left `ABHD6 Inh 1 mouse` and
+# `BACE1 at 10` — one protein reading as several targets, because whatever
+# survived the subtractions ended up in the name.
+#
+# A heading is written target-first and this corpus is consistent about it:
+# `MAGL IC50 (human)`, `ABHD6 % Inh 1 uM (mouse)`, `PI3K alpha IC50 (nM)`.
+# So the target is the SEGMENT BEFORE the metric, and the three things that
+# follow it are read as themselves rather than deleted:
+#
+#     dose      the concentration the assay ran at — `% Inh at 1 uM` and
+#               `% Inh at 10 uM` are different measurements of one pair
+#     species   `(human)` and `(mouse)` are two assays, not one
+#
+# A heading that OPENS with its metric (`% Effect at 30 uM relative to ...`)
+# has nothing before it, so that case falls back to the residue.
+#
+# Longest alternative first in the unit group: `M` alone matched the `m` of
+# `mg/kg` and read `20 mg/kg` as 20 MOLAR — 2e7 uM.
+_DOSE_UNIT = r"(?:mg/kg|[uµ]g/m[lL]|nM|[uµμ]M|mM|pM|M|%)"
+_DOSE = re.compile(
+    r"\b(?:at\s+)?([\d.]+(?:\s*,\s*[\d.]+)*)\s*(" + _DOSE_UNIT + r")"
+    r"((?:\s*,\s*(?:p\.?o\.?|i\.?[vp]\.?|s\.?c\.?))?)", re.I)
+_DOSE_TO_UM = {"nm": 1e-3, "um": 1.0, "µm": 1.0, "μm": 1.0,
+               "mm": 1e3, "pm": 1e-6, "m": 1e6}
+_SPECIES = re.compile(
+    r"\b(human|mouse|murine|rat|dog|canine|monkey|cyno\w*|rabbit|"
+    r"bovine|porcine|hamster|guinea pig|mice)\b", re.I)
+
+
 def axes(name):
-    """(metric, target) for one heading. Neither is invented."""
-    metric = next((c for c, p in _METRIC if re.search(p, name, re.I)), None)
-    t = name
-    if metric:
-        for _c, p in _METRIC:
-            t = re.sub(p, " ", t, flags=re.I)
-    t = _UNIT_IN_NAME.sub(" ", t)
-    t = re.sub(r"[()\[\]]", " ", t)
-    t = re.sub(r"\s+", " ", t).strip(" -_,;:")
-    return metric, (t or None)
+    """(metric, target, dose, dose_um, species) for one heading.
+
+    Nothing here is invented: every field is a span of the heading itself.
+    """
+    # AN UNDERSCORE IS A WORD CHARACTER, so `\bIC50\b` does not match inside
+    # `PARG_EC50_ENZYME` or `FRET_ _IC50 (uM` — there is no word boundary
+    # between `_` and `E`. Two headings and 590 records had no metric read for
+    # that reason alone. Same family as every other pattern here that assumed
+    # its token would be delimited by a space.
+    name = name.replace("_", " ")
+    hit = None
+    metric = None
+    for canon, pat in _METRIC:
+        m = re.search(pat, name, re.I)
+        if m:
+            metric, hit = canon, m
+            break
+
+    # ANY THRESHOLD, NOT JUST THE COMMON ONES. The list above enumerates
+    # IC50/IC90/EC50/..., and a patent is free to report IC20 or ED90. Rather
+    # than grow the list one document at a time, an unmatched heading gets one
+    # generic pass — the same shape, with the threshold read off the text.
+    if metric is None:
+        g = re.search(r"\b(IC|EC|GI|CC|ED|LD|TD)\s*-?\s*(\d{2})\b", name, re.I)
+        if g:
+            metric, hit = (g.group(1).upper() + g.group(2)), g
+
+    sp = _SPECIES.search(name)
+    species = sp.group(1).lower() if sp else None
+
+    d = _DOSE.search(name)
+    dose = dose_um = None
+    if d:
+        dose = re.sub(r"\s+", " ",
+                      (d.group(1) + " " + d.group(2) + (d.group(3) or "")).strip())
+        f = _DOSE_TO_UM.get(d.group(2).lower())
+        if f and "," not in d.group(1):        # one dose, and a concentration
+            try:
+                dose_um = float(d.group(1)) * f
+            except ValueError:
+                dose_um = None
+
+    def _clean(t):
+        # DOSE FIRST. Stripping the unit first leaves the number orphaned —
+        # `at 30 uM` becomes `at 30`, which `_DOSE` can no longer match
+        # because it requires a unit.
+        t = _DOSE.sub(" ", t)
+        t = _UNIT_IN_NAME.sub(" ", t)
+        t = _SPECIES.sub(" ", t)
+        t = re.sub(r"[()\[\]]", " ", t)
+        return re.sub(r"\s+", " ", t).strip(" -_,;:.")
+
+    target = _clean(name[:hit.start()]) if hit else None
+    if not target:                              # the heading opens with its
+        t = name                                # metric — fall back to the
+        if hit:                                 # residue
+            for _c, pat in _METRIC:
+                t = re.sub(pat, " ", t, flags=re.I)
+        target = _clean(t) or None
+    return metric, target, (dose or None), dose_um, species
 
 
 def num(v):
@@ -123,15 +205,21 @@ def build():
         f = TO_UM.get((r.get("unit") or "").strip())
         val = num(r.get("value_numeric"))
         lo, hi = num(r.get("range_lo")), num(r.get("range_hi"))
-        metric, target = axes(r["assay_name"])
+        metric, target, dose, dose_um, species = axes(r["assay_name"])
         nested.setdefault(k, []).append({
             "assay": r["assay_name"], "metric": metric, "target": target,
+            "dose": dose, "dose_um": dose_um, "species": species,
             "qualifier": r.get("qualifier") or None,
-            "value_um": (val * f) if (f and val is not None) else None,
+            # As printed, ALWAYS. `value_um` and the `_um` bounds only exist
+            # when the unit is a concentration — a percent-inhibition band of
+            # 75-100% is a real range and was being dropped on the floor
+            # because `%` is not in `TO_UM`.
             "value": val, "unit": r.get("unit") or None,
-            "grade": r.get("letter_grade") or None,
+            "lo": lo, "hi": hi,
+            "value_um": (val * f) if (f and val is not None) else None,
             "lo_um": (lo * f) if (f and lo is not None) else None,
             "hi_um": (hi * f) if (f and hi is not None) else None,
+            "grade": r.get("letter_grade") or None,
             "n_runs": int(num(r.get("n_runs"))) if num(r.get("n_runs")) else None,
             "table": r["table_id"]})
 
