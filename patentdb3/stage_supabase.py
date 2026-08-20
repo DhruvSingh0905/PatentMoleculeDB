@@ -156,6 +156,22 @@ def num(v):
     return None if f != f else f
 
 
+def kept(d):
+    """The object minus every key the patent did not fill.
+
+    A FIXED KEY SET IS THE WRONG SHAPE HERE. The seventeen fields below are the
+    union of what any heading can carry, and no heading carries them all: a
+    letter grade has no value and no unit, a concentration has no dose and no
+    species. Writing the whole set anyway made 57.3% of every key null and the
+    object unreadable.
+
+    Nothing is lost by omitting them. Postgres reads a missing key and a null
+    key the same way — `a->>'grade' is null` is true for both, and `@>`
+    containment tests only the keys it is given.
+    """
+    return {k: v for k, v in d.items() if v is not None}
+
+
 def post(table, rows, per=1000):
     sent = 0
     for i in range(0, len(rows), per):
@@ -206,7 +222,7 @@ def build():
         val = num(r.get("value_numeric"))
         lo, hi = num(r.get("range_lo")), num(r.get("range_hi"))
         metric, target, dose, dose_um, species = axes(r["assay_name"])
-        nested.setdefault(k, []).append({
+        nested.setdefault(k, []).append(kept({
             "assay": r["assay_name"], "metric": metric, "target": target,
             "dose": dose, "dose_um": dose_um, "species": species,
             "qualifier": r.get("qualifier") or None,
@@ -221,12 +237,14 @@ def build():
             "hi_um": (hi * f) if (f and hi is not None) else None,
             "grade": r.get("letter_grade") or None,
             "n_runs": int(num(r.get("n_runs"))) if num(r.get("n_runs")) else None,
-            "table": r["table_id"]})
+            "table": r["table_id"]}))
 
     rows = []
     for (pid, cid), r in best.items():
-        a = sorted(nested.get((pid, cid), []), key=lambda d: d["assay"] or "")
-        ums = [d["value_um"] for d in a if d["value_um"] is not None]
+        # `.get` throughout, not `[]` — an object no longer carries a key it
+        # had nothing to put in.
+        a = sorted(nested.get((pid, cid), []), key=lambda d: d.get("assay") or "")
+        ums = [d["value_um"] for d in a if d.get("value_um") is not None]
         drawn = (r.get("drawn_ref") or "").strip()
         has_structure = bool(r.get("inchikey"))
         markush = r.get("markush") == "True"
@@ -250,11 +268,11 @@ def build():
             "reported_mz": num(mz.get((pid, cid))),
             "mass_check": r.get("mass_check") or None,
             "mass_delta": num(r.get("mass_delta")),
-            "n_assays": len({d["assay"] for d in a}),
+            "n_assays": len({d.get("assay") for d in a}),
             "n_measurements": len(a),
             "best_um": min(ums) if ums else None,
-            "metrics": sorted({d["metric"] for d in a if d["metric"]}) or None,
-            "targets": sorted({d["target"] for d in a if d["target"]}) or None,
+            "metrics": sorted({d["metric"] for d in a if d.get("metric")}) or None,
+            "targets": sorted({d["target"] for d in a if d.get("target")}) or None,
             "assays": a})
 
     # Google Patents structures: no compound number and no assays, so they get

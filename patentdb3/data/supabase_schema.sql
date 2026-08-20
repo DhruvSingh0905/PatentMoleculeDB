@@ -17,6 +17,14 @@
 --     where best_um < 1.0                  -- lifted out, so sorting is free
 --
 -- The patent's own words survive verbatim in each object's `assay`.
+--
+-- EACH OBJECT CARRIES ONLY THE KEYS ITS HEADING FILLED. The seventeen possible
+-- fields are the union over every heading, and no heading uses them all — a
+-- letter grade has no value and no unit, a concentration has no dose and no
+-- species. Writing the whole set made 57.3% of every key null, so an object
+-- now averages 7 keys instead of 17. A missing key is not missing data:
+-- `a->>'grade' is null` is true for an absent key and a null one alike, and
+-- `@>` tests only the keys it is given.
 
 create table compounds (
     patent_id      text not null,
