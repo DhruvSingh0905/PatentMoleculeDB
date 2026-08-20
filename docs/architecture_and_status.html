@@ -62,7 +62,7 @@
 <header>
   <h1>patentdb3 — Architecture and Status</h1>
   <p class="sub">Patent number in, structured chemistry out.</p>
-  <p class="stamp">2026-08-19 &nbsp;·&nbsp; 137 patents &nbsp;·&nbsp; corpus dump 2026-08-19T20:41</p>
+  <p class="stamp">2026-08-19 &nbsp;·&nbsp; 137 patents &nbsp;·&nbsp; corpus dump 2026-08-19T21:55</p>
 </header>
 
 <div class="kpi">
@@ -85,7 +85,7 @@ recognition needs GPU time.</p>
 <h2>2 · How it works</h2>
 
 <figure>
-<svg viewBox="-22 0 744 452" xmlns="http://www.w3.org/2000/svg" role="img"
+<svg viewBox="-22 0 744 468" xmlns="http://www.w3.org/2000/svg" role="img"
      aria-label="Pipeline diagram from patent XML to one row per compound">
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5"
@@ -197,7 +197,7 @@ recognition needs GPU time.</p>
         stroke-dasharray="3 3" marker-end="url(#a)"/>
   <path class="ln" d="M696,390 C714,330 714,190 694,166" fill="none"
         stroke-dasharray="3 3" marker-end="url(#a)"/>
-  <text class="t tx" x="350" y="384" text-anchor="middle" style="font-size:8px">
+  <text class="t tx" x="350" y="461" text-anchor="middle" style="font-size:8px">
     a repaired stage re-enters the pipeline above · a repair is kept only if a measurement improves
   </text>
 </svg>
@@ -216,8 +216,8 @@ appears again.</figcaption>
 <thead><tr><th>What works today</th><th>Measure</th><th>Note</th></tr></thead>
 <tbody>
 <tr><td>Assay values read from tables</td><td class="n">119,306</td><td>over 137 patents, under 553 assay names</td></tr>
-<tr><td>&nbsp;&nbsp;published as a grade, not a number</td><td class="n">32,898</td><td>a letter or <code>+</code>/<code>++</code>, with the scale defined in a legend</td></tr>
-<tr><td>&nbsp;&nbsp;graded values carrying the patent's own range</td><td class="n">25,202</td><td>of 32,898 (77%). Was 12,531 of 29,803 when this work started</td></tr>
+<tr><td>&nbsp;&nbsp;published as a grade, not a number</td><td class="n">32,880</td><td>a letter or <code>+</code>/<code>++</code>, with the scale defined in a legend</td></tr>
+<tr><td>&nbsp;&nbsp;graded values carrying the patent's own range</td><td class="n">25,184</td><td>of 32,880 (77%). Was 12,531 of 29,803 when this work started</td></tr>
 <tr><td>Compounds resolved to a structure</td><td class="n">24,506</td><td>all four routes together</td></tr>
 <tr><td>Structures the printed mass confirms</td><td class="n">11,232</td><td>of 12,092 weighed; 860 contradict the mass their own document prints</td></tr>
 <tr><td>Structures the patent contradicts</td><td class="n">133</td><td>across 23 patents; demoted, not deleted</td></tr>
@@ -263,7 +263,7 @@ measured has to be read out of the patent's prose.</p>
 
 <h2>4 · What is extracted, and what is still to run</h2>
 
-<p>44,930 compounds carry an assay value. 22,630 of them already hold a structure.
+<p>44,923 compounds carry an assay value. 22,639 of them already hold a structure.
 <strong>Most of the rest are not a failure to read the patent — they are drawings we have not
 put through recognition yet.</strong> That is a compute queue, not a defect. The remaining
 defects are traced and being fixed. The two are worth keeping apart, because only one of them
@@ -272,19 +272,19 @@ needs new work.</p>
 <table>
 <thead><tr><th>State</th><th>Compounds</th><th>Share</th><th>What it means</th></tr></thead>
 <tbody>
-<tr><td>Structure resolved</td><td class="n">22,630</td><td class="n">50%</td><td>identity established from the document</td></tr>
-<tr><td><strong>Drawn — recognition not yet run</strong></td><td class="n">12,684</td><td class="n">28%</td><td><strong>the method works. It needs compute.</strong></td></tr>
+<tr><td>Structure resolved</td><td class="n">22,639</td><td class="n">50%</td><td>identity established from the document</td></tr>
+<tr><td><strong>Drawn — recognition not yet run</strong></td><td class="n">12,666</td><td class="n">28%</td><td><strong>the method works. It needs compute.</strong></td></tr>
 <tr><td>Markush</td><td class="n">1,025</td><td class="n">2%</td><td>the assembly tier handles these</td></tr>
 <tr><td>Reader-side gap</td><td class="n">~8,100</td><td class="n">18%</td><td>traced to specific causes, work in progress</td></tr>
 </tbody></table>
 
 <div class="note">
-<p><strong>The 12,684 drawn compounds are the single largest item, and nothing about them is
+<p><strong>The 12,666 drawn compounds are the single largest item, and nothing about them is
 unsolved.</strong> A corpus sample of 166 drawings across 33 patents scored a per-patent median
 of 100% against the masses those patents printed, with 15 of 29 patents at or above 90%. The
 pipeline reads them correctly.</p>
 <p>They are unrun because structure recognition needs a GPU. We currently drive that through
-Google Colab, which is fine for a sample and <strong>does not scale to 12,684 drawings</strong> —
+Google Colab, which is fine for a sample and <strong>does not scale to 12,666 drawings</strong> —
 sessions are interactive, time-limited and billed per session. Recognition is decoupled from the
 rest of the pipeline, so any compute can do the work: the pipeline writes a job, a machine reads
 it, the pipeline reads the answers back. What is needed is compute, not code.</p>
@@ -316,7 +316,7 @@ documents, which is the cheap kind of problem.</p>
 <table>
 <thead><tr><th>Problem</th><th>Size</th><th>Status</th><th>What unblocks it</th></tr></thead>
 <tbody>
-<tr><td>Drawn compounds not yet recognised</td><td class="n">12,684 rows</td><td class="s"><span class="tag t-bad">open</span></td><td>GPU time. The method already works. 12,092 structures now print a mass we can weigh them against, up from 3,735.</td></tr>
+<tr><td>Drawn compounds not yet recognised</td><td class="n">12,666 rows</td><td class="s"><span class="tag t-bad">open</span></td><td>GPU time. The method already works. 12,092 structures now print a mass we can weigh them against, up from 3,735.</td></tr>
 <tr><td>Compound numbers invented for unnumbered rows</td><td class="n">2,073 rows</td><td class="fx">fixed</td><td>Done. US9682141 numbers its compounds 1–53 and then leaves the cell empty for 470 more, each drawing its own structure. The last number was carried forward, so cid 53 shipped 474 readings of 470 different molecules. A row that draws its own structure is not a continuation and no longer inherits.</td></tr>
 <tr><td>A column's NAME read as the prose it names</td><td class="n">895 rows</td><td class="fx">fixed</td><td>Done. A table reporting masses has a column headed <code>[M + H]</code>; one reporting retention times has <code>Rt</code>. The pattern that spots running prose matched those literal headers, so the row naming the columns was discarded — 565 of them in US9718790 alone. Prose states a number; a column name does not.</td></tr>
 <tr><td>The mass check read table rows only</td><td class="n">8,357 rows</td><td class="fx">fixed</td><td>Done. Most patents print a mass in prose under a heading, not in a table, so the only referee needing no external database never ran on them — US10245267 prints 1,099 masses and it found 0. Weighed structures went from 3,735 to 12,092.</td></tr>
@@ -345,7 +345,7 @@ documents, which is the cheap kind of problem.</p>
 <h2>7 · Next steps</h2>
 
 <ol>
-<li><strong>Compute for structure recognition.</strong> 12,684 drawn compounds are waiting on
+<li><strong>Compute for structure recognition.</strong> 12,666 drawn compounds are waiting on
 GPU time, not on new work. This is the largest single gain available and the method is already
 measured. Colab does not scale to it.</li>
 
@@ -363,5 +363,5 @@ safe for a fused one, so it is deliberately refused today rather than guessed.</
 </ol>
 
 <footer>
-patentdb3 · 137 patents · corpus dump 2026-08-19T20:41 · runs end to end
+patentdb3 · 137 patents · corpus dump 2026-08-19T21:55 · runs end to end
 </footer>
