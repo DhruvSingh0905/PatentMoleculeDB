@@ -1125,3 +1125,40 @@ def test_a_repeating_column_table_gives_each_compound_its_own_value():
             if r.table_id == "TABLE-US-00016"]
     # every record its own compound — before the fix, 72 records shared 59 cids
     assert len({r.cid for r in recs}) == len(recs)
+
+
+def test_a_refused_grouped_layout_reaches_the_loop():
+    """The class, not the bug.
+
+    A specialised reader refuses a table it cannot handle safely — correct,
+    `_column_groups`'s docstring says a false positive is worse than the
+    under-read it replaces — and control falls to a general path with WEAKER
+    guarantees, which emits anyway and attaches every assay column to the first
+    compound.
+
+    The refusal was silent. 131 tables in this corpus carry two or more
+    compound-id columns; the grouped reader handles 16 and refuses 115, and on
+    10 of those the fallback emitted regardless. Only the rows whose borrowed
+    value happened to be IDENTICAL to the true one were ever visible.
+
+    So the refusal is now a GAP. The loop may answer that no regex repairs this
+    and escalate — that is the right outcome and it is recorded, where
+    returning None was not.
+    """
+    import pytest
+    from patentdb3.core import config
+    from patentdb3.sources.uspto_xml import assemble_blocks, parse_tables
+    from patentdb3.sources.uspto_assays import extract_from_patent
+    from patentdb3.repair.gap import find_gaps
+
+    path = config.XML_INPUT_DIR / "US10125101.xml"
+    if not path.exists():
+        pytest.skip("US10125101 not cached")
+    xml = path.read_text(errors="replace")
+    gaps = find_gaps("US10125101", assemble_blocks(parse_tables(xml)),
+                     extract_from_patent(xml), _source_xml=xml)
+    hit = [g for g in gaps if "compound-id columns" in (g.reason or "")]
+    assert hit, "a refused repeating-column layout must reach the loop"
+    # the gap has to carry the layout, or the model cannot answer it
+    assert hit[0].column_kinds.count("cid") >= 2
+    assert hit[0].sample

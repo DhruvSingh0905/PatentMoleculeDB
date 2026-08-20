@@ -922,6 +922,61 @@ signature=layout_signature(t, heads),
     for g in gaps:
         g.raw_source = raw_block(_source_xml or "", g.table_id)
     gaps.sort(key=lambda g: -g.severity)
+    # A SPECIALISED READER REFUSED, AND A LAXER ONE EMITTED IN ITS PLACE.
+    #
+    # The same category as the two passes above: this costs no ROWS, so every
+    # count scores it perfectly, and the records are attached to the wrong
+    # compound. A table laid out `Compound | Ki | Compound | Ki | Compound | Ki`
+    # is read by `_column_groups`, which refuses whenever it cannot prove the
+    # grouping — correctly, since its docstring says a false positive is worse
+    # than the under-read it replaces. Control then falls to the ordinary path,
+    # which assumes ONE compound column and hangs every assay column off it.
+    #
+    # US11708332 TABLE-US-00016 shipped `28f`'s Ki under `161e` that way. Only
+    # the rows whose borrowed value happened to be IDENTICAL were ever visible,
+    # as 13 duplicate records; the rest could not be seen from the output at
+    # all. Measured over the corpus: 131 tables carry two or more compound-id
+    # columns, the grouped reader handles 16 and refuses 115, and on 10 of
+    # those the fallback emitted anyway.
+    #
+    # RAISED EVEN THOUGH NO REGEX REPAIRS IT. The loop may well answer that it
+    # cannot buy a rule for this and escalate — which is the right outcome and
+    # is recorded, where returning None is not. A refusal the loop never hears
+    # about is how the next one of these gets made.
+    from ..sources.uspto_assays import _column_groups, _split_rows
+    for t in tables:
+        if t.table_id in unlabelled_blocks:
+            continue
+        mine = [r for r in records_list if r.table_id == t.table_id]
+        if not mine:
+            continue
+        try:
+            cols = build_columns(t)
+            id_cols = [c for c in cols if c.kind == CID]
+            if len(id_cols) < 2 or _column_groups(cols, _split_rows(t)[1]):
+                continue
+        except Exception:
+            continue
+        heads = merge_header(t)
+        gaps.append(Gap(
+            patent_id=patent_id, table_id=t.table_id, n_cols=t.n_cols,
+            n_data_rows=rows_per_block.get(t.table_id, len(t.body_rows)),
+            n_extracted=len(cids_per_block.get(t.table_id, ())),
+            fingerprint=layout_fingerprint(t, heads),
+            signature=layout_signature(t, heads),
+            reason=(f"this table has {len(id_cols)} compound-id columns and the "
+                    f"reader built for that layout refused it, so its "
+                    f"{len(mine)} record(s) came from the path that assumes "
+                    f"ONE compound column — every assay column was attached to "
+                    f"the first compound, which is wrong for all but the first "
+                    f"group. Say which assay columns belong to which compound "
+                    f"column, or say that this is not a repeating layout"),
+            sample=_sample_of(t, heads), headers=heads,
+            expanded_sample=_sample_of(t, heads, 24, expand=True),
+            column_kinds=[c.kind for c in cols],
+        ))
+
+
     return gaps
 
 
