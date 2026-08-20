@@ -16,17 +16,17 @@
   .sub{color:var(--ink2);font-size:10.5pt;margin:0 0 1mm}
   .stamp{font:8.2pt/1.4 var(--mono);color:var(--ink3);margin:0}
   header{border-bottom:2.5px solid var(--ink);padding-bottom:3.5mm;margin-bottom:5mm}
-  h2{font-size:13pt;margin:7mm 0 2.5mm;padding-top:2.5mm;
+  h2{font-size:13pt;margin:5mm 0 2mm;padding-top:2mm;
      border-top:1px solid var(--rule);letter-spacing:-.01em;break-after:avoid}
   h2:first-of-type{border-top:none;padding-top:0}
-  p{margin:0 0 2.2mm;color:var(--ink2)}
+  p{margin:0 0 1.9mm;color:var(--ink2)}
   strong{color:var(--ink);font-weight:600}
-  table{border-collapse:collapse;width:100%;margin:2.5mm 0;font-size:9pt;
+  table{border-collapse:collapse;width:100%;margin:2mm 0;font-size:9pt;
         font-family:-apple-system,"Helvetica Neue",sans-serif;break-inside:avoid}
   th{text-align:left;font:600 7.4pt var(--mono);letter-spacing:.05em;
      text-transform:uppercase;color:var(--ink3);border-bottom:1.2px solid var(--rule);
      padding:1.4mm 2mm}
-  td{padding:1.4mm 2mm;border-bottom:.6px solid var(--rule2);color:var(--ink2);
+  td{padding:1.15mm 2mm;border-bottom:.6px solid var(--rule2);color:var(--ink2);
      vertical-align:top}
   td.n{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);
        font-size:8.4pt;color:var(--ink);white-space:nowrap}
@@ -49,13 +49,13 @@
         padding:2.5mm 3mm;margin:2.5mm 0;break-inside:avoid}
   .note p:last-child{margin-bottom:0}
   ol{margin:0 0 2.2mm;padding-left:5mm;color:var(--ink2)}
-  li{margin-bottom:1.6mm}
+  li{margin-bottom:1.3mm}
   figure{margin:3mm 0 2mm;break-inside:avoid}
   figure svg{width:100%;height:auto;display:block}
   figcaption{font-size:8.4pt;color:var(--ink3);margin-top:1.5mm;
              font-family:-apple-system,sans-serif}
   .dead td:first-child{color:var(--ink);font-weight:600}
-  footer{margin-top:6mm;padding-top:2.5mm;border-top:1px solid var(--rule);
+  footer{margin-top:3mm;padding-top:2mm;border-top:1px solid var(--rule);
          font:7.8pt var(--mono);color:var(--ink3)}
 </style>
 
@@ -231,27 +231,25 @@ runs; the gate is the measurement.</p>
 </tr>
 <tr>
   <td><strong>Chemical name</strong></td>
-  <td>The document <strong>asserts</strong> a name — in a <code>&lt;heading&gt;</code>, or a
-      <code>cid | Name</code> table row — and OPSIN refuses it. Deliberately not every rejection:
-      67% of the 82,398 failing seeds are hyphenated English like
-      <code>receptor-mediated</code>, which the parser is right to refuse.</td>
+  <td>The document <strong>asserts</strong> a name — in a <code>&lt;heading&gt;</code> or a
+      <code>cid | Name</code> row — and OPSIN refuses it. Not every rejection: 67% of the 82,398
+      failing seeds are hyphenated English, which the parser is right to refuse.</td>
   <td>A repair keyed to OPSIN's own error, not to the name. Where no pattern can express the
       defect, the model writes Python instead.</td>
-  <td><strong>Three independent conditions.</strong> "It parses now" is worthless alone: trimming
-      one to eight characters off a failing name makes 13.9% of them parse, because most
-      truncations of a valid name are themselves valid names. Deleting <code>-2-yl</code> turns
-      <code>pyridin-2-yl</code> into pyridine — a smaller, different molecule, which OPSIN
-      certifies happily.</td>
+  <td><strong>Three conditions, not one.</strong> "It parses now" proves nothing: trimming one
+      to eight characters off a failing name makes 13.9% of them parse, because most truncations
+      of a valid name are valid names. Deleting <code>-2-yl</code> turns
+      <code>pyridin-2-yl</code> into pyridine, and OPSIN certifies it.</td>
 </tr>
 <tr>
   <td><strong>Markush assembly</strong></td>
   <td>A table states a shared scaffold and columns of substituents, and never a whole molecule.
       Nothing is malformed; there is simply no structure until the pieces are joined.</td>
   <td>An assembly plan — which substituent slot joins the scaffold at which atom.</td>
-  <td>Three checks the table itself supplies: the row's own printed m/z; a held-out compound name
-      compared by InChIKey; and cross-row invariance — every row must share the scaffold and none
-      may be identical. A slot wired nowhere makes every row come out the same, which is the
-      failure that looks most like success.</td>
+  <td>Three checks the table itself supplies: the row's printed m/z; a held-out name compared by
+      InChIKey; and cross-row invariance — every row shares the scaffold and none is identical. A
+      slot wired nowhere makes every row identical, which is the failure that looks most like
+      success.</td>
 </tr>
 </tbody>
 </table>
@@ -261,156 +259,149 @@ purchase serves every document that fails the same way. The shipped library hold
 <strong>172 rules</strong>: 62 column maps, 49 bin keys, 35 value patterns, 16 escalations,
 9 not-an-assay and 1 row regex. Three paid attempts per layout, capped at $0.20 a patent.</p>
 
+<p><strong>The parts.</strong> Each file does one job. No file calls a model except the three
+loops.</p>
+
+<table>
+<thead><tr><th style="width:26%">File</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>sources/uspto_xml.py</code></td><td>Reads the patent XML. Builds a grid for each
+  table. A patent splits one table into several fragments, so this joins them into one grid and
+  finds the header rows.</td></tr>
+<tr><td><code>sources/uspto_assays.py</code></td><td>Decides what each column holds: a compound
+  number, an assay, a unit, a run count. Writes one record per value.</td></tr>
+<tr><td><code>sources/bin_legend.py</code></td><td>Reads the legend. Turns a grade such as
+  <code>+++</code> into a numeric range. Seven written forms appear in this corpus.</td></tr>
+<tr><td><code>sources/cid_first.py</code></td><td>The identity route. Starts at a compound number
+  and searches the document for the name beside it.</td></tr>
+<tr><td><code>sources/iupac_names.py</code><br><code>sources/table_names.py</code></td>
+  <td>Read a name from a heading, and from a table cell.</td></tr>
+<tr><td><code>sources/opsin.py</code></td><td>Sends a name to OPSIN. Returns a structure, or
+  nothing. OPSIN either parses a name or refuses it, so it is the identity gate.</td></tr>
+<tr><td><code>sources/mass_gate.py</code></td><td>Weighs the structure. Compares it with the mass
+  the patent prints in that compound's own row or section.</td></tr>
+<tr><td><code>repair/</code></td><td>The three loops above.</td></tr>
+<tr><td><code>repair/plausibility.py</code></td><td>Audits the output. Every check states
+  something that cannot be true of real data, and none needs reference data.</td></tr>
+</tbody>
+</table>
+
+<p><strong>What a run writes.</strong> One command reads the patents and writes all of it:
+<code>python3 -m patentdb3.verify --all --dump</code>. Add <code>--no-heal</code> to run the
+reader alone, which costs nothing.</p>
+
+<table>
+<thead><tr><th style="width:26%">File</th><th>Holds</th></tr></thead>
+<tbody>
+<tr><td><code>out/reader_dump.tsv</code></td><td>One row per assay value. Compound number, assay
+  name, value, qualifier, unit, grade, range, table.</td></tr>
+<tr><td><code>out/structures.tsv</code></td><td>One row per compound identity. Name, SMILES,
+  InChIKey, route, mass verdict.</td></tr>
+<tr><td><code>out/latest.json</code></td><td>The manifest. It names the run, the patents, the
+  counts, and whether the loops ran.</td></tr>
+<tr><td><code>out/loss_log.jsonl</code></td><td>What each route refused, and why.</td></tr>
+<tr><td><code>out/reader_dump.xlsx</code></td><td>The workbook. It adds a BindingDB sheet.</td></tr>
+<tr><td><code>data/layout_rules.json</code></td><td>The 172 bought rules. Tracked in git, so a
+  rule bought once ships.</td></tr>
+</tbody>
+</table>
+
+<p>The two tables join on the compound number. The reader and the identity routes read that
+number from different places, so the join is checked: over the compounds BindingDB also holds,
+99.3% carry a value that belongs to that molecule, and no pair is swapped.</p>
+
 <h2>3 · Status</h2>
 
 <table>
 <thead><tr><th>What works today</th><th>Measure</th><th>Note</th></tr></thead>
 <tbody>
-<tr><td>Assay values read from tables</td><td class="n">119,306</td><td>over 137 patents, under 553 assay names</td></tr>
-<tr><td>&nbsp;&nbsp;published as a grade, not a number</td><td class="n">32,880</td><td>a letter or <code>+</code>/<code>++</code>, with the scale defined in a legend</td></tr>
-<tr><td>&nbsp;&nbsp;graded values carrying the patent's own range</td><td class="n">25,184</td><td>of 32,880 (77%). Was 12,531 of 29,803 when this work started</td></tr>
+<tr><td>Assay values read from tables</td><td class="n">119,306</td><td>137 patents, 553 assay names</td></tr>
+<tr><td>&nbsp;&nbsp;published as a grade, not a number</td><td class="n">32,880</td><td>a letter or <code>+</code>/<code>++</code>, defined in a legend</td></tr>
+<tr><td>&nbsp;&nbsp;grades carrying the patent's own range</td><td class="n">25,184</td><td>77%. One document holds 5,753 of the rest</td></tr>
 <tr><td>Compounds resolved to a structure</td><td class="n">24,506</td><td>all four routes together</td></tr>
-<tr><td>Structures the printed mass confirms</td><td class="n">11,232</td><td>of 12,092 weighed; 860 contradict the mass their own document prints</td></tr>
-<tr><td>Structures the patent contradicts</td><td class="n">133</td><td>across 23 patents; demoted, not deleted</td></tr>
-<tr><td>Markush compounds built</td><td class="n">599</td><td>these have no name anywhere in the document</td></tr>
-<tr><td>Markush compounds verified</td><td class="n">555</td><td><strong>98.9% of those built</strong>; 38 unverified, 6 dropped</td></tr>
-<tr><td>Assay values checked against BindingDB</td><td class="n">96.5%</td><td>6,151 of 6,374 agree to within 1%, joined on structure, not on a compound number</td></tr>
-<tr><td>Image reading, corpus sample</td><td class="n">166</td><td>drawings over 33 patents, capped per patent</td></tr>
-<tr><td>&nbsp;&nbsp;per-patent median agreement</td><td class="n">100%</td><td>pooled figure is 77.9%</td></tr>
-<tr><td>&nbsp;&nbsp;patents at or above 90%</td><td class="n">15 of 29</td><td>4 patents fall below 50%</td></tr>
-</tbody></table>
-
-<p>Quote the median, not the pooled figure. Compounds inside one document share a scaffold and
-a draughtsman, so the sample counts documents rather than compounds.</p>
+<tr><td>Structures the printed mass confirms</td><td class="n">11,232</td><td>of 12,092 weighed. 860 contradict their own document</td></tr>
+<tr><td>Markush compounds built and verified</td><td class="n">555</td><td>of 599 built. These have no name in the document</td></tr>
+<tr><td>Assay values checked against BindingDB</td><td class="n">96.5%</td><td>6,151 of 6,374, joined on structure</td></tr>
+<tr><td>Image reading, corpus sample</td><td class="n">166</td><td>33 patents. Per-patent median agreement 100%</td></tr>
+</tbody>
+</table>
 
 <div class="note">
-<p><strong>What the BindingDB figure does and does not say.</strong> It compares our value
-against theirs where both hold a measurement for the same compound. On that overlap we agree
-on 96.2% at a 1% tolerance, and 99.6% once BindingDB's own rounding to two significant figures
-is allowed for. That tests the assay reader, and it passes.</p>
-<p>It is not a coverage number and it is not a correctness benchmark. Coverage against
-BindingDB is not yet meaningful: the drawn compounds are not enumerated, so a coverage figure
-today measures unfinished work. BindingDB and ChEMBL also aggregate from sources outside the
-patent, so a row we do not hold is not automatically a miss. And identity here is gated by
-OPSIN, which either parses a name to a structure or refuses — so a compound we report is a
-compound the nomenclature supports, independent of any reference.</p>
-<p><strong>It checks the number, not the name on it.</strong> The comparison joins on
-compound and compares values, so a value can be right and sit under the wrong assay label
-without the check noticing. BindingDB does record which metric each value is and what the
-target was, so the label can be tested too. On the 8,790 values where we agree:
-our metric agrees wherever we state one, and <strong>contradicts BindingDB in 3 records</strong>
-— in all three the patent's own column heading says what we say, and BindingDB says otherwise.
-Our label uses the patent's name for the target and BindingDB uses the protein's formal name
-(<code>BACE1</code> against <code>Beta-secretase 1</code>, <code>FLAP</code> against
-<code>Arachidonate 5-lipoxygenase-activating protein</code>), so the two disagree in wording
-far more often than in meaning.</p>
-<p>The labels worth attention are the ones that name nothing at all — a column headed
-<code>probe 2</code>, <code>Assay 1</code> or bare <code>(nM)</code>. There are 12 of them,
-over 10 patents, carrying <strong>305 records (0.3%)</strong>. The value is right; what was
-measured has to be read out of the patent's prose.</p>
+<p><strong>Read the BindingDB figure carefully.</strong> It compares our value with theirs where
+both hold a measurement for the same molecule. It tests the assay reader, and the reader passes.
+It is not a coverage number: the drawn compounds are not enumerated yet. The join is on the
+InChIKey, because BindingDB numbers compounds itself and that number is not the patent's —
+on the compound-number key agreement reads 84.3%, on the structure key 96.5%.</p>
 </div>
 
+<h2>4 · What is left</h2>
 
-
-<h2>4 · What is extracted, and what is still to run</h2>
-
-<p>44,923 compounds carry an assay value. 22,639 of them already hold a structure.
-<strong>Most of the rest are not a failure to read the patent — they are drawings we have not
-put through recognition yet.</strong> That is a compute queue, not a defect. The remaining
-defects are traced and being fixed. The two are worth keeping apart, because only one of them
-needs new work.</p>
+<p>44,923 compounds carry an assay value. 22,639 already hold a structure. Most of the rest are
+not a reading failure. They are drawings that have not been through recognition. That is a
+compute queue, not a defect.</p>
 
 <table>
 <thead><tr><th>State</th><th>Compounds</th><th>Share</th><th>What it means</th></tr></thead>
 <tbody>
 <tr><td>Structure resolved</td><td class="n">22,639</td><td class="n">50%</td><td>identity established from the document</td></tr>
 <tr><td><strong>Drawn — recognition not yet run</strong></td><td class="n">12,666</td><td class="n">28%</td><td><strong>the method works. It needs compute.</strong></td></tr>
-<tr><td>Markush</td><td class="n">1,025</td><td class="n">2%</td><td>the assembly tier handles these</td></tr>
-<tr><td>Reader-side gap</td><td class="n">~8,100</td><td class="n">18%</td><td>traced to specific causes, work in progress</td></tr>
-</tbody></table>
+<tr><td>Markush</td><td class="n">1,025</td><td class="n">2%</td><td>the assembly loop handles these</td></tr>
+<tr><td>Reader-side gap</td><td class="n">~8,100</td><td class="n">18%</td><td>traced to named causes, work in progress</td></tr>
+</tbody>
+</table>
 
-<div class="note">
-<p><strong>The 12,666 drawn compounds are the single largest item, and nothing about them is
-unsolved.</strong> A corpus sample of 166 drawings across 33 patents scored a per-patent median
-of 100% against the masses those patents printed, with 15 of 29 patents at or above 90%. The
-pipeline reads them correctly.</p>
-<p>They are unrun because structure recognition needs a GPU. We currently drive that through
-Google Colab, which is fine for a sample and <strong>does not scale to 12,666 drawings</strong> —
-sessions are interactive, time-limited and billed per session. Recognition is decoupled from the
-rest of the pipeline, so any compute can do the work: the pipeline writes a job, a machine reads
-it, the pipeline reads the answers back. What is needed is compute, not code.</p>
-</div>
+<p>The drawn compounds are the largest item, and nothing about them is unsolved. A sample of 166
+drawings over 33 patents scored a per-patent median of 100% against the masses those patents
+print. Recognition needs a GPU, and it is decoupled: the pipeline writes a job, a machine reads
+it, the pipeline reads the answers back. What is missing is compute, not code.</p>
 
-<h3>Where the remaining work sits</h3>
-<p>It is concentrated. Of 137 patents, the top 40 hold 91% of everything still outstanding, and
-the top 10 hold 53%. The pipeline does not read badly across the corpus — it stops on particular
-documents, which is the cheap kind of problem.</p>
+<p>The remaining work is concentrated. Of 137 patents, the top 40 hold 91% of it and the top 10
+hold 53%. The pipeline stops on particular documents rather than reading badly everywhere.</p>
 
-<h2>5 · Decisions taken</h2>
-
-<table class="dead">
-<thead><tr><th>Decision</th><th>Reason</th></tr></thead>
-<tbody>
-<tr><td>No LLM vision for markush structures</td><td>The image recogniser already reads the R-group labels off the drawing. The mapping is a lookup, not a perception problem.</td></tr>
-<tr><td>No dedicated markush model</td><td>MarkushGrapher-2 scores 48–56% on its authors' own benchmarks. That is below what we already measure.</td></tr>
-<tr><td>Model confidence is not a quality signal</td><td>Measured on 67 images. Correct and incorrect reads overlap completely.</td></tr>
-<tr><td>BindingDB is reference only</td><td>The only evidence that may correct a structure is what the patent itself printed.</td></tr>
-<tr><td>Judge each row, not each table</td><td>Under one plan, 527 of 561 molecules were confirmed and 34 contradicted. The failures were per drawing, so the verdict is per row.</td></tr>
-<tr><td>Keep molecules nothing can verify</td><td>Refusing them deleted 38 correct molecules on a patent that prints no masses. Absence of evidence is now recorded as such. Evidence against is still fatal.</td></tr>
-<tr><td>A grade keeps the patent's range, never a made-up midpoint</td><td>A compound known to be 3–7 nM is a real measurement. Inventing 4.8 nM for it is not, and it would then be compared against references as though it were measured.</td></tr>
-<tr><td>Two scales that contest one grade give no range</td><td>Some patents define the same letters twice, once per column. Where the document says which column each governs, each column takes its own. Where it does not, the grade is kept and no range is attached.</td></tr>
-<tr><td>Ask what a column measures rather than assume</td><td>A column of grades with no heading is almost certainly an assay, and what it measured cannot be read from its cells. Those go to the repair loop as a question. Guessing produced clean records of HPLC methods and peptide sequences.</td></tr>
-</tbody></table>
-
-<h2>6 · Problems</h2>
+<h2>5 · Open problems</h2>
 
 <table>
-<thead><tr><th>Problem</th><th>Size</th><th>Status</th><th>What unblocks it</th></tr></thead>
+<thead><tr><th>Problem</th><th>Size</th><th>What unblocks it</th></tr></thead>
 <tbody>
-<tr><td>Drawn compounds not yet recognised</td><td class="n">12,666 rows</td><td class="s"><span class="tag t-bad">open</span></td><td>GPU time. The method already works. 12,092 structures now print a mass we can weigh them against, up from 3,735.</td></tr>
-<tr><td>Compound numbers invented for unnumbered rows</td><td class="n">2,073 rows</td><td class="fx">fixed</td><td>Done. US9682141 numbers its compounds 1–53 and then leaves the cell empty for 470 more, each drawing its own structure. The last number was carried forward, so cid 53 shipped 474 readings of 470 different molecules. A row that draws its own structure is not a continuation and no longer inherits.</td></tr>
-<tr><td>A column's NAME read as the prose it names</td><td class="n">895 rows</td><td class="fx">fixed</td><td>Done. A table reporting masses has a column headed <code>[M + H]</code>; one reporting retention times has <code>Rt</code>. The pattern that spots running prose matched those literal headers, so the row naming the columns was discarded — 565 of them in US9718790 alone. Prose states a number; a column name does not.</td></tr>
-<tr><td>The mass check read table rows only</td><td class="n">8,357 rows</td><td class="fx">fixed</td><td>Done. Most patents print a mass in prose under a heading, not in a table, so the only referee needing no external database never ran on them — US10245267 prints 1,099 masses and it found 0. Weighed structures went from 3,735 to 12,092.</td></tr>
-<tr><td>BindingDB joined on a compound number BindingDB assigns itself</td><td class="n">—</td><td class="fx">fixed</td><td>Done. Agreement read 33.6% on that key and 95.0% on structure; a wrong pairing still produces a number, so nothing downstream could notice. Now joined on InChIKey.</td></tr>
-<tr><td>A metric name read as a compound number</td><td class="n">2,071 rows</td><td class="fx">fixed</td><td>Done. <code>IC50</code> has the same shape as <code>A7</code> &#8212; up to three letters then digits &#8212; so a header row stating the metric per column looked like a data row and stopped the header promotion. US11547697&#8217;s four PI3K isoforms all came out labelled <code>PI3K</code>; they now separate. A bin legend was also being read as a compound name, putting its prose at the head of the table. Surplus records halved, 3,079 to 1,538, and indistinguishable records fell 1,360 to 498.</td></tr>
-<tr><td>Structures contradicting their own printed mass</td><td class="n">860 rows</td><td>sized</td><td>Newly visible: the mass check now reaches 2.5&#215; as many structures. 405 of the deltas exceed 100 Da — a different molecule, not a rounding error. BindingDB flags the same rows at 19.7% where it does not hold the structure against 5.2% where it does.</td></tr>
-<tr><td>One structure under several compound numbers</td><td class="n">806 compounds</td><td>sized</td><td>98.8% is the document reusing a name — US10245267 prints one name under Examples 415, 418 and 419 and three different masses. 10 are ours, in <code>cid_first._name_texts</code>. The <code>cid_clash</code> column exists to catch this and is empty on all 38,222 rows: it is written only by a route that does not run.</td></tr>
-<tr><td>Wavy cut bond</td><td class="n">968 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>A loop that reads the drawing convention from the patent's own prose. The removal step already works.</td></tr>
-<tr><td>Tables no identity route reaches</td><td class="n">877 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing. It is traced and not yet built. This is an upper bound. Two blocks are confirmed; the rest is <strong>not determined</strong>.</td></tr>
-<tr><td>Three table layouts</td><td class="n">385 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing. Not yet built.</td></tr>
-<tr><td>Misread drawings</td><td class="n">4 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Nothing yet. They are 8.9 to 18 Da off and share no pattern.</td></tr>
-<tr><td>Names dropped in text extraction</td><td class="n">~1,800</td><td class="s"><span class="tag t-warn">sized</span></td><td>Measured: 1,752 compounds carry a name-like string that never became a structure, range 1,450–2,100. Four patents hold 55% of it.</td></tr>
-<tr><td>Assay labels that name nothing</td><td class="n">305 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>Down from 1,818. The rest read <code>probe 2</code>, <code>Assay 1</code> or bare <code>(nM)</code>. The values are right; the target has to be read from the patent's prose.</td></tr>
-<tr><td>Columns named from the wrong header row</td><td class="n">4,354 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A header row naming one column was discarded for having only one populated cell, so a column headed <code>AAK1 IC50</code> over <code>(nM)</code> was named <code>(nM)</code> — the unit kept, the assay lost.</td></tr>
-<tr><td>Synthesis metadata read as assays</td><td class="n">301 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A column headed <code>Meth-</code>/<code>od</code> across two header rows joined as <code>Meth-od</code>, which no pattern for <code>method</code> could see.</td></tr>
-<tr><td>Graded values with no scale in the document</td><td class="n">7,696 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>US11566007 alone holds 5,753 of these — its legend sits beyond the look-back window. Excluding that one document, 92.8% of graded values carry a range. Either the patent never defines its grades, or it defines them twice and does not say which column takes which. The grade is kept; no range is attached.</td></tr>
-<tr><td>Grades published without their scale</td><td class="n">17,275 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. The legend was being read, and five of its seven written forms were rejected before the parser saw them. 76.6% of graded values now carry the patent's own range, from 42% — 92.8% outside US11566007, which is one document's look-back gap.</td></tr>
-<tr><td>Non-assay columns read as assays</td><td class="n">191 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. HPLC method letters, a peptide sequence and a hydrogen substituent column were producing potency grades. A grade alphabet is closed; letters outside it now disqualify the column.</td></tr>
-<tr><td>Percentages labelled as concentrations</td><td class="n">2,375 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A column headed <code>% inhibition at 10 µM</code> took µM as its unit — the concentration the assay ran at, not the unit of the result.</td></tr>
-<tr><td>An inverted table's first bucket</td><td class="n">356 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A table listing a grade and then the compounds that scored it kept its first bucket in the header row, which was not read — losing those compounds and every continuation row beneath them.</td></tr>
-<tr><td>A grade given a point value</td><td class="n">270 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A two-level <code>+</code>/<code>−</code> scale had no <code>−</code> in its alphabet, so the definition of <code>+</code> ran into the next grade's clause and read both bounds — reporting compounds as exactly 10 µM rather than under it.</td></tr>
-<tr><td>Grades discarded for want of a scale</td><td class="n">5,340 rows</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. A table that lists a grade and then the compounds that scored it was read only when the numeric scale could also be found — so four blocks of one patent, whose scale sits beyond the look-back, produced nothing at all rather than the grades the document prints.</td></tr>
-<tr><td>Five patents scored zero</td><td class="n">5 patents</td><td class="s"><span class="tag t-good">fixed</span></td><td>Done. Our own mass check was wrong on one patent, and four were sampled before an earlier fix.</td></tr>
-</tbody></table>
+<tr><td>Drawn compounds not recognised</td><td class="n">12,666</td><td>GPU time. The method is measured and works.</td></tr>
+<tr><td>Grades with no scale in the document</td><td class="n">7,696</td><td>One patent holds 5,753. Its legend sits beyond the look-back window.</td></tr>
+<tr><td>Names dropped in text extraction</td><td class="n">~1,800</td><td>Four patents hold 55% of it.</td></tr>
+<tr><td>Wavy cut bond</td><td class="n">968</td><td>A drawing convention no format carries. The patent explains it in prose; a loop should read that.</td></tr>
+<tr><td>Tables no identity route reaches</td><td class="n">877</td><td>Traced. Not yet built.</td></tr>
+<tr><td>Structures contradicting their own mass</td><td class="n">860</td><td>Newly visible. Not yet triaged.</td></tr>
+<tr><td>One structure under several numbers</td><td class="n">806</td><td>98.8% is the document reusing a name. 10 are ours.</td></tr>
+<tr><td>Three table layouts</td><td class="n">385</td><td>Split headers, repeated column groups, vertical records.</td></tr>
+<tr><td>Assay labels that name nothing</td><td class="n">305</td><td>The value is right. The target must be read from prose.</td></tr>
+</tbody>
+</table>
+
+<h2>6 · Decisions taken</h2>
+
+<table>
+<thead><tr><th style="width:38%">Decision</th><th>Reason</th></tr></thead>
+<tbody>
+<tr><td>BindingDB is reference only</td><td>The only evidence that may correct a structure is what the patent itself printed.</td></tr>
+<tr><td>OPSIN is the identity gate</td><td>It either parses a name to a structure or refuses. A compound we report is one the nomenclature supports.</td></tr>
+<tr><td>Ask the model for a rule, never for data</td><td>A rule is small, checkable, and reusable. Re-reading a document to emit data costs about $8.81 a patent.</td></tr>
+<tr><td>No LLM vision for markush structures</td><td>The recogniser already reads the R-group labels off the drawing. The mapping is a lookup, not a perception task.</td></tr>
+<tr><td>Model confidence is not a quality signal</td><td>Measured on 67 images. Correct and incorrect reads overlap completely.</td></tr>
+<tr><td>Skip data rather than ship it wrong</td><td>A wrong record cannot be told from a right one downstream. A missing one can.</td></tr>
+</tbody>
+</table>
 
 <h2>7 · Next steps</h2>
 
 <ol>
-<li><strong>Compute for structure recognition.</strong> 12,666 drawn compounds are waiting on
-GPU time, not on new work. This is the largest single gain available and the method is already
-measured. Colab does not scale to it.</li>
-
-<li><strong>Unblock the compounds we cannot yet reach.</strong> Traced, in progress.</li>
-
-<li><strong>Read the wavy cut bond.</strong> 968 compounds are drawn as a scaffold plus a
-fragment, with a wavy line marking where the fragment attaches. No structure format carries
-that meaning, so a recogniser fills the gap with a group that is not there. Removing it works;
-the patent usually explains its own convention in prose, and reading that is the general
-answer.</li>
-
-<li><strong>Resolve position numbers to atoms.</strong> A substituent given as a ring position
-rather than a drawing, such as <em>3-CH<sub>3</sub></em>. Safe for a simple ring and not yet
-safe for a fused one, so it is deliberately refused today rather than guessed.</li>
+<li><strong>Get GPU time for structure recognition.</strong> 12,666 compounds wait on compute,
+not on new work. This is the largest gain available and the method is measured.</li>
+<li><strong>Read the legend that sits beyond the window.</strong> One patent, 5,753 grades.</li>
+<li><strong>Read the wavy cut bond.</strong> 968 compounds. The patent usually explains its own
+convention in prose, and a loop that reads that prose is the general answer.</li>
+<li><strong>Triage the 860 mass contradictions.</strong> Each is a wrong name or a wrong
+compound number.</li>
+<li><strong>Ask Google Patents for the names OPSIN dropped.</strong> 1,752 compounds carry a
+name that never became a structure. They already have a compound number, so anything recovered
+there joins to its assay values. It is a second opinion, taken after our own routes run.</li>
 </ol>
 
 <footer>
