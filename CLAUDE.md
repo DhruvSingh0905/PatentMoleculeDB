@@ -47,8 +47,26 @@ if the tree changed.
 
 ## Next fix
 
-**`table_names` on US12011444 and US9745328.** 678 compounds — 89% of the
-whole `name_in_a_table_cell` miss bucket — sit in these two documents. The
+**US11547697's four-row header. 2,071 records, diagnosed to the line.**
+Dated 2026-08-19. Its TABLE-US-00002 heads four PI3K isoform columns over two
+rows, and all four records come out labelled bare `PI3K`:
+
+```
+['MTOR', 'PI3K', 'PI3K', 'PI3K', 'PI3K', 'PC3',     'T47D']
+['C',    'α',    'β',    'δ',    'γ',    'prolif-', 'prolif-']
+['IC50', 'IC50', 'IC50', 'IC50', 'IC50', 'eration', 'eration']
+['Structure', '(nM)', '(nM)', '(nM)', '(nM)', '(nM)', '(nM)*']
+```
+
+The 10-column tgroup declares **`header_rows = 0`** — all four rows sit at the
+top of the BODY and only the first is used, so `α β δ γ` never join. The
+values are right and the label is not. US9682141's identical table writes
+`PI3K α` in one cell and reads correctly, which is why one patent is right and
+the other is not. `check_duplicate_facts` already flags it (862 rows); nothing
+acts on the flag.
+
+Then: **`table_names` on US12011444 and US9745328.** 678 compounds — 89% of
+the whole `name_in_a_table_cell` miss bucket — sit in these two documents. The
 route is sound (75% take rate corpus-wide), so this is a document defect, not
 a redesign.
 
@@ -62,7 +80,10 @@ worth the build cost today. Date: **2026-08-17**.
 | IUPAC locant to atom | **8 rows corpus-wide** | Procedure is known and verified safe for a monosubstituted ring: position 1 is the atom bonded to the scaffold, and 2/6 and 3/5 are symmetry-equivalent so direction cannot produce a wrong molecule. Breaks on a second substituent, a ring heteroatom or a fused ring. Worth 8 rows. |
 | three table layouts | 385 rows | Split headers, repeated column groups, vertical records. |
 | dropped IUPAC names | **~1,800**, sized 2026-08-18 | 1,752 (patent, cid) pairs carry a name-like string that never became a structure; range 1,450-2,100. Four patents hold 55% — US12011444 (393), US9745328 (285), US8957068 (183), US10172859 (135), two of which are already the named next fix. **83% of drop events write nothing to the loss log**: `cid_first`'s OPSIN rejections and `table_names`' losing candidates are both silent, so the log undercounts by design. Read `loss_counts` from the manifest, never from `loss_log.jsonl` — the file truncates per process. |
-| one structure under several cids | **806 compounds**, 387 structures, sized 2026-08-19 | Two compound numbers resolve to the same molecule. `cid_clash` is a column in `structures.tsv` and is EMPTY on all 806 — the detector never fires. US10245267 states one name under Examples 415, 418 and 419 while printing 484.2, 477.2 and 473.2; the paragraph disproves the name it sits under. Needs no reference database and no API call. Worst: US10709712 55, US20230365584A1 54, US9694016 53. See wiki 50. |
+| one structure under several cids | **806 compounds**, 387 structures, sized 2026-08-19 | **98.8% is the DOCUMENT reusing a name, not our defect** — US10245267 states one name under Examples 415, 418 and 419 while printing 484.2, 477.2 and 473.2, and the paragraph disproves the name it sits under. Only 10 are ours, in `cid_first._name_texts`, where a forward span reads past its own marker into the next list item's name. See wiki 52. |
+| `cid_clash` is a detector nobody runs | **0 of 38,222 rows** | The column exists in `structures.tsv` and is empty, and not for want of collisions. It is written in ONE place, `iupac_names.py:1300`, inside `extract_names` — and `IDENTITY_ROUTE` defaults to `cid_first`, so `extract_by_cid` runs instead. The artifact's `source` column holds only `cid_first` and `table`, never `description`. A guard on a dead branch is worse than none: the column is present, so the artifact looks checked. |
+| one cid, several structures | **122 cids** | The inverse error, all from the table route. US9763922 prints `Example 19` in TABLE-US-00002 and again in TABLE-US-00052 for a different molecule. Both are read correctly; the collision appears only downstream, where something keys on `(patent, cid)` and drops the `table_id` that disambiguates. US9763922 60, US20240360157 23, US9708336 16. |
+| structures contradicting their own printed mass | **860** | Newly visible — `mass_gate` now weighs 12,092 structures, up from 3,735. 405 of the deltas exceed 100 Da, which is a different molecule rather than a rounding error. Not yet triaged. See wiki 49. |
 | wavy cut bond | 968 rows in 6 patents | **Deliberately last. Do not work on it directly.** No recogniser reads a squiggle across a bond. Its FORMAL meaning in molfile is unspecified stereochemistry (flag 4), not attachment — the patent use is a drawing convention with no format backing. MolScribe does not drop the mark, it INVENTS a group there, returning a terminal isopropyl or tert-butyl, which is why a fragment read is never a substructure of the truth. See the note below for why hand-writing a splicer is the wrong move. |
 
 **The wavy bond is a TEST OF THE LOOP, not a task.** US9718825 states the
@@ -239,6 +260,21 @@ Each item below cost real time. Read this list before you measure anything.
   172-rule `layout_rules.json`.
 - **Measure at the stage where the code runs.** A repair in `name_repair`
   acts inside the extractor. It never reaches the heal loop.
+- **A COLUMN IS NAMED AFTER WHAT IT HOLDS, so the pattern that spots prose
+  matches the header.** A table reporting masses has a column headed
+  `[M + H]`; one reporting retention times has `Rt` and `(min)`; one naming
+  its method has `HPLC`. `_PROSE_CELL` threw all of those header rows away as
+  MS traces — 895 corpus-wide, 565 of them US9718790's. What separates them is
+  a NUMBER: prose that mentions a mass states the mass, a column name does not.
+- **The colspec totals do NOT always match.** This file used to say they did.
+  Re-measured 2026-08-19: 592 of 2,384 blocks disagree on column count and
+  **17 fail** the width arithmetic, leaving those header cells on the wrong
+  grid. Two of the four "same assay disagrees" patents traced back here.
+- **Four of five `same_assay_disagrees` flags are real biology.** A reference
+  set against an invention set, a detection-limit floor against a ceiling.
+  Only US9718825 (666 of 882) is a genuine collapse — four distinct protocols
+  share the column header `IC50 [μM]` and the protocol identity lives only in
+  each table's caption. Do not treat the flag as a defect count.
 - **A document states its shared scaffold in three places.** `<thead>`, the
   `<tbody>` of a leading `cols="1"` `<tgroup>` under an EMPTY thead, and the
   prose paragraph that introduces the table. Reading only the first found 29 of
