@@ -62,12 +62,12 @@
 <header>
   <h1>patentdb3 — Architecture and Status</h1>
   <p class="sub">Patent number in, structured chemistry out.</p>
-  <p class="stamp">2026-08-19 &nbsp;·&nbsp; 137 patents &nbsp;·&nbsp; corpus dump 2026-08-19T20:08</p>
+  <p class="stamp">2026-08-19 &nbsp;·&nbsp; 137 patents &nbsp;·&nbsp; corpus dump 2026-08-19T20:41</p>
 </header>
 
 <div class="kpi">
-  <div><div class="v">119,341</div><div class="l">assay records<br>137 patents</div></div>
-  <div><div class="v">24,503</div><div class="l">compounds resolved<br>to a structure</div></div>
+  <div><div class="v">119,306</div><div class="l">assay records<br>137 patents</div></div>
+  <div><div class="v">24,506</div><div class="l">compounds resolved<br>to a structure</div></div>
   <div><div class="v">11,232</div><div class="l">structures the patent's<br>own mass confirms</div></div>
   <div><div class="v">555</div><div class="l">markush compounds<br>built and verified</div></div>
 </div>
@@ -77,8 +77,8 @@
 <p class="lede">The system takes a patent number and returns its chemistry as a table. It reads
 the patent document. It extracts every assay value. It then finds the identity of each
 compound, because a patent names a compound in several different ways. It checks each
-structure against the mass the patent printed itself. Today it holds 119,341 assay records
-from 137 patents, and it has resolved 24,503 compounds to a structure. The largest remaining
+structure against the mass the patent printed itself. Today it holds 119,306 assay records
+from 137 patents, and it has resolved 24,506 compounds to a structure. The largest remaining
 group is compounds that the patent only draws. That group needs image recognition, and image
 recognition needs GPU time.</p>
 
@@ -115,7 +115,7 @@ recognition needs GPU time.</p>
   <!-- assay extraction -->
   <rect class="bx" x="170" y="54" width="360" height="42" rx="3"/>
   <text class="t tt" x="350" y="74" text-anchor="middle">Assay extraction</text>
-  <text class="t ts" x="350" y="88" text-anchor="middle">compound id · assay · value · units — 119,341 records</text>
+  <text class="t ts" x="350" y="88" text-anchor="middle">compound id · assay · value · units — 119,306 records</text>
 
   <!-- fan out -->
   <line class="ln" x1="350" y1="96" x2="350" y2="118"/>
@@ -171,7 +171,7 @@ recognition needs GPU time.</p>
   <!-- output -->
   <rect class="bxo" x="150" y="302" width="400" height="44" rx="3"/>
   <text class="t tt" x="350" y="320" text-anchor="middle">One row per compound</text>
-  <text class="t ts" x="350" y="334" text-anchor="middle">structure + assay values — 24,503 resolved, 11,232 mass-confirmed</text>
+  <text class="t ts" x="350" y="334" text-anchor="middle">structure + assay values — 24,506 resolved, 11,232 mass-confirmed</text>
 
   <!-- ── self-healing loops ─────────────────────────────────────────── -->
   <text class="t lb" x="4" y="374">SELF-HEALING LOOPS — WHAT HAPPENS WHEN A STAGE FAILS</text>
@@ -215,10 +215,10 @@ appears again.</figcaption>
 <table>
 <thead><tr><th>What works today</th><th>Measure</th><th>Note</th></tr></thead>
 <tbody>
-<tr><td>Assay values read from tables</td><td class="n">119,341</td><td>over 137 patents, under 556 assay names</td></tr>
+<tr><td>Assay values read from tables</td><td class="n">119,306</td><td>over 137 patents, under 553 assay names</td></tr>
 <tr><td>&nbsp;&nbsp;published as a grade, not a number</td><td class="n">32,898</td><td>a letter or <code>+</code>/<code>++</code>, with the scale defined in a legend</td></tr>
 <tr><td>&nbsp;&nbsp;graded values carrying the patent's own range</td><td class="n">25,202</td><td>of 32,898 (77%). Was 12,531 of 29,803 when this work started</td></tr>
-<tr><td>Compounds resolved to a structure</td><td class="n">24,503</td><td>all four routes together</td></tr>
+<tr><td>Compounds resolved to a structure</td><td class="n">24,506</td><td>all four routes together</td></tr>
 <tr><td>Structures the printed mass confirms</td><td class="n">11,232</td><td>of 12,092 weighed; 860 contradict the mass their own document prints</td></tr>
 <tr><td>Structures the patent contradicts</td><td class="n">133</td><td>across 23 patents; demoted, not deleted</td></tr>
 <tr><td>Markush compounds built</td><td class="n">599</td><td>these have no name anywhere in the document</td></tr>
@@ -321,7 +321,7 @@ documents, which is the cheap kind of problem.</p>
 <tr><td>A column's NAME read as the prose it names</td><td class="n">895 rows</td><td class="fx">fixed</td><td>Done. A table reporting masses has a column headed <code>[M + H]</code>; one reporting retention times has <code>Rt</code>. The pattern that spots running prose matched those literal headers, so the row naming the columns was discarded — 565 of them in US9718790 alone. Prose states a number; a column name does not.</td></tr>
 <tr><td>The mass check read table rows only</td><td class="n">8,357 rows</td><td class="fx">fixed</td><td>Done. Most patents print a mass in prose under a heading, not in a table, so the only referee needing no external database never ran on them — US10245267 prints 1,099 masses and it found 0. Weighed structures went from 3,735 to 12,092.</td></tr>
 <tr><td>BindingDB joined on a compound number BindingDB assigns itself</td><td class="n">—</td><td class="fx">fixed</td><td>Done. Agreement read 33.6% on that key and 95.0% on structure; a wrong pairing still produces a number, so nothing downstream could notice. Now joined on InChIKey.</td></tr>
-<tr><td>Four sub-assays collapsed into one label</td><td class="n">2,071 rows</td><td>sized</td><td>US11547697 heads four PI3K isoform columns <code>PI3K</code> / <code>&#945; &#946; &#948; &#947;</code> on two rows, and its 10-column tgroup declares no header at all — the four header rows sit at the top of the body and only the first is used, so the Greek letters never join. US9682141's identical table writes <code>PI3K &#945;</code> in one cell and reads correctly.</td></tr>
+<tr><td>A metric name read as a compound number</td><td class="n">2,071 rows</td><td class="fx">fixed</td><td>Done. <code>IC50</code> has the same shape as <code>A7</code> &#8212; up to three letters then digits &#8212; so a header row stating the metric per column looked like a data row and stopped the header promotion. US11547697&#8217;s four PI3K isoforms all came out labelled <code>PI3K</code>; they now separate. A bin legend was also being read as a compound name, putting its prose at the head of the table. Surplus records halved, 3,079 to 1,538, and indistinguishable records fell 1,360 to 498.</td></tr>
 <tr><td>Structures contradicting their own printed mass</td><td class="n">860 rows</td><td>sized</td><td>Newly visible: the mass check now reaches 2.5&#215; as many structures. 405 of the deltas exceed 100 Da — a different molecule, not a rounding error. BindingDB flags the same rows at 19.7% where it does not hold the structure against 5.2% where it does.</td></tr>
 <tr><td>One structure under several compound numbers</td><td class="n">806 compounds</td><td>sized</td><td>98.8% is the document reusing a name — US10245267 prints one name under Examples 415, 418 and 419 and three different masses. 10 are ours, in <code>cid_first._name_texts</code>. The <code>cid_clash</code> column exists to catch this and is empty on all 38,222 rows: it is written only by a route that does not run.</td></tr>
 <tr><td>Wavy cut bond</td><td class="n">968 rows</td><td class="s"><span class="tag t-warn">sized</span></td><td>A loop that reads the drawing convention from the patent's own prose. The removal step already works.</td></tr>
@@ -363,5 +363,5 @@ safe for a fused one, so it is deliberately refused today rather than guessed.</
 </ol>
 
 <footer>
-patentdb3 · 137 patents · corpus dump 2026-08-19T20:08 · runs end to end
+patentdb3 · 137 patents · corpus dump 2026-08-19T20:41 · runs end to end
 </footer>

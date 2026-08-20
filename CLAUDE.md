@@ -47,25 +47,7 @@ if the tree changed.
 
 ## Next fix
 
-**US11547697's four-row header. 2,071 records, diagnosed to the line.**
-Dated 2026-08-19. Its TABLE-US-00002 heads four PI3K isoform columns over two
-rows, and all four records come out labelled bare `PI3K`:
-
-```
-['MTOR', 'PI3K', 'PI3K', 'PI3K', 'PI3K', 'PC3',     'T47D']
-['C',    'α',    'β',    'δ',    'γ',    'prolif-', 'prolif-']
-['IC50', 'IC50', 'IC50', 'IC50', 'IC50', 'eration', 'eration']
-['Structure', '(nM)', '(nM)', '(nM)', '(nM)', '(nM)', '(nM)*']
-```
-
-The 10-column tgroup declares **`header_rows = 0`** — all four rows sit at the
-top of the BODY and only the first is used, so `α β δ γ` never join. The
-values are right and the label is not. US9682141's identical table writes
-`PI3K α` in one cell and reads correctly, which is why one patent is right and
-the other is not. `check_duplicate_facts` already flags it (862 rows); nothing
-acts on the flag.
-
-Then: **`table_names` on US12011444 and US9745328.** 678 compounds — 89% of
+**`table_names` on US12011444 and US9745328.** 678 compounds — 89% of
 the whole `name_in_a_table_cell` miss bucket — sit in these two documents. The
 route is sound (75% take rate corpus-wide), so this is a document defect, not
 a redesign.
@@ -260,6 +242,21 @@ Each item below cost real time. Read this list before you measure anything.
   172-rule `layout_rules.json`.
 - **Measure at the stage where the code runs.** A repair in `name_repair`
   acts inside the extractor. It never reaches the heal loop.
+- **`IC50` HAS THE SAME SHAPE AS A COMPOUND NUMBER.** `_ID_CELL` reads "up to
+  three letters, then digits", which is `A7`, `Ex. 203` — and `IC50`, `EC50`,
+  `GI50`, `pKi`. `assemble_block`'s header promotion stops at the first row
+  that opens with an id, so a header row stating the metric per column stopped
+  it, and US11547697's four PI3K isoform columns all shipped as `PI3K`. 2,071
+  records. Refuse it from `data/assay_vocabulary.json` class `ASSAY_TYPE` —
+  that vocabulary already exists and is already patent-agnostic. Do not write
+  a fourth copy of it.
+- **A SYSTEMATIC NAME IS ONE TOKEN; A SENTENCE IS MANY WORDS.** The name-as-id
+  branch accepted any long cell carrying three of `-`, `[` or `(`, which a bin
+  legend and an NMR shift list both clear. Read as a compound id, the
+  annotation tgroup holding them joins `assemble_block`'s `kin` and its PROSE
+  leads the assembled body, stopping the header promotion on step one. Of the
+  16,858 cells that branch accepts, 9,602 have no space at all and 5,326 have
+  prose spacing.
 - **A COLUMN IS NAMED AFTER WHAT IT HOLDS, so the pattern that spots prose
   matches the header.** A table reporting masses has a column headed
   `[M + H]`; one reporting retention times has `Rt` and `(min)`; one naming
