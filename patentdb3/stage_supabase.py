@@ -156,6 +156,35 @@ def num(v):
     return None if f != f else f
 
 
+def _fmt(x):
+    return str(int(x)) if x == int(x) else f"{x:g}"
+
+
+def band(lo, hi, unit):
+    """What the bin MEANS, in one string. `None` when there is no legend.
+
+    A BOUND ALONE DOES NOT SAY WHICH SIDE IT IS ON. A letter grade prints a
+    symbol and the legend behind it defines a range, and that range is
+    one-sided more often than not: of 25,184 graded measurements 10,861 give
+    only an upper bound and 3,292 only a lower. `{"hi": 25.0, "grade": "#"}`
+    left the reader to work out that a lone `hi` means "under", and to spot
+    that the neighbouring `{"lo": 75.0, "grade": "###"}` is the opposite.
+
+    So the direction is written down — `<25%`, `>75%`, `3 - 7 nM` — beside the
+    bounds rather than instead of them. The string is what a person reads; the
+    numbers stay because they are what a WHERE clause reads.
+
+    `<` and `>` are not a claim about strictness. The legends say `<`, `≤` and
+    `less than` for the same thing and the reader does not keep which.
+    """
+    if lo is None and hi is None:
+        return None
+    u = "" if not unit else ("" if unit == "%" else " ") + unit
+    if lo is not None and hi is not None:
+        return f"{_fmt(lo)} - {_fmt(hi)}{u}"
+    return f"<{_fmt(hi)}{u}" if lo is None else f">{_fmt(lo)}{u}"
+
+
 def kept(d):
     """The object minus every key the patent did not fill.
 
@@ -231,11 +260,13 @@ def build():
             # 75-100% is a real range and was being dropped on the floor
             # because `%` is not in `TO_UM`.
             "value": val, "unit": r.get("unit") or None,
+            "grade": r.get("letter_grade") or None,
+            # The grade, then what it means, then the same thing in numbers.
+            "band": band(lo, hi, (r.get("unit") or "").strip()),
             "lo": lo, "hi": hi,
             "value_um": (val * f) if (f and val is not None) else None,
             "lo_um": (lo * f) if (f and lo is not None) else None,
             "hi_um": (hi * f) if (f and hi is not None) else None,
-            "grade": r.get("letter_grade") or None,
             "n_runs": int(num(r.get("n_runs"))) if num(r.get("n_runs")) else None,
             "table": r["table_id"]}))
 

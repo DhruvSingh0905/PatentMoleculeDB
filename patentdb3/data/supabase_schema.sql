@@ -18,11 +18,18 @@
 --
 -- The patent's own words survive verbatim in each object's `assay`.
 --
--- EACH OBJECT CARRIES ONLY THE KEYS ITS HEADING FILLED. The seventeen possible
+-- A GRADED MEASUREMENT SAYS ITS RANGE IN WORDS. Many patents report a symbol
+-- (`A`, `+++`, `#`) and define its range in a legend, and that range is
+-- one-sided more often than not. `{"hi":25.0}` left a reader to infer that a
+-- lone bound means "under", so each graded object also carries `band` —
+-- `<25%`, `>75%`, `3 - 7 nM` — beside `lo`/`hi`, not instead of them. The
+-- string is for reading; the bounds are what a WHERE clause reads.
+--
+-- EACH OBJECT CARRIES ONLY THE KEYS ITS HEADING FILLED. The eighteen possible
 -- fields are the union over every heading, and no heading uses them all — a
 -- letter grade has no value and no unit, a concentration has no dose and no
 -- species. Writing the whole set made 57.3% of every key null, so an object
--- now averages 7 keys instead of 17. A missing key is not missing data:
+-- now averages 7 keys instead of 18. A missing key is not missing data:
 -- `a->>'grade' is null` is true for an absent key and a null one alike, and
 -- `@>` tests only the keys it is given.
 
