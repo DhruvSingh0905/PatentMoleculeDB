@@ -367,3 +367,50 @@ def test_a_mass_inside_a_table_belongs_to_its_row_not_to_the_heading():
            '<entry>MS (ESI) 561 (M + H)</entry></row></table></tables>'
            '<p>LCMS (ESI) m/z 238.1 (M+H).</p>')
     assert mass_gate.reported_masses(xml) == {"91": 561.0, "5": 238.1}
+
+
+# ── E. a number must be read whole, and a salt weighed as its free base ───
+
+def test_a_retention_time_is_not_a_mass():
+    """US12011444 writes `LC-MS A: t_R=0.69 min; [M+H]+=426.97`.
+
+    `_NUMBER` read `\\d{2,4}(?:\\.\\d+)?`, which can start in the MIDDLE of a
+    number: `0.69` has one digit before the point, so the pattern could not
+    match at the `0` and matched the `69` instead. Every one of that patent's
+    88 weighable structures was weighed against a retention time. US10730877,
+    US10544143 and US11053244 print the same boilerplate.
+
+    A number is now matched whole and judged on its digits before the point.
+    """
+    assert mass_gate.printed_mass(
+        "LC-MS A: tR=0.69 min; [M+H]+=426.97.") == 426.97
+    assert mass_gate.printed_mass(
+        "LC-MS A: t R =0.67 min; [M+H]+=502.1") == 502.1
+    # the shapes that already worked must keep working
+    assert mass_gate.printed_mass("MS (ESI) 485 (M+H)") == 485.0
+    assert mass_gate.printed_mass("LCMS (m/z) (M+H)=477.2, Rt=0.78 min.") == 477.2
+    assert mass_gate.printed_mass(
+        "LCMS calculated for C 12 H 18 ClIN 3 OSi (M+H) + m/z=410.0") == 410.0
+
+
+def test_a_salt_is_weighed_as_its_free_base():
+    """`...azetidin-3-ol trifluoroacetic acid salt` resolves to two
+    disconnected fragments, and the patent reports `[M+H]+` for the amine
+    alone — a counterion does not carry the charge in positive-mode ESI.
+
+    Weighing the whole SMILES added the counterion to our side only. 168 rows
+    contradicted on nothing else, and on 155 of them the delta IS the
+    counterion: +115.0 for trifluoroacetate, +36.98 for chloride, +228.0 for a
+    bis-TFA salt.
+    """
+    pytest.importorskip("rdkit")
+    base = "Nc1ncc(-c2ccc(-c3ccccc3S(=O)(=O)N3CC(O)C3)c(F)c2)cn1"
+    salt = "FC(C(=O)O)(F)F." + base
+    mono_base, _ = mass_gate._mass(base)
+    mono_salt, _ = mass_gate._mass(salt)
+    assert mono_salt == pytest.approx(mono_base), (
+        "the trifluoroacetate was weighed into the compound")
+
+    # and the verdict follows: the patent prints the free base's [M+H]
+    reported = mono_base + mass_gate.PROTON
+    assert mass_gate.verdict(salt, reported)[0] == mass_gate.VERDICT_AGREES

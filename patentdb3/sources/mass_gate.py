@@ -135,9 +135,19 @@ _INSTRUMENT = re.compile(
 # symbol is not a mass, and the scan moves to the next number.
 _ELEMENT_TAIL = re.compile(r"(?:^|[^A-Za-z])[A-Z][a-z]?\s*$")
 
-# Two digits minimum: a single digit is a subscript, a stoichiometry or a
-# locant, never an m/z this gate can use.
-_NUMBER = re.compile(r"\d{2,4}(?:\.\d+)?")
+# EVERY NUMBER, WHOLE. This read `\d{2,4}(?:\.\d+)?`, which can start in the
+# MIDDLE of a number: `t_R=0.69 min` has one digit before the point, so the
+# pattern could not match at the `0` and matched the `69` instead. US12011444
+# writes `LC-MS A: t_R=0.69 min; [M+H]+=426.97` and every one of its 88
+# weighable structures was weighed against a RETENTION TIME. US10730877,
+# US10544143 and US11053244 print the same boilerplate.
+#
+# So the number is matched whole and judged afterwards, on the count of digits
+# before the point: an m/z in this corpus has two to four, and a retention
+# time, a yield or a step number has one. Judging a token is safe where
+# matching a prefix of one is not.
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_MZ_DIGITS = (2, 4)
 
 # How far past the instrument name the mass may sit. A formula plus an adduct
 # is long — `calculated for C 23 H 33 ClN 5 OSi (M+H) + m/z=` is 46 characters
@@ -219,6 +229,10 @@ def _mass_hits(flat: str):
         for n in _NUMBER.finditer(window):
             if _ELEMENT_TAIL.search(window[:n.start()]):
                 skipped = True            # a subscript, not a mass
+                continue
+            lo, hi = _MZ_DIGITS
+            if not lo <= len(n.group(0).split(".")[0]) <= hi:
+                skipped = True            # a retention time, a yield, a count
                 continue
             # THE ONLY REASON TO LOOK FAR IS A FORMULA IN THE WAY. Without one,
             # a mass sits right after the instrument — `MS (ESI) 485 (M+H)`. A
@@ -557,7 +571,23 @@ def _mass(smiles: str) -> "tuple[float, float] | None":
         return None
     RDLogger.DisableLog("rdApp.*")
     mol = Chem.MolFromSmiles(smiles)
-    return None if mol is None else (ExactMolWt(mol), MolWt(mol))
+    if mol is None:
+        return None
+    # A SALT IS WEIGHED AS ITS FREE BASE, because that is what the patent
+    # printed. `...azetidin-3-ol trifluoroacetic acid salt` resolves to
+    # `FC(C(=O)O)(F)F.<amine>` — two disconnected fragments — and the document
+    # reports `[M+H]+` for the amine alone. A counterion does not carry the
+    # charge in positive-mode ESI, so it never appears in that number.
+    #
+    # Weighing the whole SMILES added the counterion to our side only. 168 rows
+    # contradicted on nothing else, and on 155 of them (92%) the delta IS the
+    # counterion: +115.0 for trifluoroacetate, +36.98 for chloride, +228.0 for
+    # a bis-TFA salt. Neither the structure nor the printed mass was wrong —
+    # the comparison was.
+    frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
+    if len(frags) > 1:
+        mol = max(frags, key=lambda f: f.GetNumHeavyAtoms())
+    return (ExactMolWt(mol), MolWt(mol))
 
 
 def verdict(smiles: str, reported: "float | None",
