@@ -895,3 +895,77 @@ def test_a_unit_is_read_from_whichever_branch_matched():
     for text in cases:
         m = _UNIT_PAT.search(text)
         assert m and any(m.groups()), text
+
+
+# ── P. carry-forward and the drawing ──────────────────────────────────────
+
+def test_a_row_with_its_own_drawing_never_inherits_the_previous_number():
+    """US9682141 prints compound numbers 1-53 and then stops.
+
+        <row><entry>53</entry><entry><chemistry C00243/></entry>...
+        <row><entry/>         <entry><chemistry C00244/></entry>...
+
+    Carry-forward exists for a CONTINUATION row — a record the document
+    wrapped over two lines. A row holding its own `<chemistry>` is the NEXT
+    compound, so inheriting gave all 470 remaining compounds the number 53:
+    cid 53 shipped 474 PI3K-alpha readings carrying four different letter
+    grades, each a real measurement of a different molecule filed under one
+    number. 2,073 records, and the whole table read as one compound.
+
+    Nothing can recover the true number — the document does not state it —
+    so the row is skipped rather than filed under a number it contradicts.
+    """
+    from patentdb3.sources.uspto_xml import parse_tables
+    from patentdb3.sources.uspto_assays import extract_from_tables
+
+    xml = (
+        '<tables id="TABLE-US-00002"><table><tgroup cols="3">'
+        '<colspec colwidth="20pt"/><colspec colwidth="60pt"/>'
+        '<colspec colwidth="40pt"/>'
+        '<thead><row><entry>Compound</entry><entry>Structure</entry>'
+        '<entry>PI3K IC50 (nM)</entry></row></thead>'
+        '<tbody>'
+        '<row><entry>52</entry>'
+        '<entry><chemistry id="CHEM-US-00242"/></entry>'
+        '<entry>11</entry></row>'
+        '<row><entry>53</entry>'
+        '<entry><chemistry id="CHEM-US-00243"/></entry>'
+        '<entry>22</entry></row>'
+        '<row><entry/>'
+        '<entry><chemistry id="CHEM-US-00244"/></entry>'
+        '<entry>33</entry></row>'
+        '<row><entry/>'
+        '<entry><chemistry id="CHEM-US-00245"/></entry>'
+        '<entry>44</entry></row>'
+        '</tbody></tgroup></table></tables>')
+
+    recs = extract_from_tables(parse_tables(xml))
+    cids = sorted(r.cid for r in recs)
+    assert cids == ["52", "53"], f"expected only the numbered rows, got {cids}"
+    # and cid 53 keeps its OWN value, not the two that follow it
+    fifty_three = [r for r in recs if r.cid == "53"]
+    assert len(fifty_three) == 1
+    assert fifty_three[0].value_numeric == 22
+
+
+def test_a_continuation_row_with_no_drawing_still_inherits():
+    """The case carry-forward is FOR. A wrapped record: the second row has no
+    id, no drawing of its own, and carries the rest of the measurement.
+    """
+    from patentdb3.sources.uspto_xml import parse_tables
+    from patentdb3.sources.uspto_assays import extract_from_tables
+
+    xml = (
+        '<tables id="TABLE-US-00003"><table><tgroup cols="3">'
+        '<colspec colwidth="20pt"/><colspec colwidth="40pt"/>'
+        '<colspec colwidth="40pt"/>'
+        '<thead><row><entry>Cpd</entry><entry>A IC50 (nM)</entry>'
+        '<entry>B IC50 (nM)</entry></row></thead>'
+        '<tbody>'
+        '<row><entry>7</entry><entry>10</entry><entry/></row>'
+        '<row><entry/><entry/><entry>20</entry></row>'
+        '</tbody></tgroup></table></tables>')
+
+    recs = extract_from_tables(parse_tables(xml))
+    assert {r.cid for r in recs} == {"7"}
+    assert sorted(r.value_numeric for r in recs) == [10, 20]

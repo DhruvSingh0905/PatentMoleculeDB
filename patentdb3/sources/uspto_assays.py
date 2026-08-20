@@ -3027,6 +3027,30 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
                     cid = embedded_cid
                     prev_cid = cid
                 else:
+                    # A ROW THAT CARRIES ITS OWN DRAWING IS ITS OWN COMPOUND.
+                    #
+                    # Carry-forward exists for a CONTINUATION row — a record
+                    # the document wrapped over two lines. A row holding its
+                    # own `<chemistry>` is not that. It is the next compound,
+                    # and the document simply stopped printing the number:
+                    #
+                    #   <row><entry>53</entry><entry><chemistry C00243/>...
+                    #   <row><entry/>        <entry><chemistry C00244/>...
+                    #
+                    # US9682141 prints numbers 1-53 and then leaves the id cell
+                    # empty for the rest of a 1,069-row table. Carry-forward
+                    # gave all 470 remaining compounds the number 53, so cid 53
+                    # shipped 474 PI3K-alpha readings with four different letter
+                    # grades. Every one of them was a real measurement of a
+                    # DIFFERENT molecule, asserted under one compound number.
+                    # The same shape costs US11547697 1,544 records.
+                    #
+                    # Nothing here can recover the true number — the document
+                    # does not state it. The row is a drawing with values
+                    # attached, which is the image track's work, so it is
+                    # skipped rather than filed under a number it contradicts.
+                    if any(getattr(cell, "chemistry_id", "") for cell in row):
+                        continue
                     # Fall back to carry-forward from the last-seen CID.
                     # Only do this when the row has at least one parseable assay
                     # value, to avoid adopting spacer/annotation rows.
