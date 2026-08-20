@@ -259,53 +259,6 @@ purchase serves every document that fails the same way. The shipped library hold
 <strong>172 rules</strong>: 62 column maps, 49 bin keys, 35 value patterns, 16 escalations,
 9 not-an-assay and 1 row regex. Three paid attempts per layout, capped at $0.20 a patent.</p>
 
-<p><strong>The parts.</strong> Each file does one job. No file calls a model except the three
-loops.</p>
-
-<table>
-<thead><tr><th style="width:26%">File</th><th>What it does</th></tr></thead>
-<tbody>
-<tr><td><code>sources/uspto_xml.py</code></td><td>Reads the patent XML. Builds a grid for each
-  table. A patent splits one table into several fragments, so this joins them into one grid and
-  finds the header rows.</td></tr>
-<tr><td><code>sources/uspto_assays.py</code></td><td>Decides what each column holds: a compound
-  number, an assay, a unit, a run count. Writes one record per value.</td></tr>
-<tr><td><code>sources/bin_legend.py</code></td><td>Reads the legend. Turns a grade such as
-  <code>+++</code> into a numeric range. Seven written forms appear in this corpus.</td></tr>
-<tr><td><code>sources/cid_first.py</code></td><td>The identity route. Starts at a compound number
-  and searches the document for the name beside it.</td></tr>
-<tr><td><code>sources/iupac_names.py</code><br><code>sources/table_names.py</code></td>
-  <td>Read a name from a heading, and from a table cell.</td></tr>
-<tr><td><code>sources/opsin.py</code></td><td>Sends a name to OPSIN. Returns a structure, or
-  nothing. OPSIN either parses a name or refuses it, so it is the identity gate.</td></tr>
-<tr><td><code>sources/mass_gate.py</code></td><td>Weighs the structure. Compares it with the mass
-  the patent prints in that compound's own row or section.</td></tr>
-<tr><td><code>repair/</code></td><td>The three loops above.</td></tr>
-<tr><td><code>repair/plausibility.py</code></td><td>Audits the output. Every check states
-  something that cannot be true of real data, and none needs reference data.</td></tr>
-</tbody>
-</table>
-
-<p><strong>What a run writes.</strong> One command reads the patents and writes all of it:
-<code>python3 -m patentdb3.verify --all --dump</code>. Add <code>--no-heal</code> to run the
-reader alone, which costs nothing.</p>
-
-<table>
-<thead><tr><th style="width:26%">File</th><th>Holds</th></tr></thead>
-<tbody>
-<tr><td><code>out/reader_dump.tsv</code></td><td>One row per assay value. Compound number, assay
-  name, value, qualifier, unit, grade, range, table.</td></tr>
-<tr><td><code>out/structures.tsv</code></td><td>One row per compound identity. Name, SMILES,
-  InChIKey, route, mass verdict.</td></tr>
-<tr><td><code>out/latest.json</code></td><td>The manifest. It names the run, the patents, the
-  counts, and whether the loops ran.</td></tr>
-<tr><td><code>out/loss_log.jsonl</code></td><td>What each route refused, and why.</td></tr>
-<tr><td><code>out/reader_dump.xlsx</code></td><td>The workbook. It adds a BindingDB sheet.</td></tr>
-<tr><td><code>data/layout_rules.json</code></td><td>The 172 bought rules. Tracked in git, so a
-  rule bought once ships.</td></tr>
-</tbody>
-</table>
-
 <p>The two tables join on the compound number. The reader and the identity routes read that
 number from different places, so the join is checked: over the compounds BindingDB also holds,
 99.3% carry a value that belongs to that molecule, and no pair is swapped.</p>
@@ -352,8 +305,8 @@ compute queue, not a defect.</p>
 
 <p>The drawn compounds are the largest item, and nothing about them is unsolved. A sample of 166
 drawings over 33 patents scored a per-patent median of 100% against the masses those patents
-print. Recognition needs a GPU, and it is decoupled: the pipeline writes a job, a machine reads
-it, the pipeline reads the answers back. What is missing is compute, not code.</p>
+print. Recognition needs a GPU and is decoupled from the rest: the pipeline writes a job, a
+machine reads it, the pipeline reads the answers back. What is missing is compute, not code.</p>
 
 <p>The remaining work is concentrated. Of 137 patents, the top 40 hold 91% of it and the top 10
 hold 53%. The pipeline stops on particular documents rather than reading badly everywhere.</p>
@@ -363,15 +316,16 @@ hold 53%. The pipeline stops on particular documents rather than reading badly e
 <table>
 <thead><tr><th>Problem</th><th>Size</th><th>What unblocks it</th></tr></thead>
 <tbody>
-<tr><td>Drawn compounds not recognised</td><td class="n">12,666</td><td>GPU time. The method is measured and works.</td></tr>
-<tr><td>Grades with no scale in the document</td><td class="n">7,696</td><td>One patent holds 5,753. Its legend sits beyond the look-back window.</td></tr>
-<tr><td>Names dropped in text extraction</td><td class="n">~1,800</td><td>Four patents hold 55% of it.</td></tr>
-<tr><td>Wavy cut bond</td><td class="n">968</td><td>A drawing convention no format carries. The patent explains it in prose; a loop should read that.</td></tr>
-<tr><td>Tables no identity route reaches</td><td class="n">877</td><td>Traced. Not yet built.</td></tr>
-<tr><td>Structures contradicting their own mass</td><td class="n">860</td><td>Newly visible. Not yet triaged.</td></tr>
-<tr><td>One structure under several numbers</td><td class="n">806</td><td>98.8% is the document reusing a name. 10 are ours.</td></tr>
-<tr><td>Three table layouts</td><td class="n">385</td><td>Split headers, repeated column groups, vertical records.</td></tr>
-<tr><td>Assay labels that name nothing</td><td class="n">305</td><td>The value is right. The target must be read from prose.</td></tr>
+<tr><td>Drawn structures not yet read</td><td class="n">12,666</td><td>GPU time. The method is
+  measured and works. This is the largest gain available.</td></tr>
+<tr><td>Wavy cut bond</td><td class="n">968</td><td>A drawing convention no structure format
+  carries, so a recogniser fills the gap with a group that is not there. The patent usually
+  explains its own convention in prose.</td></tr>
+<tr><td>Position number to atom</td><td class="n">8</td><td>A substituent given as a ring
+  position, such as <code>3-CH<sub>3</sub></code>, rather than a drawing. Safe on a simple ring
+  and not on a fused one, so it is refused today rather than guessed.</td></tr>
+<tr><td>The database is not online</td><td class="n">—</td><td>Hosting. The data is written as
+  files today, so anyone who wants it needs the repository.</td></tr>
 </tbody>
 </table>
 
@@ -392,16 +346,17 @@ hold 53%. The pipeline stops on particular documents rather than reading badly e
 <h2>7 · Next steps</h2>
 
 <ol>
-<li><strong>Get GPU time for structure recognition.</strong> 12,666 compounds wait on compute,
-not on new work. This is the largest gain available and the method is measured.</li>
-<li><strong>Read the legend that sits beyond the window.</strong> One patent, 5,753 grades.</li>
-<li><strong>Read the wavy cut bond.</strong> 968 compounds. The patent usually explains its own
-convention in prose, and a loop that reads that prose is the general answer.</li>
-<li><strong>Triage the 860 mass contradictions.</strong> Each is a wrong name or a wrong
-compound number.</li>
-<li><strong>Ask Google Patents for the names OPSIN dropped.</strong> 1,752 compounds carry a
-name that never became a structure. They already have a compound number, so anything recovered
-there joins to its assay values. It is a second opinion, taken after our own routes run.</li>
+<li><strong>Run the structure recognition at scale.</strong> 12,666 drawn compounds wait on
+compute, not on new work. Colab does not scale to it.</li>
+<li><strong>Read the wavy cut bond.</strong> 968 compounds are drawn as a scaffold plus a
+fragment, with a wavy line marking where the fragment attaches. No structure format carries that
+meaning. The patent usually states the convention in its own prose, and reading that prose is the
+general answer.</li>
+<li><strong>Resolve position numbers to atoms.</strong> 8 compounds give a substituent as a ring
+position rather than a drawing. The procedure is safe for one substituent on a simple ring, and
+breaks on a fused ring, so it is refused today.</li>
+<li><strong>Host the database online.</strong> The pipeline writes files. Putting them behind a
+service is what makes the data usable by anyone who is not running the code.</li>
 </ol>
 
 <footer>
