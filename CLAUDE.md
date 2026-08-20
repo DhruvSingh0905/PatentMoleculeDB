@@ -62,6 +62,7 @@ worth the build cost today. Date: **2026-08-17**.
 | IUPAC locant to atom | **8 rows corpus-wide** | Procedure is known and verified safe for a monosubstituted ring: position 1 is the atom bonded to the scaffold, and 2/6 and 3/5 are symmetry-equivalent so direction cannot produce a wrong molecule. Breaks on a second substituent, a ring heteroatom or a fused ring. Worth 8 rows. |
 | three table layouts | 385 rows | Split headers, repeated column groups, vertical records. |
 | dropped IUPAC names | **~1,800**, sized 2026-08-18 | 1,752 (patent, cid) pairs carry a name-like string that never became a structure; range 1,450-2,100. Four patents hold 55% — US12011444 (393), US9745328 (285), US8957068 (183), US10172859 (135), two of which are already the named next fix. **83% of drop events write nothing to the loss log**: `cid_first`'s OPSIN rejections and `table_names`' losing candidates are both silent, so the log undercounts by design. Read `loss_counts` from the manifest, never from `loss_log.jsonl` — the file truncates per process. |
+| one structure under several cids | **806 compounds**, 387 structures, sized 2026-08-19 | Two compound numbers resolve to the same molecule. `cid_clash` is a column in `structures.tsv` and is EMPTY on all 806 — the detector never fires. US10245267 states one name under Examples 415, 418 and 419 while printing 484.2, 477.2 and 473.2; the paragraph disproves the name it sits under. Needs no reference database and no API call. Worst: US10709712 55, US20230365584A1 54, US9694016 53. See wiki 50. |
 | wavy cut bond | 968 rows in 6 patents | **Deliberately last. Do not work on it directly.** No recogniser reads a squiggle across a bond. Its FORMAL meaning in molfile is unspecified stereochemistry (flag 4), not attachment — the patent use is a drawing convention with no format backing. MolScribe does not drop the mark, it INVENTS a group there, returning a terminal isopropyl or tert-butyl, which is why a fragment read is never a substructure of the truth. See the note below for why hand-writing a splicer is the wrong move. |
 
 **The wavy bond is a TEST OF THE LOOP, not a task.** US9718825 states the
@@ -277,6 +278,24 @@ Each item below cost real time. Read this list before you measure anything.
   corrupts every downstream route at once, which is what one 0.0016 score gap
   did to US10253019. Re-measure all seven before changing it. The reach is in
   `graphify-out/graph.json` — run `graphify explain "build_columns"`.
+- **A near-100% failure rate is an ATTRIBUTION defect, not a broken
+  document.** No real corpus is 94% wrong. When `mass_gate` was widened to
+  read prose, US10280164 read 16 of 16 contradicting and US10722495 48 of 51;
+  both were the gate reading a molecular formula's subscript (`LCMS calculated
+  for C 12 H 18 ClIN 3 OSi (M+H) + m/z=410.0` → **12**) as the mass. It is the
+  cheapest tell there is — check the rate per patent before believing any
+  corpus total.
+- **A heading section is a whole synthesis, so its FIRST mass belongs to Step
+  1.** The heading names what the section PRODUCES. Taking the first reported
+  every multi-step example as contradicting by exactly what the last step
+  still had to add — a constant 243 Da across US9694016 cids 1, 3 and 6. A
+  CONSTANT delta across unrelated compounds always means the wrong reference,
+  never a wrong structure.
+- **A referee must use the route's own cue, not a second one.** `mass_gate`
+  reads the compound number with `iupac_names._HEADING_ID` and refuses the
+  same headings via `_NOT_A_FINISHED_COMPOUND`. Before that, `Preparation 16`
+  donated its mass to `Example 16` — different series, same normalised cid —
+  and reported 89 of US20250163061A1's 167 correct structures as wrong.
 
 ## Design invariants
 
