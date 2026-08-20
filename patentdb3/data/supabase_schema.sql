@@ -136,3 +136,59 @@ create policy "read compounds"    on compounds    for select using (true);
 create policy "read assays"       on assays       for select using (true);
 create policy "read measurements" on measurements for select using (true);
 create policy "read gp_compounds" on gp_compounds for select using (true);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- ONE ROW PER COMPOUND. This is the table to read.
+--
+-- `v_measurements` is one row per MEASUREMENT, so a compound with nine assays
+-- appears nine times with its name and SMILES repeated. Right for aggregating,
+-- wrong for reading, and not what anyone wants to open.
+--
+-- A column per assay is impossible — 553 distinct headings, and a new one with
+-- every patent added. So the assays collapse into a JSONB array on the
+-- compound's own row: one object per measurement, each carrying the heading
+-- verbatim plus the parsed metric and target and the normalised value.
+--
+-- JSONB rather than text because it stays QUERYABLE, and the GIN indexes make
+-- it cheap:
+--
+--     where assays @> '[{"metric": "IC50"}]'
+--     where 'IC50' = any(metrics)          -- flat arrays for the common case
+--     where best_um < 1.0                  -- lifted out so sorting is free
+--
+-- REFRESH IT after any reload: `refresh materialized view compound_profiles;`
+-- It is materialised rather than a plain view because it aggregates 119,306
+-- measurements and is read far more often than the data changes.
+--
+-- The linter warns that a materialized view is readable by `anon` and sits
+-- outside row level security. That is accepted here rather than missed: every
+-- base table's policy is already `for select using (true)`, so this exposes
+-- exactly the data it is meant to and nothing further.
+create materialized view if not exists compound_profiles as
+select c.patent_id, c.cid, c.name, c.smiles, c.inchikey,
+       c.reported_mz, c.mass_check, c.markush,
+       count(m.id)                                         as n_measurements,
+       count(distinct a.assay_name)                        as n_assays,
+       min(m.value_um)                                     as best_um,
+       array_remove(array_agg(distinct a.metric), null)     as metrics,
+       array_remove(array_agg(distinct a.target_raw), null) as targets,
+       coalesce(jsonb_agg(jsonb_build_object(
+           'assay', a.assay_name, 'metric', a.metric, 'target', a.target_raw,
+           'qualifier', m.qualifier, 'value_um', m.value_um,
+           'value', m.value_numeric, 'unit', m.unit,
+           'grade', m.letter_grade, 'lo_um', m.range_lo_um,
+           'hi_um', m.range_hi_um, 'n_runs', m.n_runs, 'table', m.table_id)
+         order by a.assay_name) filter (where m.id is not null),
+         '[]'::jsonb)                                      as assays
+  from compounds c
+  left join measurements m on m.patent_id = c.patent_id and m.cid = c.cid
+  left join assays a on a.assay_id = m.assay_id
+ group by c.patent_id, c.cid, c.name, c.smiles, c.inchikey,
+          c.reported_mz, c.mass_check, c.markush;
+
+create unique index if not exists ix_prof_pk      on compound_profiles (patent_id, cid);
+create index if not exists ix_prof_assays  on compound_profiles using gin (assays);
+create index if not exists ix_prof_metrics on compound_profiles using gin (metrics);
+create index if not exists ix_prof_targets on compound_profiles using gin (targets);
+create index if not exists ix_prof_best    on compound_profiles (best_um);
+create index if not exists ix_prof_key     on compound_profiles (inchikey);

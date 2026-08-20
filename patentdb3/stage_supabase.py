@@ -155,6 +155,8 @@ def main():
     post("compounds", compounds)
     post("assays", assays)
     post("measurements", meas)
+    print("\nNow refresh the wide table:")
+    print("  refresh materialized view compound_profiles;")
     return 0
 
 
