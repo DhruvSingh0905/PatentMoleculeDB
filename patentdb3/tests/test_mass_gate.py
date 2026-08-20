@@ -309,21 +309,36 @@ def test_an_instrument_word_used_as_a_verb_states_no_mass():
     assert mass_gate.reported_masses(xml) == {}
 
 
-def test_the_last_mass_in_a_synthesis_is_the_one_the_heading_names():
-    """US9694016. A heading section is a whole synthesis, and the first mass
-    belongs to Step 1's intermediate.
+def test_a_section_stating_two_compounds_masses_states_neither():
+    """US9694016. A heading section is a whole synthesis, and its steps are
+    different molecules:
 
-    Reading the first reported every multi-step example as contradicting by
-    the mass of everything the last step still had to add — a constant 243 Da
-    on cids 1, 3 and 6 alike, which is the signature of comparing against the
-    wrong molecule rather than of a wrong structure.
+        Example 1: Synthesis of N-(4-methylphenyl)benzamide
+        Step 1 ... LCMS (m/z) (M+H)=200.0
+        Step 2 ... LCMS (m/z) (M+H)=443.2
+
+    BOTH ways of choosing were tried and both are wrong. Taking the FIRST gives
+    Step 1's intermediate — a constant 243 Da light across US9694016 cids 1, 3
+    and 6. Taking the LAST gives a co-isolated byproduct on US11254686, or the
+    next compound's product where a heading sits after its own synthesis
+    paragraph. There is no third choice that reads the author's intent.
+
+    So the section yields NOTHING. This gate exists to check work someone else
+    produced — a drawing MolScribe read, a markush row assembled from parts —
+    and against that a WRONG reference is far worse than none: it discards a
+    correct answer and shrinks the truth set a recogniser is scored on.
     """
     xml = ('<heading>Example 1: Synthesis of N-(4-methylphenyl)benzamide</heading>'
            '<p>Step 1. The residue gave a white solid in 93% yield. '
-           'LCMS (m/z) (M+H)=200.0/201.8, Rt=0.35 min.</p>'
+           'LCMS (m/z) (M+H)=200.0, Rt=0.35 min.</p>'
            '<p>Step 2. The title compound was obtained. '
            'LCMS (m/z) (M+H)=443.2, Rt=0.88 min.</p>')
-    assert mass_gate.reported_masses(xml) == {"1": 443.2}
+    assert mass_gate.reported_masses(xml) == {}
+
+    # Two readings of ONE compound are not ambiguous. `[M+H]` and `[M+Na]` of
+    # the same molecule differ by 21.98 Da, and a calcd printed beside a found
+    # differs by rounding, so both stay readable.
+    assert mass_gate.printed_mass("Calcd: 335.14 Found: 336.0 [M + H]+") == 336.0
 
 
 def test_a_preparation_does_not_donate_its_mass_to_an_example():

@@ -81,41 +81,44 @@ from .uspto_assays import normalize_cid as _normalize_cid
 
 logger = logging.getLogger(__name__)
 
-# `MS (ESI) 561 (M+H)`, `MS (ESI+) m/z 561.2 (M+H)+`, `MS(ESI) 561`. The mass
-# is the FIRST number after the ionisation mode — a `+` charge marker, `m/z`
-# and a space may sit between, and nothing else observed does.
+# ONE ANCHOR: THE ADDUCT. NOT THE INSTRUMENT NAME.
 #
-# THE DECIMAL IS PART OF THE NUMBER. Every pattern here captured `(\d{2,4})`
-# and dropped `(?:\.\d+)?` on the floor, so `414.3` was compared as `414` —
-# up to 0.99 Da of a 1.5 Da budget thrown away before any chemistry happened,
-# and the docstring above says the value IS the printed number. Keeping it
-# turned 6 corpus contradictions back into agreements.
+# Two vendor-enumerating patterns used to live here, `MS\s*\(ESI...\)` and a
+# list of instrument prefixes, and each new document added a spelling. A census
+# of all 58,273 mass-like statements in this corpus ended that approach:
 #
-# THIS PATTERN ALONE READ 5 OF 137 PATENTS. It requires the literal order
-# `MS (ESI`, and the corpus does not agree on it: US8722692 prints `ESI-MS m/z
-# 499.2 (MH+)` 500 times and `MS (ESI` zero times, so `reported_masses`
-# returned `{}` for that whole document and six structures wrong by 40-145 Da
-# were never weighed. The gate did not pass them — it never saw them.
-REPORTED = re.compile(r"MS\s*\(ESI[^)]*\)[^0-9]{0,12}(\d{2,4}(?:\.\d+)?)", re.I)
+#     the instrument name VARIES     MS (ESI), MS (apci), MS (ES+), MS(ES),
+#                                    MS obsd. (ESI+), m/z (ESI, +ve), ESI+:,
+#                                    HRMS(A), ESI-MS, LC/MS
+#     the ADDUCT does not            [M+H], (M+H), [M+Na], MH+, m/z, m/e
+#
+#     statements carrying an adduct or m/z marker  44,858   77.0%
+#     the instrument patterns read                 27,652   47.5%
+#
+# `MS (apci) m/z=N (M+H).` was invisible 745 times and `MS (ES + ): m/e=N.`
+# 644 times, for no better reason than word order.
+#
+# The isotope label inside the bracket is a number and is not a mass —
+# `[M(37Cl) + H]+ = 453` gave 37 — so the pattern steps over it.
+_ADDUCT_ANCHOR = re.compile(
+    r"[\[(]\s*M\s*(?:\([^)]{0,8}\)\s*)?[+\-−–]\s*(?:H|Na|K|1|NH4)\s*[\])]"
+    r"|\bm\s*/\s*[ez]\b"
+    # `[MH]`, `[MH]+`, `MH+`, `(MH+)`. The bracket alone is the statement —
+    # requiring the `+` immediately after `MH` missed `[MH] + : 620.`
+    r"|\[\s*MH\s*\]|\bMH\s*\+", re.I)
 
-# The same statement with the words in the other order, or another instrument.
-# `ESI-MS m/z 499.2 (MH+)`, `LC-MS: 412 (M+1)`, `HRMS (ESI) m/z 350.1`.
-# Anchored on `m/z` or on the mode marker so a bare `MS` in prose cannot match.
-# THE ADDUCT SITS BETWEEN THE INSTRUMENT AND THE MASS, AND IT HAS DIGITS IN IT.
-# `LC-MS [M - 1]: 453.3` puts `[M - 1]` in the gap, so a `[^0-9]` run stops on
-# the `1` and never reaches 453.3. Before entities were unescaped this matched
-# anyway — on the digits of `&#x2212;`, recording a 2,212 Da compound. So the
-# gap explicitly steps over one bracketed group.
-REPORTED_ALT = re.compile(
-    r"\b(?:ESI|APCI|LC|HR|HPLC)[\s/-]*MS\b"
-    r"[^0-9]{0,10}(?:[\[(][^\])]{0,14}[\])])?[^0-9]{0,10}"
-    r"(\d{2,4}(?:\.\d+)?)", re.I)
-
-# WHERE A MASS STATEMENT STARTS. The union of the two anchors above, with the
-# number left off: finding the statement and reading its number are separate
-# jobs, because the text in between is not empty and not fixed.
+# The instrument is a FALLBACK anchor, for a statement that names one and
+# states no adduct: `HRMS (ESI) 350.1`. Where both appear the adduct wins —
+# an instrument read walks forward blind and steps into the adduct bracket.
 _INSTRUMENT = re.compile(
     r"MS\s*\(ESI[^)]*\)|\b(?:ESI|APCI|LC|HR|HPLC)[\s/-]*MS\b", re.I)
+
+# WHAT THE ANCHOR INTRODUCES. `[M+H]=477.2` and `HRMS (ESI) 350.1` introduce
+# their number; `617 (M + H). Ex. 276` states it BEFORE and introduces nothing,
+# so reading forward there walks into the next sentence. The gap may hold the
+# ionisation mode in brackets and nothing else — anything with words in it is
+# a different statement.
+_GAP_OK = re.compile(r"^[\s+\-–−\])]*(?:\([^)]{0,14}\)[\s:,]*)?[=:]?\s*$")
 
 # A MOLECULAR FORMULA'S SUBSCRIPT IS A NUMBER, AND IT SITS EXACTLY WHERE THE
 # MASS SITS. `LCMS calculated for C 12 H 18 ClIN 3 OSi (M+H) + m/z=410.0` gave
@@ -238,46 +241,116 @@ _PURIFICATION = re.compile(
     r"\b(?:prep(?:arative|\.)?|purif\w*|column|chromatograph\w*)\b[\s-]*$", re.I)
 
 
-def _mass_hits(flat: str):
-    """Every m/z the text states, as `(mass, index in flat)`, in reading order.
+def _valid(tok: str) -> bool:
+    """Could this token be an m/z? Two to four digits before the point.
 
-    `flat` is tag-stripped and entity-unescaped. Each instrument mention yields
-    at most one mass — the first number after it that is not a molecular-formula
-    subscript, see `_ELEMENT_TAIL`.
+    A retention time (`0.69`), a yield and a step number have one. Matching a
+    PREFIX of a number instead of the whole one is how `t_R=0.69 min` became
+    69 on all 88 of US12011444's weighable rows.
     """
-    for m in _INSTRUMENT.finditer(flat):
-        # A purification method, not a measurement. See `_PURIFICATION`.
+    lo, hi = _MZ_DIGITS
+    return lo <= len(tok.split(".")[0]) <= hi
+
+
+def _forward(flat: str, at: int):
+    """The number this anchor introduces, or None. `(value, index)`."""
+    window = flat[at:at + _MASS_WINDOW]
+    skipped = False
+    for n in _NUMBER.finditer(window):
+        if _ELEMENT_TAIL.search(window[:n.start()]):
+            skipped = True                    # a formula subscript
+            continue
+        if not _valid(n.group(0)):
+            # NOT a reason to look further. `skipped` exists for a molecular
+            # FORMULA standing between the anchor and its mass; a stray digit
+            # does not push the mass anywhere. Letting this set it meant the
+            # `1` of `1 H NMR (400 MHz` earned the wide window and the gate
+            # read the spectrometer's FREQUENCY as the mass — 400.0 on 50
+            # US9745328 rows, 500.0 and 600.0 on others.
+            continue
+        if not (_GAP_OK.match(window[:n.start()]) or skipped):
+            return None                       # not introduced by this anchor
+        return float(n.group(0)), at + n.start()
+    return None
+
+
+def _backward(flat: str, at: int):
+    """The nearest mass BEFORE `at`, or None.
+
+    The number sits on either side of the adduct and the corpus uses both:
+    `[M+H]+=477.2` after, `MS (ESI) 485 (M+H)` before, and
+    `Calcd: 335.14 Found: 336.0 [M + H]+` puts the FOUND value immediately
+    before — which is the one wanted, and nearest gets it.
+    """
+    start = max(0, at - _MASS_NEAR)
+    window = flat[start:at]
+    best = None
+    for n in _NUMBER.finditer(window):
+        if _ELEMENT_TAIL.search(window[:n.start()]) or not _valid(n.group(0)):
+            continue
+        best = (float(n.group(0)), start + n.start())
+    return best
+
+
+def _mass_hits(flat: str):
+    """Every m/z the text states, as `(mass, index in flat)`, in order.
+
+    `flat` is tag-stripped and entity-unescaped. The adduct anchors first; the
+    instrument anchors only where no adduct sits in its window.
+    """
+    out: dict[int, float] = {}
+    for m in _ADDUCT_ANCHOR.finditer(flat):
         if _PURIFICATION.search(flat[max(0, m.start() - 24):m.start()]):
             continue
-        window = flat[m.end():m.end() + _MASS_WINDOW]
-        skipped = False
-        for n in _NUMBER.finditer(window):
-            if _ELEMENT_TAIL.search(window[:n.start()]):
-                skipped = True            # a subscript, not a mass
-                continue
-            lo, hi = _MZ_DIGITS
-            if not lo <= len(n.group(0).split(".")[0]) <= hi:
-                skipped = True            # a retention time, a yield, a count
-                continue
-            # THE ONLY REASON TO LOOK FAR IS A FORMULA IN THE WAY. Without one,
-            # a mass sits right after the instrument — `MS (ESI) 485 (M+H)`. A
-            # number 60 characters downstream with no formula between is a
-            # different sentence: US20250163061A1 writes `monitored by LCMS
-            # control). Then a water solution ... stirred for 30 minutes`, and
-            # a bare window reads the 30. So distance has to be earned by the
-            # subscripts skipped to reach it.
-            if n.start() <= _MASS_NEAR or skipped:
-                yield float(n.group(0)), m.end() + n.start()
-            break
+        got = _forward(flat, m.end()) or _backward(flat, m.start())
+        if got:
+            out.setdefault(got[1], got[0])
+    for m in _INSTRUMENT.finditer(flat):
+        if _PURIFICATION.search(flat[max(0, m.start() - 24):m.start()]):
+            continue
+        if _ADDUCT_ANCHOR.search(flat[m.end():m.end() + _MASS_WINDOW]):
+            continue                          # the adduct already read it
+        got = _forward(flat, m.end())
+        if got:
+            out.setdefault(got[1], got[0])
+    for pos in sorted(out):
+        yield out[pos], pos
+
+
+# THE WIDEST TWO MASSES ONE COMPOUND MAY LEGITIMATELY SHOW IN ONE STATEMENT.
+# `[M+H]` and `[M+Na]` of the same molecule are 21.98 Da apart, and a calcd
+# printed beside a found differ by rounding. Anything wider is a SECOND
+# MOLECULE, and a block stating two of those cannot say which one its heading
+# names.
+_ONE_COMPOUND_SPREAD = 22.5
+
+
+def _unambiguous(masses: list) -> "float | None":
+    """The one mass a block states, or None if it states more than one.
+
+    REFUSING IS THE POINT. This gate's job is to check a structure someone
+    else produced — a drawing MolScribe read, a markush row assembled from a
+    scaffold — and for that a WRONG reference is far worse than no reference:
+    it discards a correct answer and shrinks the only truth set a recogniser
+    can be scored against.
+
+    Picking one of several was tried both ways and both are wrong. Taking the
+    FIRST gives Step 1's intermediate, a constant 243 Da light on US9694016.
+    Taking the LAST gives a co-isolated byproduct on US11254686, or the next
+    compound's product where a heading sits after its own synthesis paragraph
+    on US9694016. There is no third choice that reads the author's intent, so
+    the block yields nothing and says so.
+    """
+    if not masses:
+        return None
+    if max(masses) - min(masses) > _ONE_COMPOUND_SPREAD:
+        return None
+    return masses[-1]
 
 
 def printed_mass(flat: str) -> "float | None":
-    """The m/z this text states, or `None`. The FIRST one it states.
-
-    For a table row, which is one compound. A heading section is a synthesis
-    and states several — see `_heading_masses`.
-    """
-    return next((mass for mass, _pos in _mass_hits(flat)), None)
+    """The one m/z this text states, or None if it states none or several."""
+    return _unambiguous([v for v, _ in _mass_hits(flat)])
 
 
 def _shift(row_markup: str) -> float:
@@ -493,10 +566,11 @@ def _heading_masses(xml: str) -> dict[str, tuple[float, float]]:
         # signature of comparing against the wrong molecule rather than of a
         # wrong structure.
         hits = list(_mass_hits(flat))
-        if hits:
-            mass, at = hits[-1]
-            # The adduct for THAT statement, not for whichever step happened to
-            # run in negative mode. Same both-or-neither rule as `_scan`.
+        mass = _unambiguous([v for v, _ in hits])
+        if mass is not None:
+            at = next(a for v, a in hits if v == mass)
+            # The adduct for THAT statement, not for whichever step ran in
+            # negative mode. Same both-or-neither rule as `_scan`.
             out.setdefault(cid, (mass, _shift(flat[max(0, at - 60):at + 60])))
     return out
 
