@@ -85,7 +85,7 @@ recognition needs GPU time.</p>
 <h2>2 · How it works</h2>
 
 <figure>
-<svg viewBox="-22 0 744 468" xmlns="http://www.w3.org/2000/svg" role="img"
+<svg viewBox="-22 0 744 492" xmlns="http://www.w3.org/2000/svg" role="img"
      aria-label="Pipeline diagram from patent XML to one row per compound">
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5"
@@ -177,38 +177,89 @@ recognition needs GPU time.</p>
   <text class="t lb" x="4" y="374">SELF-HEALING LOOPS — WHAT HAPPENS WHEN A STAGE FAILS</text>
   <line class="ln" x1="4" y1="380" x2="696" y2="380"/>
 
-  <rect class="bx" x="4" y="390" width="222" height="56" rx="3"/>
-  <text class="t tt" x="115" y="408" text-anchor="middle">Table layout</text>
-  <text class="t tx" x="115" y="422" text-anchor="middle">a table whose values did not read</text>
-  <text class="t tx" x="115" y="434" text-anchor="middle">judged on: records produced</text>
+  <rect class="bx" x="4" y="390" width="222" height="76" rx="3"/>
+  <text class="t tt" x="115" y="406" text-anchor="middle">Table layout</text>
+  <text class="t tx" x="115" y="421" text-anchor="middle">a block yielded no usable value</text>
+  <text class="t tx" x="115" y="437" text-anchor="middle">asks for &#8212; a column map, bin key</text>
+  <text class="t tx" x="115" y="448" text-anchor="middle">or value pattern. Never data.</text>
+  <text class="t tx" x="115" y="461" text-anchor="middle">kept &#8212; re-run reads more</text>
 
-  <rect class="bx" x="239" y="390" width="222" height="56" rx="3"/>
-  <text class="t tt" x="350" y="408" text-anchor="middle">Chemical name</text>
-  <text class="t tx" x="350" y="422" text-anchor="middle">a name the parser refuses</text>
-  <text class="t tx" x="350" y="434" text-anchor="middle">judged on: does it parse now</text>
+  <rect class="bx" x="239" y="390" width="222" height="76" rx="3"/>
+  <text class="t tt" x="350" y="406" text-anchor="middle">Chemical name</text>
+  <text class="t tx" x="350" y="421" text-anchor="middle">the patent ASSERTS a name</text>
+  <text class="t tx" x="350" y="432" text-anchor="middle">and OPSIN refuses it</text>
+  <text class="t tx" x="350" y="448" text-anchor="middle">asks for &#8212; a repair pattern, or code</text>
+  <text class="t tx" x="350" y="461" text-anchor="middle">kept &#8212; three checks, not one</text>
 
-  <rect class="bxa" x="474" y="390" width="222" height="56" rx="3"/>
-  <text class="t tt" x="585" y="408" text-anchor="middle">Markush assembly</text>
-  <text class="t tx" x="585" y="422" text-anchor="middle">a substituent table with no molecule</text>
-  <text class="t tx" x="585" y="434" text-anchor="middle">judged on: the printed mass</text>
+  <rect class="bxa" x="474" y="390" width="222" height="76" rx="3"/>
+  <text class="t tt" x="585" y="406" text-anchor="middle">Markush assembly</text>
+  <text class="t tx" x="585" y="421" text-anchor="middle">a scaffold and R-groups,</text>
+  <text class="t tx" x="585" y="432" text-anchor="middle">never a whole molecule</text>
+  <text class="t tx" x="585" y="448" text-anchor="middle">asks for &#8212; which slot joins where</text>
+  <text class="t tx" x="585" y="461" text-anchor="middle">kept &#8212; mass, name, cross-row</text>
 
   <!-- each loop returns to the stage it repairs -->
   <path class="ln" d="M4,390 C-14,340 -14,110 60,75" fill="none"
         stroke-dasharray="3 3" marker-end="url(#a)"/>
   <path class="ln" d="M696,390 C714,330 714,190 694,166" fill="none"
         stroke-dasharray="3 3" marker-end="url(#a)"/>
-  <text class="t tx" x="350" y="461" text-anchor="middle" style="font-size:8px">
+  <text class="t tx" x="350" y="484" text-anchor="middle" style="font-size:8px">
     a repaired stage re-enters the pipeline above · a repair is kept only if a measurement improves
   </text>
 </svg>
 <figcaption>The routes run in turn. The first one that gives a structure wins. When a route
 fails, the system records the reason. The mass gate uses only the mass the patent printed in
-that compound's own row — it is the one independent check.<br>
-The three loops below handle failure. Each finds what went wrong, buys one small reusable rule,
-applies it to that patent alone, and keeps it only if a measurement improves. A rule is keyed to
-the shape of the problem, not to the patent, so a rule bought once is reused wherever that shape
-appears again.</figcaption>
+that compound's own row — it is the one independent check.</figcaption>
 </figure>
+
+<p><strong>The three loops, and why each is judged differently.</strong> A loop never asks the
+model for data. It asks for a <em>rule</em>, sends the smallest fragment that still explains the
+failure — a header and two or three rows, a few hundred tokens rather than the document — then
+applies the answer to that patent alone and measures what changed. Nothing is scored before it
+runs; the gate is the measurement.</p>
+
+<table>
+<thead><tr><th style="width:15%">Loop</th><th style="width:29%">What fires it</th><th style="width:26%">What it asks for</th><th>What keeps it</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>Table layout</strong></td>
+  <td>A block produced no usable measurement, or a column carries values with no name.</td>
+  <td>One regex-shaped rule: a column map, a bin key, a value pattern, or "this column is not an
+      assay".</td>
+  <td>Re-running the patent with the rule applied and counting what comes out. A rule that reads
+      no more records than the reader already did is discarded.</td>
+</tr>
+<tr>
+  <td><strong>Chemical name</strong></td>
+  <td>The document <strong>asserts</strong> a name — in a <code>&lt;heading&gt;</code>, or a
+      <code>cid | Name</code> table row — and OPSIN refuses it. Deliberately not every rejection:
+      67% of the 82,398 failing seeds are hyphenated English like
+      <code>receptor-mediated</code>, which the parser is right to refuse.</td>
+  <td>A repair keyed to OPSIN's own error, not to the name. Where no pattern can express the
+      defect, the model writes Python instead.</td>
+  <td><strong>Three independent conditions.</strong> "It parses now" is worthless alone: trimming
+      one to eight characters off a failing name makes 13.9% of them parse, because most
+      truncations of a valid name are themselves valid names. Deleting <code>-2-yl</code> turns
+      <code>pyridin-2-yl</code> into pyridine — a smaller, different molecule, which OPSIN
+      certifies happily.</td>
+</tr>
+<tr>
+  <td><strong>Markush assembly</strong></td>
+  <td>A table states a shared scaffold and columns of substituents, and never a whole molecule.
+      Nothing is malformed; there is simply no structure until the pieces are joined.</td>
+  <td>An assembly plan — which substituent slot joins the scaffold at which atom.</td>
+  <td>Three checks the table itself supplies: the row's own printed m/z; a held-out compound name
+      compared by InChIKey; and cross-row invariance — every row must share the scaffold and none
+      may be identical. A slot wired nowhere makes every row come out the same, which is the
+      failure that looks most like success.</td>
+</tr>
+</tbody>
+</table>
+
+<p>A rule is keyed to a fingerprint of the <strong>defect</strong>, never to the patent, so one
+purchase serves every document that fails the same way. The shipped library holds
+<strong>172 rules</strong>: 62 column maps, 49 bin keys, 35 value patterns, 16 escalations,
+9 not-an-assay and 1 row regex. Three paid attempts per layout, capped at $0.20 a patent.</p>
 
 <h2>3 · Status</h2>
 
