@@ -2121,10 +2121,24 @@ def _legend_rows(tables) -> list[list[str]]:
     A legend table's two orders — symbol first or range first — can only be
     told apart cell by cell, so `parse_bin_table` needs the row unflattened.
     See `_legend_lines` for why only narrow rows qualify.
+
+    HEADER ROWS COUNT. A legend is a legend wherever the typesetter put it, and
+    US10953012 puts it in the `<thead>` of one tgroup with the data in the
+    next: `+ indicates ≤10 μm` sits in a header row, and every one of the 129
+    records under it shipped with a grade and no range. The control is inside
+    the same patent — TABLE-US-00004 prints that identical sentence in a BODY
+    row and resolves 91 records. Same words, same document, different
+    container, opposite outcome.
+
+    Reading the header costs nothing extra in safety: the narrow-row guard
+    below is what separates a legend row from a data row, and a column name
+    carries no symbol-and-range pair for `parse_bin_key` to find. Document
+    order is preserved, header before body, because `parse_sectioned_key`
+    reads order — a heading governs the rows beneath it.
     """
     out: list[list[str]] = []
     for t in tables:
-        for row in t.body_rows:
+        for row in [*t.header_rows, *t.body_rows]:
             cells = [c.text.strip() for c in row if c.text and c.text.strip()]
             if cells and len(cells) <= _LEGEND_MAX_CELLS:
                 out.append(cells)

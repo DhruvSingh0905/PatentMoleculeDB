@@ -41,9 +41,16 @@ PID = "US8952177"
 # accepted. That patent now extracts 855 of 855 with a range and raises no gap
 # at all, so both escalation tests below passed vacuously against it. A fixture
 # that stops being a gap is the good outcome; it just cannot go on standing in
-# for one. US10953012 raises exactly one, and a column_map over it mints 11
-# records, so the retry and escalation paths are both really exercised.
-GAP_PID = "US10953012"
+# for one.
+#
+# Then US10953012, until `_legend_rows` learned to read a legend out of a
+# table's HEADER rows — it prints `+ indicates ≤10 μm` in a `<thead>` and now
+# resolves all 401 of its records. Twice is a pattern, so: this constant names
+# a document that currently fails, and it is EXPECTED to keep going stale as
+# the reader improves. Replace it, do not weaken the tests around it. Fifteen
+# patents raise exactly one gap over a block with both a cid and an assay
+# column; `_gap_table` skips cleanly if this one stops being among them.
+GAP_PID = "US9605006"
 # A block whose column 3 is headed `MS` and whose cells PARSE, so mapping it as
 # an assay really does mint 83 records. US9493446's ms columns are the wrong
 # fixture: its cells read `MS (ESI) m/z 489.2 [M+H]+`, which `parse_value`
