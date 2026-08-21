@@ -47,7 +47,38 @@ if the tree changed.
 
 ## Next fix
 
-**`table_names` on US12011444 and US9745328.** 678 compounds — 89% of
+**The bin range never reaches the grade. 7,696 records, 9 patents.**
+Measured 2026-08-21 from `out/reader_dump.tsv` and confirmed against the live
+staging table: 32,880 graded measurements, 25,184 carry a range, 7,696 carry
+none. Every graded row in the database that shows no range is one of these.
+
+The documents are not at fault. US11566007 states
+`+++++: IC50 ≥ 10 uM` in its own table footer. Two bugs stop us reading it:
+
+- **`bin_legend.py:986-995`.** `nearest_key_before` ends a run only when a
+  symbol REPEATS. A longer symbol that nobody has seen yet joins the previous,
+  unrelated run instead of opening its own. On `TABLE-US-00007` the 413
+  unranged records are exactly and only the `+++++` ones. `++`, `+++` and
+  `++++` all resolve.
+- **`uspto_xml.py:411`.** The look-back window is a fixed 12,000 characters.
+  Its own comment names US11566007 and records that 3,000 was too small.
+  12,000 is also too small: this document lists 800-1,800 compound ids inline
+  per bin, so the window holds ids and no key, and tables 00009 to 00017 find
+  no key text at all. **A CONSTANT IS THE WRONG MECHANISM, not a wrong
+  value.** The boundary the code wants is the previous table, not a character
+  count. Widening it again buys the next document and no more.
+
+US11566007 holds 5,753 of the 7,696. Then US12351648 865, US9987276 538,
+US11229631 284, US10953012 129.
+
+**Repair `_assay_name_from` in the same pass. 818 records.**
+`uspto_assays.py:2465` matches `[A-Za-z0-9 /()\-]{4,60}?(?:IC\s*50|…)`. That
+class holds no comma and no colon. US11566007 writes
+`data (K-Ras G12C, IC50, uM):`, so a comma sits one character before the
+metric and the match can never reach it. The records ship named
+`assay (binned)`, which is our placeholder and not the document's words.
+
+**Then `table_names` on US12011444 and US9745328.** 678 compounds — 89% of
 the whole `name_in_a_table_cell` miss bucket — sit in these two documents. The
 route is sound (75% take rate corpus-wide), so this is a document defect, not
 a redesign.
@@ -66,6 +97,8 @@ worth the build cost today. Date: **2026-08-17**.
 | `cid_clash` is a detector nobody runs | **0 of 38,222 rows** | The column exists in `structures.tsv` and is empty, and not for want of collisions. It is written in ONE place, `iupac_names.py:1300`, inside `extract_names` — and `IDENTITY_ROUTE` defaults to `cid_first`, so `extract_by_cid` runs instead. The artifact's `source` column holds only `cid_first` and `table`, never `description`. A guard on a dead branch is worse than none: the column is present, so the artifact looks checked. |
 | one cid, several structures | **122 cids** | The inverse error, all from the table route. US9763922 prints `Example 19` in TABLE-US-00002 and again in TABLE-US-00052 for a different molecule. Both are read correctly; the collision appears only downstream, where something keys on `(patent, cid)` and drops the `table_id` that disambiguates. US9763922 60, US20240360157 23, US9708336 16. |
 | structures contradicting their own printed mass | **860** | Newly visible — `mass_gate` now weighs 12,092 structures, up from 3,735. 405 of the deltas exceed 100 Da, which is a different molecule rather than a rounding error. Not yet triaged. See wiki 49. |
+| BAO endpoint ids | **0 new records**, assessed 2026-08-21 | BAO is real, active and CC-BY-SA: v2.8.19, 8,936 terms, six axes, on GitHub. It names every metric we emit (`BAO_0000190` is IC50) and covers 485 of 553 headings — but that is the SAME 92% our own list already matches, so it buys stable identifiers and no coverage, and it resolves 0 of the 68 unmatched headings. It does not touch the target axis: its meta-targets are curated protein classes, not a matcher for patent text. Worth doing when the four duplicate metric lists are folded into one, not before. See wiki 54. |
+| assay taxonomy check | 3,556 of 9,593 truly novel | The second BAO job — flag a heading the taxonomy does not know, then let the loop decide. Genuine novelty is 37.1%, so the check has real work on both sides. Two guards it must carry: PK/ADME is out of scope BY DESIGN (581 records of clearance, half-life, permeability) and must not read as an anomaly; and a missing metric is not always our bug — US9303033 prints `AB: MDAMB453 (μM)` in TABLE 2B and `AB: MDAMB453 IC50 (μM)` in TABLE 43B, so 1,494 records need ENRICHMENT from a sibling column, not a code repair. See wiki 54. |
 | wavy cut bond | 968 rows in 6 patents | **Deliberately last. Do not work on it directly.** No recogniser reads a squiggle across a bond. Its FORMAL meaning in molfile is unspecified stereochemistry (flag 4), not attachment — the patent use is a drawing convention with no format backing. MolScribe does not drop the mark, it INVENTS a group there, returning a terminal isopropyl or tert-butyl, which is why a fragment read is never a substructure of the truth. See the note below for why hand-writing a splicer is the wrong move. |
 
 **The wavy bond is a TEST OF THE LOOP, not a task.** US9718825 states the
@@ -307,6 +340,14 @@ Each item below cost real time. Read this list before you measure anything.
   `*** is less than 100 nM`, `"A" represents ... less than 10 nM`, and
   `<1.00 nM=A` — every one of which the parser behind it could read. 9,372
   records, on 15 patents, lost at the filter and never at the parser.
+  **This is the most expensive shape in the codebase and it keeps returning.**
+  Three more instances, all found 2026-08-21 and all sized: the assay-name
+  regex whose character class holds no comma (818 records), the bin-key
+  look-back window fixed at 12,000 characters (7,696), and the multi-row
+  header merge that drops the row carrying the metric (252). In each one the
+  text is present, the parser behind it is capable, and a gate in front
+  refuses. Before adding any filter, state what the parser accepts and check
+  that the filter accepts all of it.
 - **A bin key is applied to thousands of rows at once, so a wrong one is
   silent.** Four things go wrong and none show up in the output: the same
   letters mean different ranges in different COLUMNS (US10172859 `B` is 3-7 nM,
