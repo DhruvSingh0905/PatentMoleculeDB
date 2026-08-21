@@ -45,38 +45,51 @@ invent a second rule — an ad-hoc one scored 79.2% against the truth of 98.9%.
 Quote no coverage number without its date and its population. Re-run the dump
 if the tree changed.
 
+## The shape assumption, and where it still lives
+
+**Fixed 2026-08-21.** The recurring defect is a gate in front of a capable
+parser: the code decides what a thing must look like, the document differs a
+little, and the gate refuses input the parser behind it could read. Four
+instances were closed in one pass — a run split on the wrong side, a key
+scoped by character distance, a name bridged through a character class, and a
+partial read accepted as a whole one.
+
+**A PARTIAL MATCH IS THE DANGEROUS ONE.** A block read at 0% is obvious; a
+block read at 70% looks populated and raises nothing. `min_yield` was that
+gate, and it also silenced the proxy detectors for the same block. It now
+raises when the block missed as many cells as it took to judge it worth
+reading — 6 blocks, 843 cells corpus-wide.
+
+Where the same assumption still lives, unmeasured:
+
+| gate | assumption |
+|---|---|
+| `find_gaps` `min_rows=5` | a block under 5 rows cannot be a defect |
+| `find_gaps` `seen_blocks` | one gap per block; later checks skip a block that already raised |
+| `_INHERIT_DEPTH = 4` | a header comes from at most 4 blocks back |
+| `nearest_key_before` `+260` | a key definition is under 260 characters |
+
+Each is a constant standing in for a structural fact. None is measured. Do not
+widen one — find what it is standing in for, as the four above were.
+
+**The loop can already say "this is correct."** `rules.NOT_ASSAY` is a
+persisted, fingerprint-keyed answer that deliberately does NOT expire on
+`SYNTH_EPOCH`, because it is a claim about the document rather than a record
+of our capability. 9 are in `layout_rules.json`, beside 16 `escalate`. Do not
+build a second mechanism for this.
+
 ## Next fix
 
-**The bin range never reaches the grade. 7,696 records, 9 patents.**
-Measured 2026-08-21 from `out/reader_dump.tsv` and confirmed against the live
-staging table: 32,880 graded measurements, 25,184 carry a range, 7,696 carry
-none. Every graded row in the database that shows no range is one of these.
+**The 1,943 grades that still carry no range.** Was 7,696; the bin-range fix
+of 2026-08-21 took 5,753 of them, all on US11566007. What is left is spread
+over eight documents and has NOT been diagnosed — do not assume it is the same
+cause. US12351648 865, US9987276 538, US11229631 284, US10953012 129,
+US9493446 64, US9221791 59 (that one is the patent's own typo, see the
+`impossible_interval` flag), US11053246 3, US11286268 1.
 
-The documents are not at fault. US11566007 states
-`+++++: IC50 ≥ 10 uM` in its own table footer. Two bugs stop us reading it:
-
-- **`bin_legend.py:986-995`.** `nearest_key_before` ends a run only when a
-  symbol REPEATS. A longer symbol that nobody has seen yet joins the previous,
-  unrelated run instead of opening its own. On `TABLE-US-00007` the 413
-  unranged records are exactly and only the `+++++` ones. `++`, `+++` and
-  `++++` all resolve.
-- **`uspto_xml.py:411`.** The look-back window is a fixed 12,000 characters.
-  Its own comment names US11566007 and records that 3,000 was too small.
-  12,000 is also too small: this document lists 800-1,800 compound ids inline
-  per bin, so the window holds ids and no key, and tables 00009 to 00017 find
-  no key text at all. **A CONSTANT IS THE WRONG MECHANISM, not a wrong
-  value.** The boundary the code wants is the previous table, not a character
-  count. Widening it again buys the next document and no more.
-
-US11566007 holds 5,753 of the 7,696. Then US12351648 865, US9987276 538,
-US11229631 284, US10953012 129.
-
-**Repair `_assay_name_from` in the same pass. 818 records.**
-`uspto_assays.py:2465` matches `[A-Za-z0-9 /()\-]{4,60}?(?:IC\s*50|…)`. That
-class holds no comma and no colon. US11566007 writes
-`data (K-Ras G12C, IC50, uM):`, so a comma sits one character before the
-metric and the match can never reach it. The records ship named
-`assay (binned)`, which is our placeholder and not the document's words.
+Measure it the way the last one was measured: which grades resolve and which
+do not, per table. The US11566007 tell was that three grades of four resolved
+and the fourth never did.
 
 **Then `table_names` on US12011444 and US9745328.** 678 compounds — 89% of
 the whole `name_in_a_table_cell` miss bucket — sit in these two documents. The
@@ -341,13 +354,16 @@ Each item below cost real time. Read this list before you measure anything.
   `<1.00 nM=A` — every one of which the parser behind it could read. 9,372
   records, on 15 patents, lost at the filter and never at the parser.
   **This is the most expensive shape in the codebase and it keeps returning.**
-  Three more instances, all found 2026-08-21 and all sized: the assay-name
-  regex whose character class holds no comma (818 records), the bin-key
-  look-back window fixed at 12,000 characters (7,696), and the multi-row
-  header merge that drops the row carrying the metric (252). In each one the
-  text is present, the parser behind it is capable, and a gate in front
-  refuses. Before adding any filter, state what the parser accepts and check
-  that the filter accepts all of it.
+  Four more instances, found and fixed 2026-08-21: the assay-name regex whose
+  character class holds no comma (818 records), the bin key scoped by a
+  12,000-character look-back (5,753), the run splitter that drew a key's
+  boundary one symbol too late (413 of those), and `min_yield`, which accepted
+  a block read at 70% and silenced its other detectors too (843 cells). One
+  found and NOT fixed: the multi-row header merge that drops the row carrying
+  the metric (252 records, US9018217 and US10995073).
+  In each one the text is present, the parser behind it is capable, and a gate
+  in front refuses. Before adding any filter, state what the parser accepts
+  and check that the filter accepts all of it.
 - **A bin key is applied to thousands of rows at once, so a wrong one is
   silent.** Four things go wrong and none show up in the output: the same
   letters mean different ranges in different COLUMNS (US10172859 `B` is 3-7 nM,
