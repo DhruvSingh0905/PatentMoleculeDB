@@ -80,16 +80,35 @@ build a second mechanism for this.
 
 ## Next fix
 
-**The 1,943 grades that still carry no range.** Was 7,696; the bin-range fix
-of 2026-08-21 took 5,753 of them, all on US11566007. What is left is spread
-over eight documents and has NOT been diagnosed — do not assume it is the same
-cause. US12351648 865, US9987276 538, US11229631 284, US10953012 129,
-US9493446 64, US9221791 59 (that one is the patent's own typo, see the
-`impossible_interval` flag), US11053246 3, US11286268 1.
+**US12351648's 827 unassigned grades — a COLUMN problem, not a key problem.**
+The bin range work of 2026-08-21 took 7,696 down to 951, and 124 of those 951
+are correct: US9493446 publishes no legend at all (64), US9221791's `E` means
+`Not tested` and is not a range (59), US11286268 uses a `++++` it never
+defines (1). **There is no document left in this corpus that states a range we
+fail to read.**
 
-Measure it the way the last one was measured: which grades resolve and which
-do not, per table. The US11566007 tell was that three grades of four resolved
-and the fourth never did.
+What remains is US12351648, which defines `*` through `****` TWICE in the same
+table — `* 10 μM < Ki ≤ 25 μM` and `* ≥1.0 to <5.0-fold`. Potency and
+selectivity, one symbol set. `_adopt` refuses to choose and that refusal is
+right; the range depends on WHICH COLUMN the record came from, and
+`parse_sectioned_key` / `section_for_column` are the machinery for exactly
+that. So this is per-column assignment, not a parser gap. Do not widen a key
+pattern for it.
+
+**HOW TO FIND THE CAUSE, because guessing cost a whole round here.** Do not
+retype the legend and test the parser on what you typed — the string you write
+is not the string the extractor feeds it. Pull the real ones:
+
+```python
+lines = ua._legend_lines(raw_block)
+keyl  = [l for l in lines if bin_legend.looks_like_key(l)]
+{s for l in keyl for s in bin_legend.parse_bin_key(l)}   # what a line DOES define
+```
+
+Then the cause reads off directly: no key-shaped line at all is a SCOPE
+problem; a line present that parses to `{}` is a PARSER problem; a symbol two
+lines define differently is a COLUMN problem and refusing is correct. Reported
+as "a missing range form" on a reconstructed string, it was none of the three.
 
 **Then `table_names` on US12011444 and US9745328.** 678 compounds — 89% of
 the whole `name_in_a_table_cell` miss bucket — sit in these two documents. The
