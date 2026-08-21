@@ -2344,7 +2344,21 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
         # `looks_like_key` asks whether a SCALE is in scope, and for an
         # inverted table that is the wrong question first: the grades and the
         # compounds they apply to are in the table itself.
-        if not bin_legend.looks_like_key(text) and not _is_inverted_block(block):
+        # A SCALE CARRIED FROM AN EARLIER BLOCK IS A SCALE IN SCOPE. This gate
+        # asks whether one is, and it was answering from this block's own text
+        # only — so a block that states no key of its own was refused HERE,
+        # before the carry-forward below ever ran, and the carry-forward could
+        # not do the thing it was added for. US9987276 states its A-E scale in
+        # prose and TABLE-US-00017's 246 graded records never reached it.
+        #
+        # Narrow on purpose: the block must already hold GRADES. A block with
+        # no symbol in it gains nothing from a scale, and letting every later
+        # block through would widen this gate for no records.
+        graded_here = any(r.table_id == block_id and r.letter_grade
+                          for r in records)
+        if (not bin_legend.looks_like_key(text)
+                and not _is_inverted_block(block)
+                and not (carried_key and graded_here)):
             continue
         # The block's own rows first, each read alone; then the prose sources
         # in order of distance. Rows are a list and prose is a paragraph, and
