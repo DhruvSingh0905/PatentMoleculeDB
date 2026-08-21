@@ -446,8 +446,10 @@ that read it are `repair/synthesize.py`, `repair/name_synthesize.py` and
 
 ## Documents
 
-- `graphify-out/GRAPH_REPORT.md` — knowledge graph. **It is stale.** It was
-  built before two renames. Run `graphify update .` first.
+- `graphify-out/GRAPH_REPORT.md` — knowledge graph. 2,865 nodes, 5,028 edges,
+  179 communities. A `PostToolUse` hook in `.claude/settings.json` rebuilds it
+  after every `.py` edit, so it no longer goes stale between sessions. The
+  rebuild is AST-only, costs nothing and takes 1.2 s.
 - `~/Main/Projects/Patent Compound Extraction/` — the wiki. Start at
   `40 - Where v3 Stands`. It holds the current numbers and the full gotcha
   list. Update it after a meaningful commit. Do not add a file per commit.
