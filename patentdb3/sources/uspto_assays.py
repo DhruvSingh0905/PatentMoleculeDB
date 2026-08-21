@@ -1248,12 +1248,30 @@ def classify_column(header: str, samples: list[str]) -> Column:
         is_assay = True
     # A percentage column takes `%`, not the concentration it was run at.
     unit = "%" if _percent_header(h) else _unit_from(h)
-    # For p-prefixed metrics the header IS the unit (e.g. "pIC50"). When
-    # _unit_from returns nothing (because pIC50 is not a concentration unit),
-    # use the header text itself as the unit so downstream records are not
-    # emitted with unit=None.
+    # For p-prefixed metrics the METRIC TOKEN is the unit — `pIC50`, not the
+    # whole header. `_unit_from` returns nothing here because a p-scale is a
+    # logarithm and not a concentration, and a record with `unit=None` is
+    # unusable, so something has to fill it.
+    #
+    # It used to fill it with `h`, the merged header, and the docstring's
+    # example — `pIC50` — was a header that happened to be nothing BUT the
+    # metric. US9801872's headers are exactly that, so it read correctly and
+    # the assumption was never tested. US11884671 merges its target into the
+    # same header and shipped `unit == 'DNA-PK enz pIC50'` on 416 records.
+    # All 451 records carrying an unconvertible unit corpus-wide had
+    # `unit == assay_name`, which is the tell: one string was being used for
+    # two different questions.
+    #
+    # The value itself was never wrong — a p-scale number transcribed
+    # correctly — so this is a labelling defect, and the downstream unit
+    # checks refuse the record rather than mis-scaling it.
     if _p_metric_match and not unit:
-        unit = h
+        # `_P_METRIC` ran over the case-folded header, so canonicalise rather
+        # than ship `pic50`: a unit is a label a reader groups by, and two
+        # spellings of one scale are two units to anyone counting.
+        unit = re.sub(r"\s+", "", _p_metric_match.group()).lower()
+        unit = {"pic50": "pIC50", "pec50": "pEC50", "pki": "pKi",
+                "pkd": "pKd", "pk_i": "pKi", "pk_d": "pKd"}.get(unit, unit)
     if is_assay or (unit and unit != "%"):
         return Column(-1, h, ASSAY, unit=unit, assay_name=h or "unnamed assay")
 
