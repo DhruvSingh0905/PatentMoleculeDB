@@ -330,6 +330,24 @@ _KEY_SPAN_AFTER = re.compile(
     rf"{_SYM_Q}\s+({_NUM})\s*({_UNIT})?\s*[<>≤≥≦≧⩽⩾]\s*[A-Za-z][^;:<>]{{0,40}}?"
     rf"[<>≤≥≦≧⩽⩾]\s*({_NUM})\s*({_UNIT})?", re.I)
 
+# Form 7 — the METRIC leads, one bound, and the symbol is assigned last:
+#     `IC50 ≤ 100 nM: +.`
+# US11229631 writes its whole scale in a footer under the table and the other
+# two lines are Form 5 — `100 nM < IC50 ≤ 1000 nM: ++` — which bracket the
+# metric on both sides. The bottom bin has nothing to its left, so Form 5
+# cannot see it and Form 4 will not either: that one requires the value to open
+# the clause, and here the metric does. 284 records, the largest bin in the
+# table, and its siblings resolved — the shape that makes a scale look read.
+#
+# ANCHORED AT THE CLAUSE START, and that anchor is what keeps it honest: in
+# `100 nM < IC50 ≤ 1000 nM: ++` the clause opens with a value, not the metric,
+# so this pattern cannot match it and hand `++` a one-sided range where the
+# document states two. It also runs AFTER Forms 5 and 6, so an earlier correct
+# reading already holds the symbol.
+_KEY_METRIC_FIRST = re.compile(
+    rf"(?:^|[;,])\s*{_METRIC}\s*(?P<op>>=|<=|[<>≤≥≦≧⩽⩾])\s*"
+    rf"(?P<a>{_NUM})\s*(?P<au>{_UNIT})?\s*[:=]\s*{_SYM_Q}", re.I)
+
 _VALUE_BEFORE = re.compile(
     rf"(?:^|[\s;,])[<>≤≥≦≧⩽⩾]?\s*{_NUM}(?:\s*(?:to|[-–—−])\s*{_NUM})?"
     rf"\s*(?:{_UNIT})?\s*$")
@@ -531,6 +549,15 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
                 lo, hi = hi, lo
             _adopt(here, conflicts, BinRange(m.group("sym"), lo, hi, unit))
         _merge(out, here)
+
+    # Form 7 — metric first, one bound, symbol last. See `_KEY_METRIC_FIRST`.
+    here = {}
+    for m in _KEY_METRIC_FIRST.finditer(text):
+        v, u = _f(m.group("a")), _canon_unit(m.group("au"))
+        op = m.group("op")
+        lo, hi = (None, v) if op in ("<", "<=", "≤", "≦", "⩽") else (v, None)
+        _adopt(here, conflicts, BinRange(m.group("sym"), lo, hi, u))
+    _merge(out, here)
 
     # Prose form — unambiguous when present.
     here = {}
