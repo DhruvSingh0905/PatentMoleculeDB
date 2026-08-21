@@ -110,7 +110,32 @@ _QUOTE = r"[\"“”'‘’`]"
 _SYM_Q = rf"(?<![A-Za-z]){_QUOTE}?(?P<sym>{_SYMBOL}){_QUOTE}?"
 _SYM_QN = rf"(?<![A-Za-z]){_QUOTE}?(?:{_SYMBOL}){_QUOTE}?"
 
-_NUM = r"\d+(?:\.\d+)?"
+# A NUMBER MAY BE GROUPED. `10,000` was read as `10` and `1,500` as `1`, so a
+# bin defined as `IC50 ≥ 10,000 nM` came out as `≥10 nM` — a 1000x error that
+# ships a plausible number rather than a blank, which is the worse failure. The
+# unit went with it: the match ended at the comma, so `nM` never attached and
+# the bound recorded no unit at all.
+#
+# The grouped form is tried FIRST and requires exactly three digits after each
+# comma, so a list — `A, B` or `10, 20` — cannot be read as one number.
+#
+# Same family as `mass_gate._NUMBER` taking `69` out of `0.69`: a numeric
+# pattern that can stop mid-token will, and the result stays plausible.
+#
+# WRAPPED. This string is interpolated into larger patterns, several of them
+# bare rather than inside a group, so a top-level `|` here would split the
+# whole surrounding expression instead of just the number.
+_NUM = r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+
+
+def _f(s: str) -> float:
+    """A matched `_NUM` as a float. THE ONE PLACE that knows the separator.
+
+    Nine call sites converted these groups and exactly one of them stripped the
+    comma, which is why the defect survived: the fix existed and was not where
+    the failing bound was read.
+    """
+    return float(str(s).replace(",", ""))
 
 # The metric a bin definition may name. ONE constant, because the cheap
 # pre-filter and the full parser must accept the same set: `_KEY_HINT` listed
@@ -143,6 +168,12 @@ _DEFINES = (
     r"|\s+(?:refers?\s+to|means|indicates?|represents?|denotes?|is|are|provided?|gave|gives?|showed?|shows|had|has|exhibited?|exhibits)\s+"
     r"|\s*\(\s*"
     r"|\s*(?=[<>≤≥≦≧⩽⩾])"
+    # A SPACE IS A SEPARATOR WHEN THE METRIC FOLLOWS IT. US12351648 writes
+    # `+ IC 50 value in the range of 5 μM to 50 μM` — no colon, no verb, no
+    # bracket, 865 records. The metric must actually be there, so a bare
+    # `A 10 nM` is still refused: that shape is a value sitting beside a symbol,
+    # which `_VALUE_BEFORE` exists to reject.
+    r"|\s+(?=" + _METRIC + r")"
     r")"
 )
 
@@ -177,13 +208,55 @@ _MARKED = (
 # grade came out unbounded below. `A ≦ 10 nM` and `E > 10 μM`, the two ends of
 # the same scale, have nothing on the left and were already right, which is why
 # the scale looked plausible while three of its five bins were wrong.
+# WORDS BETWEEN THE SEPARATOR AND THE BOUND. A patent does not stop writing
+# English where the pattern stops reading it:
+#
+#     +  IC 50 value in the range of 5 μM to 50 μM     US12351648    865 records
+#     B  provided an IC 50 10-100 nM                   US9987276     461
+#     ++ indicates an IC 50 of 100 to 500 nM           US11053246      3
+#
+# Every one of those already had a form the parser reads — `+: IC 50 5 μM to
+# 50 μM` parses, `B provided IC 50 10-100 nM` parses, `++ indicates 100 to
+# 500 nM` parses. What defeated them was an article, a preposition or a second
+# noun: exactly ONE optional metric token was allowed there and nothing else.
+# So this was never a missing range form. It was a gap between the separator
+# and the bound, and only filler could sit in it.
+#
+# Letters and spaces only, so it can never cross a number and claim a bound
+# that belongs to another clause. `_NEXT_DEF`'s guard is reused for the other
+# direction: a verb separator is made of letters too, so without it the filler
+# for `A is potent` would run through `B is 10 nM` and hand A the 10.
+# It must also not eat the METRIC'S OWN LETTERS. Without the second lookahead
+# the filler swallows `IC ` and the bound group then reads the `50` of `IC 50`
+# as a number: every grade in US9987276 came back as `50..inf nM`, which is
+# worse than the blank it replaced because it is a plausible bin.
+# AND IT MUST NOT EAT AN ENGLISH COMPARISON. `less than` and `greater than`
+# are letters and spaces like any other filler, so an unguarded run swallowed
+# the operator and left a bare number: `*** is less than 100 nM` came back as
+# lo=100 — the bin inverted, silently. Forms 2 and 3 read those phrasings; the
+# filler's job is only to skip words that mean nothing to a bound.
+_CMP_WORD = (r"(?:greater|less|more|least|most|equal|between|from|above|below"
+             r"|higher|lower|under|over|exceed)")
+_FILL = (rf"(?:(?!{_SYM_QN}{_DEFINES})(?!{_METRIC})(?!{_CMP_WORD})"
+         rf"[A-Za-z\s]){{0,24}}")
+
 _KEY_COMPACT = re.compile(
     rf"(?:(?P<pre>{_NUM})\s*(?P<preu>{_UNIT})?\s*(?P<preop>>=|>|≥|≧|⩾|≤|≦|⩽|<=|<)\s*)?"
     rf"{_SYM_Q}(?P<sep>{_DEFINES})"
     rf"(?:(?P<hi>{_NUM})\s*(?P<hiu>{_UNIT})?\s*(?P<hiop>>=|>|≥|≧|⩾|≤|≦|⩽|<=|<)\s*)?"
-    rf"{_METRIC}?\s*"
+    # Filler, then up to two metric words each followed by more filler.
+    # US12351648 writes TWO in a row — `IC 50 value in the range of` — and one
+    # optional `_METRIC` leaves the second stranded in front of the bound.
+    rf"{_FILL}(?:{_METRIC}{_FILL}){{0,2}}"
     rf"(?:(?P<loop>>=|>|≥|≧|⩾|≤|≦|⩽|<=|<)?\s*(?P<lo>{_NUM})\s*(?P<lou>{_UNIT})?"
-    rf"(?:\s*(?:to|[-–—−])\s*[<>≤≥≦≧⩽⩾]?\s*(?P<hi2>{_NUM})\s*(?P<hi2u>{_UNIT})?)?)?",
+    # The upper end may restate its direction IN WORDS. US10189840 writes
+    # `an IC 50 value in the range of 1 μM to less than 10 μM`; reading only
+    # the symbols here stopped the match at `to` and left grade B holding one
+    # bound instead of two — a half-open bin where the document states a
+    # closed one.
+    rf"(?:\s*(?:to|[-–—−])\s*"
+    rf"(?:[<>≤≥≦≧⩽⩾]|less\s+than|greater\s+than|under|over)?\s*"
+    rf"(?P<hi2>{_NUM})\s*(?P<hi2u>{_UNIT})?)?)?",
     re.I)
 
 # Form 2 — prose:  "a value greater than 0.01 μM and less than or equal to
@@ -339,7 +412,7 @@ def _prose_bounds(body: str) -> tuple[float | None, float | None, str | None]:
     # inverts, so the ends are sorted rather than assigned by position.
     m = _SPAN.search(body)
     if m:
-        a, b = float(m.group(1)), float(m.group(3))
+        a, b = _f(m.group(1)), _f(m.group(3))
         u = _canon_unit(m.group(4) or m.group(2))
         lo, hi = min(a, b), max(a, b)
         lo_u = hi_u = u
@@ -349,7 +422,7 @@ def _prose_bounds(body: str) -> tuple[float | None, float | None, str | None]:
         m = pat.search(body)
         if not m:
             continue
-        v, u = float(m.group(1)), _canon_unit(m.group(2))
+        v, u = _f(m.group(1)), _canon_unit(m.group(2))
         if is_lo:
             lo, lo_u = v, u
         else:
@@ -358,7 +431,7 @@ def _prose_bounds(body: str) -> tuple[float | None, float | None, str | None]:
         m = pat.search(body)
         if not m:
             continue
-        val = float(m.group(1).replace(",", ""))
+        val = _f(m.group(1))
         u = _canon_unit(m.group(2))
         if is_lo and lo is None:
             lo, lo_u = val, u
@@ -428,9 +501,9 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
         sym = m.group("sym")
         lo = hi = None
         unit = _canon_unit(m.group("bu") or m.group("au"))
-        a = float(m.group("a"))
+        a = _f(m.group("a"))
         if m.group("b") is not None:
-            lo, hi = a, float(m.group("b"))
+            lo, hi = a, _f(m.group("b"))
         else:
             op = (m.group("op") or "").lower()
             if op in ("<", "≤", "≦", "⩽", "less than", "at most"):
@@ -452,7 +525,7 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
         for m in pat.finditer(text):
             a, au, b, bu = (m.group(i) for i in (2, 3, 4, 5)) if sym_first \
                 else (m.group(1), m.group(2), m.group(3), m.group(4))
-            lo, hi = float(a), float(b)
+            lo, hi = _f(a), _f(b)
             unit = _canon_unit(bu or au)
             if lo > hi:
                 lo, hi = hi, lo
@@ -510,27 +583,27 @@ def parse_bin_key(text: str) -> dict[str, BinRange]:
         # the symbol, and the sense is therefore the reverse of the same
         # operator written after it.
         if m.group("pre") is not None:
-            v, u = float(m.group("pre")), _canon_unit(m.group("preu"))
+            v, u = _f(m.group("pre")), _canon_unit(m.group("preu"))
             if m.group("preop") in ("<", "<=", "≤", "≦", "⩽"):
                 lo, lo_u = v, u
             else:
                 hi, hi_u = v, u
         lo_op, lo_val = m.group("loop"), m.group("lo")
         if lo_val is not None:
-            v, u = float(lo_val), _canon_unit(m.group("lou"))
+            v, u = _f(lo_val), _canon_unit(m.group("lou"))
             if lo_op in (">", ">=", "≥", "≧", "⩾", None):
                 lo, lo_u = v, u
             else:
                 hi, hi_u = v, u
         if m.group("hi") is not None:
-            v, u = float(m.group("hi")), _canon_unit(m.group("hiu"))
+            v, u = _f(m.group("hi")), _canon_unit(m.group("hiu"))
             # "1 uM > IC50" means 1 uM is the UPPER bound.
             if m.group("hiop") in (">", ">=", "≥", "≧", "⩾"):
                 hi, hi_u = v, u
             else:
                 lo, lo_u = v, u
         if m.group("hi2") is not None and hi is None:
-            hi, hi_u = float(m.group("hi2")), _canon_unit(m.group("hi2u"))
+            hi, hi_u = _f(m.group("hi2")), _canon_unit(m.group("hi2u"))
         lo, hi, unit = _reconcile(lo, lo_u, hi, hi_u)
         if lo is not None or hi is not None:
             _adopt(here, conflicts, BinRange(sym, lo, hi, unit))
