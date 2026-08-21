@@ -527,7 +527,22 @@ def find_gaps(patent_id: str, tables: list[Table], extracted_by_table,
             if d["shaped_cells"] < 10:
                 continue
             judged_blocks.add(tid)          # measured: the proxies must stay quiet
-            if d["yield"] >= min_yield:
+            # A PARTIAL READ IS STILL A MISS, and this is the gate that hid it.
+            #
+            # `min_yield` alone asks "did we get most of it", so a block read
+            # at 0.7 raised nothing — and because `judged_blocks` above also
+            # silences every proxy detector, it raised nothing from any other
+            # check either. Reading most of a table is the easiest way for a
+            # defect to stay invisible: the output looks populated.
+            #
+            # The floor two lines up already says what "enough cells to judge"
+            # means. Use the same number for what it MISSED, rather than add a
+            # second tuning knob: ten shaped cells are worth judging, so ten
+            # shaped cells unread are worth raising. Measured over 137 patents:
+            # 9 blocks and 854 unread cells sat above `min_yield` and silent,
+            # 760 of them in four blocks.
+            unread = max(0, d["shaped_cells"] - d["usable"])
+            if d["yield"] >= min_yield and unread < 10:
                 continue
             grades = {r.letter_grade for r in records
                       if r.table_id == tid and r.letter_grade}
