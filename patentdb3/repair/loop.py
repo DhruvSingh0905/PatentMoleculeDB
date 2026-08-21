@@ -67,7 +67,14 @@ class RepairReport:
     adopted: int = 0
     rejected: int = 0
     escalated: int = 0
+    # Rows a rule EMITTED, before dedup and without asking whether any of
+    # them is a usable measurement. Kept because it is what the journal
+    # records; read `usable_gain` to judge a run.
     rows_recovered: int = 0
+    # Usable measurements after the run minus before, over the same
+    # deduplicated population the caller receives. Can be zero, and can be
+    # negative. That is the point — see the note where it is set.
+    usable_gain: int = 0
     # Unusable records dropped because a repaired twin of the SAME
     # (cid, assay, table) exists. Not a loss — see the supersession note in
     # `repair_patent`. Reported so the count is visible rather than implied by
@@ -415,6 +422,9 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
     tables = assemble_blocks(raw)
     by_id = {t.table_id: t for t in tables}
     baseline = extract_from_patent(xml)
+    # Counted HERE, before the dedup below rebinds `baseline`. See the
+    # `usable_gain` note at the end of this function.
+    usable_before = sum(1 for r in baseline if r.is_usable)
 
     # Pass the RECORDS and the source XML, not a tally: the yield metric must
     # ask whether each record is a usable measurement, and the legend hunt
@@ -977,6 +987,24 @@ def repair_patent(patent_id: str, xml: str, *, library: RuleLibrary | None = Non
         logger.info("repair: %s — %d unusable record(s) superseded by a "
                     "repaired twin", patent_id, superseded)
     report.superseded = superseded
+    # WHAT THE RUN WAS WORTH, measured on the merged output rather than on what
+    # the rules emitted.
+    #
+    # `rows_recovered` is `len(produced)` summed over adopted rules — rows a
+    # rule made, counted before dedup and without asking whether any of them
+    # became a usable measurement. It cannot go down and it cannot be zero
+    # while a rule is adopted, so it reports success for a run that achieved
+    # nothing: measured over six patents, US10030020 reported 4,404 recovered
+    # for a real gain of 232, and US10125101 and US9914735 reported 168 and 229
+    # for a real gain of ZERO. That is the proxy-for-success shape this repo
+    # keeps paying for — `AssayRecord.missing_fields` carries the same warning.
+    #
+    # This one can fail: it is the count of usable measurements after the run
+    # minus the count before, over the same deduplicated population the caller
+    # receives. A run that changes nothing reports 0. A run that makes things
+    # worse reports a negative number.
+    report.usable_gain = (sum(1 for r in merged if r.is_usable)
+                          - usable_before)
     return merged, report
 
 
