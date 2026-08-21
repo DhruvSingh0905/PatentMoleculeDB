@@ -2264,6 +2264,25 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
     for t in raw:
         by_block.setdefault(t.table_id, []).append(t)
 
+    # A KEY GOVERNS UNTIL THE DOCUMENT REDEFINES IT, so it is a fact about the
+    # DOCUMENT and not about a character distance.
+    #
+    # Every route into a key here is proximity-bounded — a 12,000-character
+    # look-back, a 6,000-character slice of it, the block's own rows. That is
+    # the right PRECEDENCE and the wrong SCOPE. US11566007 states its scale
+    # exactly once, in the footer of TABLE-US-00006, and then prints fourteen
+    # more tables against it; by TABLE-US-00020 the definition is 270,567
+    # characters back. No window reaches that, and widening the constant only
+    # buys the next document.
+    #
+    # `_document_legend` was meant to be this fallback and cannot be, because
+    # it skips any block holding graded data of its own — and this key sits in
+    # a data table's footer. So the scope is fixed HERE, where precedence
+    # already lives: carry the last key forward, and let any block that states
+    # its own keep it. Nearest still wins; the difference is that "nearest"
+    # is now measured in blocks rather than characters.
+    carried_key: dict = {}
+
     for block_id, raw_block in by_block.items():
         block = [assembled[block_id]] if block_id in assembled else raw_block
         # ...INCLUDING the prose immediately before and after the block.
@@ -2327,6 +2346,12 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
         per_column = _prose_sections_for(prose, records, block_id)
         for sym, br in bin_legend.parse_bin_key_layered(prose).items():
             key.setdefault(sym, br)
+        # The block stated a scale, so it becomes the one in force. A block
+        # that stated none inherits it. See `carried_key` above.
+        if key:
+            carried_key = dict(key)
+        elif carried_key:
+            key = dict(carried_key)
         # A GRADE ASSIGNMENT IS DATA, EVEN WITHOUT ITS SCALE. This gate threw
         # the whole block away when no key resolved — so a table that plainly
         # states `++ → A028, A075, A076, …` produced nothing at all, rather
@@ -2348,7 +2373,14 @@ def extract_from_patent(xml: str) -> list[AssayRecord]:
             continue
         _apply_per_column(records, block_id, per_column)
         name, unit = caption_assay_hint(raw_block[0].caption)
-        name = name or _assay_name_from(text) or "assay (binned)"
+        # ASK FOR THE NAME IN THE PROSE, NOT IN THE LEGEND. `text` leads with
+        # the key lines, so the first metric token in it belongs to the scale
+        # and the heading sits behind them. Handing the two to one function as
+        # one string is what made a name out of `*Key: ++++: IC50`.
+        # `prose` still holds a key of its own — `nearest_key_before` is one of
+        # its three parts — so `_assay_name_from` refuses key-shaped spans too.
+        name = name or _assay_name_from(" ".join(p for p in prose if p)) \
+            or "assay (binned)"
         records.extend(extract_inverted(
             block, key, assay_name=name,
             unit=unit or next((b.unit for b in key.values() if b.unit), None),
@@ -2459,19 +2491,71 @@ _NOT_MID_NUMBER = r"(?<![\d.])"
 _LEADING_CONC = re.compile(r"^(?:[\d.]+\s*)?(?:[nuµμmp]?M|%)\b\s*", re.I)
 
 
+# The metric the heading names, and the punctuation that actually ENDS a
+# heading. A comma and a colon do not: they are ordinary punctuation inside
+# one, which is the whole point below.
+_METRIC_TOKEN = re.compile(_NOT_MID_NUMBER + r"(?:IC\s*50|EC\s*50|Ki|Kd)\b")
+# A bin symbol standing alone ends the text before it — everything to its left
+# belongs to the scale, not to the heading. Required to be delimited, so the
+# `+` of a name like `CD8+ T cell` is not mistaken for one.
+_HARD_BREAK = re.compile(r";|\.\s|\n|(?<=\s)[+*#]{1,6}(?=[\s:])")
+
+
 def _assay_name_from(text: str) -> str | None:
-    """Best-effort assay name from a bin table's own heading text."""
-    m = re.search(
-        _NOT_MID_NUMBER + r"([A-Za-z0-9 /()\-]{4,60}?(?:IC\s*50|EC\s*50|Ki|Kd))",
-        text)
-    if not m:
-        return None
-    name = re.sub(r"\s+", " ", m.group(1)).strip()
-    prev = None
-    while name != prev:                     # `0.1 uM 1 uM BTK IC50` stacks
-        prev = name
-        name = _LEADING_CONC.sub("", name).strip()
-    return name or None
+    """Best-effort assay name from a bin table's own heading text.
+
+    FIND THE METRIC, THEN READ AROUND IT. The previous form asked one regex to
+    bridge from the name to the metric through `[A-Za-z0-9 /()\\-]{4,60}?` —
+    a whitelist of the characters allowed to sit between them. It holds no
+    comma and no colon, so US11566007's own heading,
+    `...assay data (K-Ras G12C, IC50, uM):`, could not be reached: a comma
+    sits one character before the metric. 818 records shipped under the
+    placeholder `assay (binned)` with the real name present in text the
+    function already had.
+
+    Enumerating the permitted characters is the recurring defect in this file
+    — see the gotcha in CLAUDE.md about a filter in front of a parser. A
+    heading is not a character class. It is the text up to the last hard
+    break, and a hard break is `;`, a sentence end or a newline.
+    """
+    from . import bin_legend
+
+    for m in _METRIC_TOKEN.finditer(text):
+        head = text[max(0, m.start() - 90):m.start()]
+        breaks = list(_HARD_BREAK.finditer(head))
+        if breaks:
+            head = head[breaks[-1].end():]
+        end = m.end()
+        # The metric often sits INSIDE a parenthetical —
+        # `(K-Ras G12C, IC50, uM)`. Cutting at the metric leaves the bracket
+        # open, so close it if the document closes it nearby.
+        if (head + m.group(0)).count("(") > (head + m.group(0)).count(")"):
+            close = text.find(")", end)
+            if 0 <= close - end <= 40:
+                end = close + 1
+        cand = re.sub(r"\s+", " ", head + text[m.start():end]).strip(" -,:;")
+        prev = None
+        while cand != prev:                 # `0.1 uM 1 uM BTK IC50` stacks
+            prev = cand
+            cand = _LEADING_CONC.sub("", cand).strip()
+        # A BIN KEY IS NOT AN ASSAY NAME, and it states a metric too. The
+        # caller hands this function the key lines FIRST, so the first metric
+        # in the text is routinely inside one: reading it gave 825 records the
+        # name `+++++: IC50` and 818 the name `*Key: ++++: IC50`. Skip those
+        # and keep looking — the heading is further along the same string.
+        # `looks_like_key` is the project's one test for this; do not invent
+        # a second.
+        if bin_legend.looks_like_key(cand):
+            continue
+        # A METRIC ALONE NAMES NOTHING. `IC50 >= 0.1 uM ++ ...` opens with the
+        # metric, so the first candidate is the bare word `IC50` — the scale
+        # read as the assay. The old form could not reach this because it
+        # demanded four characters before the metric; that length was doing
+        # real work, and this is the requirement it was standing in for.
+        if not re.search(r"[A-Za-z]", _METRIC_TOKEN.sub(" ", cand)):
+            continue
+        return cand or None
+    return None
 
 
 

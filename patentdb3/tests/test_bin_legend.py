@@ -739,17 +739,60 @@ def test_every_placeholder_name_the_reader_mints_is_one_it_flags():
 def test_a_block_of_unnamed_records_is_raised_for_the_loop():
     """The column-based detector asks this of COLUMNS, and columns are not the
     only way a name is minted — the inverted path names a whole block at once.
-    The signal is the name, not the code path."""
+    The signal is the name, not the code path.
+
+    SYNTHETIC ON PURPOSE. This was pinned to US11566007 TABLE-US-00005, whose
+    818 records all read `assay (binned)` because `_assay_name_from` could not
+    reach a metric with a comma in front of it. That is fixed, and no document
+    in the corpus produces a placeholder-named block any more — so a test that
+    needs one has to build it. Keeping it on a real document would have meant
+    either deleting the invariant or waiting for a patent to break it again.
+    """
     from patentdb3.repair.gap import find_gaps
+    from patentdb3.sources.uspto_assays import PLACEHOLDER_ASSAY_NAMES
     from patentdb3.sources.uspto_xml import assemble_blocks, parse_tables
-    xml = _xml("US11566007")
-    gaps = find_gaps("US11566007", assemble_blocks(parse_tables(xml)),
-                     extract_from_patent(xml), _source_xml=xml)
-    hit = [g for g in gaps
-           if g.table_id == "TABLE-US-00005" and "placeholder name" in (g.reason or "")]
+
+    xml = (
+        '<tables id="TABLE-US-00001"><tgroup cols="2">'
+        '<colspec colname="1" colwidth="100pt"/>'
+        '<colspec colname="2" colwidth="100pt"/>'
+        "<thead><row><entry>Compound</entry>"
+        "<entry>hERG IC50 (uM)</entry></row></thead>"
+        "<tbody>"
+        + "".join(f"<row><entry>{i}</entry><entry>{i / 10:.2f}</entry></row>"
+                  for i in range(1, 9))
+        + "</tbody></tgroup></tables>"
+    )
+    tables = assemble_blocks(parse_tables(xml))
+    placeholder = sorted(PLACEHOLDER_ASSAY_NAMES)[0]
+    records = [r for r in extract_from_patent(xml)]
+    for r in records:
+        r.assay_name = placeholder
+    assert records, "fixture must yield records for the detector to judge"
+
+    gaps = find_gaps("USTEST", tables, records, _source_xml=xml)
+    hit = [g for g in gaps if "placeholder name" in (g.reason or "")]
     assert hit, "a block whose every record is unnamed must reach the loop"
     assert hit[0].asks == "column_names", \
         "it must ask for names, or the loop answers a scale question instead"
+
+
+def test_the_binned_block_takes_the_documents_own_heading():
+    """The fix the test above used to be pinned to.
+
+    US11566007 TABLE-US-00005 heads itself `Additional H358 Cell Viability
+    assay data (K-Ras G12C, IC50, uM):`. A comma sits one character before the
+    metric, and `_assay_name_from` bridged to the metric through a character
+    class holding no comma — so all 818 records shipped as `assay (binned)`
+    with the real name in text the function already had.
+    """
+    from patentdb3.sources.uspto_assays import PLACEHOLDER_ASSAY_NAMES
+    xml = _xml("US11566007")
+    names = {r.assay_name for r in extract_from_patent(xml)
+             if r.table_id == "TABLE-US-00005"}
+    assert names == {
+        "Additional H358 Cell Viability assay data (K-Ras G12C, IC50, uM)"}
+    assert not (names & PLACEHOLDER_ASSAY_NAMES)
 
 
 def test_a_caption_naming_another_table_is_not_used():

@@ -983,17 +983,33 @@ def nearest_key_before(text: str) -> str:
     # patent will not print them back to back. Splitting on the repeat is what
     # makes "nearest wins" hold, because `parse_bin_key` takes the FIRST
     # definition of a symbol and merging two keys would hand back the older.
+    # WALK FROM THE END, because the end is what the caller wants.
+    #
+    # Splitting forward puts the boundary in the wrong place whenever a later
+    # key opens with a symbol the earlier key never used. Reading forward,
+    # `+++++` is simply a symbol not yet seen, so it joins the run it follows
+    # instead of opening its own; the repeat one symbol later then starts the
+    # new run WITHOUT it. US11566007 is exactly that: its five-grade key runs
+    # `+++++ ++++ +++ ++ +`, the nearest run came back as the last four, and
+    # `parse_bin_key` returned a key that defines every grade except the one
+    # the run began with. 413 records on TABLE-US-00007 carried `+++++` and no
+    # range, while `++`, `+++` and `++++` all resolved — the signature of a
+    # boundary drawn one symbol too late.
+    #
+    # Walking backwards, the first run IS the last key, complete, and a repeat
+    # can only mean we have stepped into the key before it. Same rule, applied
+    # from the side that defines the answer.
     runs: list[list[int]] = []
     cur: list[int] = []
     seen: set[str] = set()
-    for pos, sym in hits:
+    for pos, sym in reversed(hits):
         if sym in seen:
-            runs.append(cur)
+            runs.append(cur[::-1])
             cur, seen = [], set()
         cur.append(pos)
         seen.add(sym)
-    runs.append(cur)
-    for run in reversed(runs):
+    runs.append(cur[::-1])
+    for run in runs:                     # built nearest-first already
         if not run:
             continue
         span = text[run[0]:run[-1] + 260]
