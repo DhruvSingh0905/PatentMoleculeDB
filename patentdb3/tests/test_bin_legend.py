@@ -1205,3 +1205,50 @@ def test_a_refused_grouped_layout_reaches_the_loop():
     # the gap has to carry the layout, or the model cannot answer it
     assert hit[0].column_kinds.count("cid") >= 2
     assert hit[0].sample
+
+
+def test_a_second_id_column_does_not_donate_its_values_to_the_first():
+    """US10125101 TABLE-US-00005 heads four columns
+
+        Example in this invention | IC50 [μM] | Example in WO 2013/178575 | IC50 [μM]
+
+    — its own compounds beside a PRIOR ART patent's. `_column_groups` refuses
+    to split it on purpose, because splitting would file WO 2013/178575's
+    compounds as this patent's. The ordinary path then took the leftmost id and
+    attached BOTH IC50 columns to it, so compound 2 shipped its own 20 μM and
+    the 6 μM belonging to the WO compound beside it — a real number under a
+    real compound that never had it.
+    """
+    xml = _xml("US10125101")
+    recs = [r for r in extract_from_patent(xml)
+            if r.table_id == "TABLE-US-00005"]
+    assert recs, "fixture table must still produce records"
+    two = [r.value_numeric for r in recs if r.cid == "2"]
+    assert two == [20.0], f"compound 2 must carry only its own value, got {two}"
+    seen = [r.cid for r in recs]
+    assert len(seen) == len(set(seen)), "no compound may appear twice here"
+
+
+def test_a_repeating_id_column_is_not_a_second_compound_column():
+    """The guard above must not fire on a column that merely LOOKS id-shaped.
+
+    US11649247's `Mice (n) Number` holds `5` twenty-five times — animal-group
+    sizes — and reads as the same `#` id family as the compound column beside
+    it. Cutting the table there dropped its only assay column and 20 real
+    records. An id that repeats identifies nothing.
+    """
+    from patentdb3.sources.uspto_assays import _identifies, _split_rows
+    from patentdb3.sources.uspto_xml import assemble_blocks, parse_tables
+
+    xml = _xml("US11649247")
+    tbl = next(t for t in assemble_blocks(parse_tables(xml))
+               if t.table_id == "TABLE-US-00017")
+    _, data = _split_rows(tbl)
+    assert not _identifies(data, 4), "a column of repeated counts is not an id"
+    # NOTE the test deliberately does not assert `_identifies(data, 1)`. This
+    # table repeats its compound column too — it is a dose escalation, so
+    # compound `1` appears at several doses — and that is fine, because the
+    # guard only ever asks this of the SECOND id column onward. The first is
+    # never tested; it is the one the row already belongs to.
+    assert [r for r in extract_from_patent(xml)
+            if r.table_id == "TABLE-US-00017"], "its assay column must survive"

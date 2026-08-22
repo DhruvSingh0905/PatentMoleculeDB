@@ -2781,6 +2781,27 @@ def _id_column_family(rows, i: int, val_idx: list[int] | None = None) -> str | N
     return fam if fams[fam] >= len(ids) * _GROUP_FAMILY_PURITY else None
 
 
+def _identifies(rows, i: int) -> bool:
+    """Does column `i` DISTINGUISH its rows? An id that repeats identifies
+    nothing.
+
+    `_id_column_family` asks whether the cells are id-SHAPED, and a column of
+    small integers passes that whatever it counts. US11649247's
+    `Mice (n) Number` holds `5` twenty-five times — animal-group sizes — and
+    reads as the same `#` family as the compound column beside it. Cutting the
+    table there dropped its only assay column and 20 real records.
+
+    The separation is not close: measured over the corpus, a genuine second id
+    column runs 0.98-1.00 distinct (US10125101 `Example` 10/10, US9718790
+    `Compound No.` 55/55) and the count column runs 0.04. `_GROUP_ID_FRACTION`
+    is reused rather than adding a second threshold to tune.
+    """
+    vals = [r[i].text.strip() for r in rows if len(r) > i and r[i].text.strip()]
+    if len(vals) < _GROUP_MIN_IDS:
+        return False
+    return len(set(vals)) >= len(vals) * _GROUP_ID_FRACTION
+
+
 def _column_groups(cols: list[Column], rows) -> list[tuple[Column, list[Column]]] | None:
     """Repeating `(id, value…)` column groups, or None for an ordinary table.
 
@@ -3054,6 +3075,33 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
             data_rows=data_rows)
 
         cid_col = next((c for c in cols if c.kind == CID), None)
+        # A SECOND ID COLUMN THAT REALLY HOLDS IDS ENDS THE FIRST ONE'S ROW.
+        #
+        # `_column_groups` refuses US10125101's
+        # `Example in this invention | IC50 | Example in WO 2013/178575 | IC50`
+        # on purpose — the second column numbers ANOTHER PATENT's examples, so
+        # splitting it would file WO 2013/178575's compounds as this patent's.
+        # That refusal is right. What followed it was not: everything below
+        # takes the leftmost id and attaches EVERY assay column to it, so
+        # compound 2 shipped its own 20 uM AND the 6 uM belonging to the WO
+        # compound beside it. The refusal traded one corruption for another,
+        # and the second is the worse kind — a real number under a real
+        # compound that never had it.
+        #
+        # Columns after a genuine second id describe a different series. We do
+        # not read that series (we cannot say whose compounds they are) and we
+        # must not graft its values onto ours, so the boundary simply ends the
+        # first id's columns. 84 records on US10125101.
+        #
+        # GENUINE is the load-bearing word. `_HEADER_CID` types a column from
+        # its header alone, which produces id columns that hold no ids at all —
+        # a blank `Compound` column on US10472364, `Mice (n) Number` on
+        # US11649247, `GK ID` on US12281080. Cutting at one of those would drop
+        # every assay in the table. `_id_column_family` is the same body test
+        # `_column_groups` already applies, and it answers None for all three.
+        # Applied BELOW, after `_column_groups` has had its say — a legitimate
+        # side-by-side list also has a genuine second id column, and cutting
+        # there would keep only its first pair.
         assay_cols = [c for c in cols if c.kind == ASSAY]
         # Columns typed NMR or MS may contain embedded assay values in
         # free-text prose cells (e.g. "FXR EC50 (nM) = 1497"). Collect them
@@ -3081,6 +3129,49 @@ def extract_from_tables(tables: list[Table]) -> list[AssayRecord]:
         if groups:
             out.extend(_extract_column_groups(t, groups, data_rows))
             continue
+
+        # GROUPING REFUSED, AND A SECOND ID COLUMN IS STILL THERE.
+        #
+        # `_column_groups` refuses US10125101's
+        # `Example in this invention | IC50 | Example in WO 2013/178575 | IC50`
+        # on purpose — the second column numbers ANOTHER PATENT's examples, so
+        # splitting it would file WO 2013/178575's compounds as this patent's.
+        # That refusal is right. What followed it was not: the code below takes
+        # the leftmost id and attaches EVERY assay column to it, so compound 2
+        # shipped its own 20 uM AND the 6 uM belonging to the WO compound
+        # beside it. The refusal traded one corruption for another, and this is
+        # the worse kind — a real number under a real compound that never had
+        # it, indistinguishable from a measurement in the output.
+        #
+        # Columns after a genuine second id describe a different series. We
+        # cannot say whose compounds they are, so we do not read them; what we
+        # must not do is graft their values onto ours. 84 records, US10125101.
+        #
+        # GENUINE is the load-bearing word. `_HEADER_CID` types a column from
+        # its header alone, which produces id columns holding no ids at all — a
+        # blank `Compound` column on US10472364, `Mice (n) Number` on
+        # US11649247, `GK ID` on US12281080. Cutting at one of those would drop
+        # every assay in the table. `_id_column_family` is the same body test
+        # `_column_groups` already applies, and it answers None for all three.
+        cid_idx = [i for i, c in enumerate(cols) if c.kind == CID]
+        if len(cid_idx) > 1:
+            val_idx = [i for i, c in enumerate(cols) if c.kind == ASSAY]
+            second = next((i for i in cid_idx[1:]
+                           if _id_column_family(data_rows, i, val_idx)
+                           and _identifies(data_rows, i)), None)
+            if second is not None:
+                dropped = [c.header for c in cols[second:] if c.kind == ASSAY]
+                cols = cols[:second]
+                assay_cols = [c for c in cols if c.kind == ASSAY]
+                prose_cols = [c for c in cols if c.kind in (NMR, MS)]
+                if dropped:
+                    logger.info(
+                        "%s: a second id column at %d holds ids, so %d assay "
+                        "column(s) after it belong to another series and were "
+                        "not attached to %r: %s", t.table_id,
+                        second, len(dropped), cid_col.header, dropped)
+                if not assay_cols and not prose_cols:
+                    continue
 
         # CID fill-down: carry the last-seen CID forward within one table so
         # that sub-rows (enantiomers, racemates, salt forms) whose CID cell is
