@@ -233,3 +233,58 @@ def test_module_does_not_consult_the_route_feature_flag():
     src = (cid_first.__file__).replace(".pyc", ".py")
     body = open(src).read().split('"""', 2)[2]
     assert not re.search(r"config\.IUPAC_NAMES", body)
+
+
+def _xml_or_skip(pid: str) -> str:
+    path = config.XML_INPUT_DIR / f"{pid}.xml"
+    if not path.exists():
+        pytest.skip(f"{pid}.xml not cached")
+    return path.read_text(errors="replace")
+
+
+def test_a_table_split_into_a_drawings_half_and_a_data_half_is_joined():
+    """US9303033 prints `TABLE 37A` holding 354 drawings and no numbers, then
+    `TABLE 37B` holding 354 numbers and no drawings.
+
+    Every other route reads a compound's OWN row, so neither half yields
+    anything: the drawings have no cid to key on and the numbers have no
+    picture beside them. The patent has 1,271 assay compounds and had 1,270
+    with no structure and no marker — the largest single block of unplaced
+    compounds in the corpus, while the document states the pairing plainly.
+    """
+    from patentdb3.sources.cid_first import (
+        _drawing_refs, _extract_assays, _split_table_refs, normalize_cid,
+    )
+    xml = _xml_or_skip("US9303033")
+    known = {normalize_cid(r.cid) for r in _extract_assays(xml) if r.cid}
+    assert not _drawing_refs(xml), \
+        "no compound here has a drawing in its own row — that is the point"
+
+    refs = _split_table_refs(xml, known)
+    assert len(refs) == 931
+    # Verified against the raw XML: 37A's drawn rows open at CHEM-US-00848 and
+    # 37B's data rows open at A20, in the same order.
+    assert refs["A20"] == "CHEM-US-00848"
+    assert refs["B20"] == "CHEM-US-00849"
+    assert refs["C20"] == "CHEM-US-00850"
+
+
+def test_the_split_table_join_refuses_everything_it_cannot_confirm():
+    """Row position is the only correspondence such a table can have, so the
+    bar is four-fold: adjacency, an A/B title pair of the SAME number, exactly
+    equal counts, and every id in the B half being a compound we MEASURED.
+
+    Two consequences are asserted here rather than described. Eight of
+    US9303033's own 42 candidate pairs disagree on count and are refused. And
+    across the other 136 cached patents the join never fires at all — a gate
+    that produced pairings everywhere would be matching on shape, not on
+    evidence.
+    """
+    from patentdb3.sources.cid_first import (
+        _extract_assays, _split_table_refs, normalize_cid,
+    )
+    for pid in ("US9718790", "US10125101", "US11566007"):
+        xml = _xml_or_skip(pid)
+        known = {normalize_cid(r.cid) for r in _extract_assays(xml) if r.cid}
+        assert not _split_table_refs(xml, known), \
+            f"{pid} has no A/B split table and must produce no pairing"

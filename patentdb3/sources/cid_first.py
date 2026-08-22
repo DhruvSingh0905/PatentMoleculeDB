@@ -980,6 +980,86 @@ def _drawing_refs(xml: str) -> dict[str, str]:
     return out
 
 
+_TABLES_BLOCK = re.compile(r'<tables\b[^>]*id="([^"]+)"[^>]*>(.*?)</tables>',
+                           re.S)
+# `TABLE 37A` / `TABLE 37B` — a table the typesetter split in two, the
+# document's own label for the halves.
+_AB_TITLE = re.compile(r"\bTABLE\s+(\d+)\s*([AB])\b", re.I)
+
+
+def _split_table_refs(xml: str, known: set[str]) -> dict[str, str]:
+    """`cid -> drawing ref` for a table SPLIT into a drawings half and a data
+    half.
+
+    US9303033 prints `TABLE 37A` holding 354 drawings and no numbers, then
+    `TABLE 37B` holding 354 numbers and no drawings. Every other route here
+    reads a compound's own row, so neither half yields anything: the drawings
+    have no cid to key on and the numbers have no picture beside them. That
+    patent has 1,271 assay compounds and 1,270 with no structure and no marker
+    — the largest single block of unplaced compounds in the corpus, and the
+    document states the pairing plainly.
+
+    Row position is the only correspondence such a table can have, so the bar
+    for believing it is deliberately high. FOUR things must agree:
+
+      - the two blocks are ADJACENT in the document;
+      - their titles are the A and B halves of the SAME table number, which is
+        the document itself saying they are one table;
+      - the drawing count and the id count are EXACTLY equal — nothing lines
+        up two lists of different lengths, and this alone refuses 8 of
+        US9303033's 42 candidate pairs;
+      - and every id in the B half is a compound we actually MEASURED. That is
+        the check that cannot be satisfied by coincidence: a B half whose ids
+        are not our assay cids is not the data half of anything we hold.
+
+    What this produces is a POINTER TO A PICTURE, never a structure. A wrong
+    pairing would hand a compound the wrong drawing, which is why the gate is
+    four-fold; a missing pairing leaves the compound exactly as it is now,
+    which is nothing at all.
+    """
+    blocks = []
+    for m in _TABLES_BLOCK.finditer(xml):
+        body = m.group(2)
+        rows = [r.group(0) for r in _ROW.finditer(body)]
+        # The title is a ROW of the block, not a character offset into it: a
+        # data half opens with its colspecs, so `TABLE 37B` sits well past any
+        # fixed window over the raw text.
+        head = " ".join(re.sub(r"<[^>]+>", " ", r) for r in rows[:4])
+        title = _AB_TITLE.search(head)
+        chem, mine = [], []
+        for r in rows:
+            c = _CHEM_ID.search(r) or _IMG_FILE.search(r)
+            if c:
+                chem.append(c.group(1))
+            cells = _ENTRY.findall(r)
+            if not cells:
+                continue
+            first = re.sub(r"\s+", " ",
+                           _unescape(re.sub(r"<[^>]+>", "", cells[0]))).strip()
+            if first and len(first) <= _MAX_CID_LEN \
+                    and normalize_cid(first) in known:
+                mine.append(first)
+        blocks.append((title.group(1) if title else None,
+                       (title.group(2).upper() if title else None), chem, mine))
+
+    out: dict[str, str] = {}
+    for i in range(len(blocks) - 1):
+        (na, ha, chem_a, mine_a) = blocks[i]
+        (nb, hb, chem_b, mine_b) = blocks[i + 1]
+        if not na or na != nb or ha != "A" or hb != "B":
+            continue
+        # A draws and numbers nothing WE MEASURED; B numbers and draws nothing.
+        # Counted against `known` rather than against every id-shaped cell,
+        # because the title row itself — `TABLE 37A` — is an id-shaped cell.
+        if not chem_a or mine_a or chem_b:
+            continue
+        if len(mine_b) != len(chem_a):
+            continue
+        for cid, ref in zip(mine_b, chem_a):
+            out.setdefault(normalize_cid(cid), ref)
+    return out
+
+
 # A cid long enough, and punctuated enough, to be a chemical name rather than
 # an identifier. Same shape test `table_names._looks_chem_shaped` applies to a
 # table cell, and deliberately the same numbers — a string that would not be
@@ -1241,6 +1321,11 @@ def _resolve(xml: str, patent_id: str = "") -> tuple[list[NamedCompound], Stats]
     # same blank, and they need completely different work.
     resolved_cids = {nc.cid for nc in out}
     refs = _drawing_refs(xml)
+    # A compound's OWN row is stronger evidence than a positional pairing, so
+    # the split-table refs only fill what that left empty.
+    for _cid, _ref in _split_table_refs(
+            xml, {normalize_cid(c) for c in all_cids}).items():
+        refs.setdefault(_cid, _ref)
     # `<chemistry>` id -> the image file named inside that same block, so a
     # marker can carry an openable URL as well as an XML-internal pointer. One
     # pass over the document; `{}` when GP is disabled, which costs the marker
