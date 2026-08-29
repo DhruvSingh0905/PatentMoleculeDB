@@ -942,7 +942,7 @@ def _markush_cids(xml: str) -> dict[str, str]:
     return out
 
 
-def _drawing_refs(xml: str) -> dict[str, str]:
+def _drawing_refs(xml: str, known: set[str] | None = None) -> dict[str, str]:
     """`cid -> a reference to the drawing in that cid's own table row`.
 
     The reference is the `<chemistry>` id, falling back to the image filename,
@@ -961,8 +961,29 @@ def _drawing_refs(xml: str) -> dict[str, str]:
     compounds, 84 of which (97%) are these. US10870641 had 68. It is the
     single largest identified cause inside the unexplained bucket, and it was
     never a gap in the source — only in this dictionary.
+
+    THE ID IS NOT ALWAYS THE FIRST CELL. This read `cells[0]` and nothing
+    else, so a table that draws before it numbers was invisible: US9718790
+    lays its rows out `Structure | Compound No. | RT | [M+H]`, the structure
+    cell tag-strips to `""`, and all 2,711 of its drawing rows were skipped —
+    a 2.6 MB document with 2,930 drawings and not one reference emitted, while
+    2,248 of its compounds resolved to nothing at all.
+
+    WHICH cell is the id cannot be guessed from position, so it is not
+    guessed: the caller passes the assay cids it is holding, and a cell counts
+    as the id when it IS one of them. A row that names exactly one measured
+    compound is unambiguous; a row that names two is a side-by-side layout
+    where nothing says which drawing belongs to which, and it is refused.
+    `cells[0]` remains the fallback for a drawing whose compound is not in the
+    assay list at all, which is what this did before.
+
+    AND THE KEY IS NORMALISED. Every lookup uses `normalize_cid`, so a raw key
+    can never be found: US12065407 writes `CAP01564` where its assay tables say
+    `CAP1564`, and 42 of its 62 references had zero chance of matching. Keying
+    the same way the caller asks recovers those, plus 16 more on US10870641.
     """
     out: dict[str, str] = {}
+    known = known or set()
     for row in _ROW.finditer(xml):
         body = row.group(0)
         if "<img" not in body and "<chemistry" not in body:
@@ -970,13 +991,33 @@ def _drawing_refs(xml: str) -> dict[str, str]:
         cells = _ENTRY.findall(body)
         if not cells:
             continue
-        first = re.sub(r"\s+", " ",
-                       _unescape(re.sub(r"<[^>]+>", "", cells[0]))).strip()
+        texts = [re.sub(r"\s+", " ",
+                        _unescape(re.sub(r"<[^>]+>", "", c))).strip()
+                 for c in cells]
+        # POSITION 0 STILL WINS WHEN IT WORKS. The search below is a fallback,
+        # not a replacement, because "is a measured compound" is a weak test on
+        # its own: a patent numbering its compounds 1..N makes `1` a valid cid,
+        # and a retention time of `1` or a mass of `475.1` matches it. Ranking
+        # the search first refused 76 good rows on US10730877 as ambiguous —
+        # rows whose first cell was the id all along.
+        first = texts[0]
+        if not first or normalize_cid(first) not in known:
+            hits = [t for t in texts[1:]
+                    if t and len(t) <= _MAX_CID_LEN
+                    and normalize_cid(t) in known]
+            # Exactly one, or nothing. Two measured compounds in one drawing
+            # row is a side-by-side layout, and nothing there says which
+            # drawing belongs to which.
+            if len(hits) == 1:
+                first = hits[0]
+            elif hits:
+                continue
         if not first or len(first) > _MAX_CID_LEN:
             continue
         m = _CHEM_ID.search(body) or _IMG_FILE.search(body)
-        if m and first not in out:
-            out[first] = m.group(1)
+        key = normalize_cid(first)
+        if m and key not in out:
+            out[key] = m.group(1)
     return out
 
 
@@ -1320,7 +1361,7 @@ def _resolve(xml: str, patent_id: str = "") -> tuple[list[NamedCompound], Stats]
     # picture can be found. Without it, "drawn" and "we missed it" are the
     # same blank, and they need completely different work.
     resolved_cids = {nc.cid for nc in out}
-    refs = _drawing_refs(xml)
+    refs = _drawing_refs(xml, {normalize_cid(c) for c in all_cids})
     # A compound's OWN row is stronger evidence than a positional pairing, so
     # the split-table refs only fill what that left empty.
     for _cid, _ref in _split_table_refs(
