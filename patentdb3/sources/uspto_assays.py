@@ -1104,6 +1104,37 @@ _P_METRIC = re.compile(r"\bp\s*(?:ic|ec)\s*50\b|\bp\s*(?:ki|kd|k_?i|k_?d)\b", re
 _COLUMN_CACHE_MAX = 20_000
 
 
+def _values_are_names(samples: list[str]) -> bool:
+    """Do this column's cells hold chemical NAMES rather than identifiers?
+
+    A compound id is short and unpunctuated — `1`, `I-0268`, `CAP1564`. A
+    systematic name is neither. The test is `uspto_xml._looks_like_chem_name`,
+    the same one `table_names._looks_chem_shaped` and `_is_namelike` use, so a
+    string that would not be believed as a name in a table cell is not
+    believed as one here either.
+
+    A MAJORITY must agree, not one cell. A column of ids can carry a stray
+    long annotation (`41 Screen hit`), and one such cell must not disqualify
+    the column that numbers the whole table.
+    """
+    from .uspto_xml import _CHEM_SUBSTR_NARROW, _looks_like_chem_name
+
+    vals = [s.strip() for s in samples if s and s.strip()]
+    if not vals:
+        return False
+    named = sum(1 for v in vals
+                if len(v) > _MAX_ID_CELL_LEN
+                and _looks_like_chem_name(v, _CHEM_SUBSTR_NARROW))
+    return named > len(vals) / 2
+
+
+# Longer than this and a cell is not a compound number. Matches
+# `cid_first._MAX_CID_LEN`, which is the same judgement made at the other end
+# of the pipeline.
+_MAX_ID_CELL_LEN = 40
+
+
+
 def _memoise_column(fn):
     """Cache `classify_column` on its arguments, and NEVER share the result.
 
@@ -1224,6 +1255,9 @@ def classify_column(header: str, samples: list[str]) -> Column:
     if _HEADER_CID.search(low) and not _HEADER_ASSAY.search(low):
         # Also guard against p-prefixed metrics being swallowed by CID:
         # "pIC50" should not match a CID pattern.
+        # A column of NAMES headed `Compound` is handled in `build_columns`,
+        # not here — see `_demote_name_id_column`. It needs to see the other
+        # columns, because a name may legitimately BE the id.
         if not _CID_NOT_P_METRIC.search(low):
             return Column(-1, h, CID)
 
@@ -1598,7 +1632,57 @@ def build_columns(table: Table, inherited: list[str] | None = None,
                     c.kind = ASSAY
                     c.assay_name = cap_name
                     c.unit = cap_unit
+    _demote_name_id_column(cols, rows)
     return cols
+
+
+def _demote_name_id_column(cols: list[Column], rows) -> None:
+    """A column of NAMES is not the compound id — when another column is.
+
+    `_HEADER_CID` holds the word `compound`, and a column headed `Compound`
+    very often holds the compound's NAME rather than its number. US12011444
+    heads `Ex. | Compound | tR [min] | m/z` and fills that column with
+    90-character IUPAC names. Typed CID, it takes the role from `Ex.`, which
+    is left `unknown` — so `table_names` has no id to pair a name against and
+    a 1,463-row table of names yields NOTHING. 584 compounds on that patent.
+
+    `classify_column` cannot make this call: it sees one column at a time, and
+    the answer depends on whether anything ELSE can be the id. A NAME MAY
+    LEGITIMATELY BE THE ID — `cid IS a name` is a real layout, 420 compounds
+    corpus-wide at an 86% take rate — and refusing it outright cost US9018217
+    all 125 of its records when this was tried inside `classify_column`. So
+    the rule is narrow: demote only when another column is already CID, i.e.
+    only when the table has an id to fall back on.
+    """
+    named = []
+    for c in cols:
+        if c.kind != CID:
+            continue
+        vals = [r[c.index].text.strip() for r in rows
+                if len(r) > c.index and r[c.index].text.strip()]
+        if _values_are_names(vals):
+            named.append(c)
+    if not named:
+        return
+
+    # WHAT ELSE COULD BE THE ID. Another CID column is the easy case, but the
+    # real one is usually not typed CID at all: US12011444's id column is
+    # headed `Ex.`, which `_HEADER_CID` does not match, so it sits `unknown`
+    # holding `1, 2, 3`. `_id_column_family` is the body test `_column_groups`
+    # already uses — it asks whether the cells ARE ids rather than whether the
+    # header says so.
+    val_idx = [c.index for c in cols if c.kind == ASSAY]
+    fallback = next(
+        (c for c in cols
+         if c not in named and c.kind in (CID, UNKNOWN)
+         and _id_column_family(rows, c.index, val_idx)
+         and _identifies(rows, c.index)), None)
+    if fallback is None:
+        return                                  # never take away the only id
+    for c in named:
+        c.kind = UNKNOWN
+    if fallback.kind != CID:
+        fallback.kind = CID
 
 
 # ── value parsing ─────────────────────────────────────────────────

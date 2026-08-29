@@ -760,3 +760,50 @@ def test_us9265734_vertical_measured_yield():
     assert all(o.smiles for o in vert)
     assert sum(1 for o in vert if o.rows_joined > 1) == 7
     assert all(o.dewrap == "targeted" for o in vert if o.rows_joined > 1)
+
+
+def test_a_name_column_headed_compound_does_not_take_the_id_role():
+    """US12011444 heads `Ex. | Compound | tR [min] | m/z` and fills the
+    `Compound` column with 90-character IUPAC names.
+
+    `_HEADER_CID` holds the word `compound`, so that column was typed CID and
+    took the role from `Ex.`, which was left `unknown`. `table_names` then had
+    no id to pair a name against, and a 1,463-row table of names yielded
+    NOTHING — 584 compounds on this patent alone.
+    """
+    from patentdb3.core import config
+    from patentdb3.sources.uspto_assays import CID, build_columns
+    from patentdb3.sources.uspto_xml import assemble_blocks, parse_tables
+
+    path = config.XML_INPUT_DIR / "US12011444.xml"
+    if not path.exists():
+        pytest.skip("US12011444.xml not cached")
+    xml = path.read_text(errors="replace")
+    tbl = next(t for t in assemble_blocks(parse_tables(xml))
+               if t.table_id == "TABLE-US-00008")
+    cols = build_columns(tbl)
+    assert cols[0].kind == CID, "`Ex.` holds the numbers and is the id"
+    assert cols[1].kind != CID, "`Compound` holds names and is not the id"
+    assert len(extract_table_names(xml, "US12011444")) >= 500
+
+
+def test_a_name_that_IS_the_id_is_left_alone():
+    """The guard above must never take away the ONLY id. `cid IS a name` is a
+    real layout — 420 compounds corpus-wide at an 86% take rate — and
+    US9018217 is one: its single id column holds the names themselves.
+
+    Demoting it inside `classify_column`, where the other columns are not
+    visible, cost that patent all 125 of its records.
+    """
+    from patentdb3.core import config
+    from patentdb3.sources.uspto_assays import CID, build_columns, extract_from_patent
+    from patentdb3.sources.uspto_xml import assemble_blocks, parse_tables
+
+    path = config.XML_INPUT_DIR / "US9018217.xml"
+    if not path.exists():
+        pytest.skip("US9018217.xml not cached")
+    xml = path.read_text(errors="replace")
+    tbl = next(t for t in assemble_blocks(parse_tables(xml))
+               if t.table_id == "TABLE-US-00001")
+    assert build_columns(tbl)[0].kind == CID, "the only id must survive"
+    assert len(extract_from_patent(xml)) == 125
