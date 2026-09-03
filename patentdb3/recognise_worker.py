@@ -59,6 +59,25 @@ def load_molscribe():
     def predict(path: str):
         r = model.predict_image_file(path)
         return r.get("smiles", ""), r.get("molfile", ""), r.get("confidence", "")
+
+    # ONE AT A TIME IS THE SLOW PATH, AND THE GPU IS BILLABLE.
+    #
+    # `predict_image_file` runs a batch of one: the T4 sat at 0.37 images/s —
+    # 2.7 seconds each — which is 10 hours for this corpus's 13,847 drawings.
+    # Colab reclaimed the session before the first patent finished, so the
+    # run has to fit in a session, not merely start in one.
+    #
+    # `predict_image_files` takes a list and batches on the device. Attached
+    # as an attribute rather than changing the contract: the caller keeps its
+    # per-image loop when a recogniser has no batch call (DECIMER has none),
+    # and the results are identical either way — this changes when the model
+    # is asked, not what it answers.
+    def predict_many(paths: list[str]):
+        out = model.predict_image_files(paths)
+        return [(r.get("smiles", ""), r.get("molfile", ""),
+                 r.get("confidence", "")) for r in out]
+
+    predict.many = predict_many                  # type: ignore[attr-defined]
     return predict
 
 
@@ -99,6 +118,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="recognise_worker")
     ap.add_argument("job_dir", type=Path)
     ap.add_argument("--recogniser", default="", help="molscribe (default) or decimer")
+    ap.add_argument("--batch", type=int, default=16,
+                    help="images per GPU call when the recogniser batches. "
+                         "16 fits a 15 GB T4 with room to spare; lower it if "
+                         "the device runs out of memory.")
     a = ap.parse_args(argv)
 
     manifest = json.loads((a.job_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -123,28 +146,46 @@ def main(argv: list[str] | None = None) -> int:
     with out.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, FIELDS, delimiter="\t", extrasaction="ignore")
         w.writeheader()
-        for i, item in enumerate(images, 1):
-            path = a.job_dir / item["file"]
-            row = {"chemistry_id": item["id"],
-                   "image_file": Path(item["file"]).name,
-                   "smiles": "", "molfile": "", "confidence": "",
-                   "recogniser": name, "error": ""}
-            try:
-                smi, molfile, conf = predict(str(path))
-                row["smiles"] = smi or ""
-                # Newlines would break the TSV row. Restored on read.
-                row["molfile"] = (molfile or "").replace("\n", "\\n")
-                row["confidence"] = "" if conf == "" else f"{float(conf):.4f}"
-                if not smi:
-                    row["error"] = "empty prediction"
-            except Exception as e:                # one bad drawing, not the run
-                row["error"] = f"{type(e).__name__}: {e}"[:200]
-                traceback.print_exc(limit=1)
-            w.writerow(row)
-            rows.append(row)
-            if i % 25 == 0 or i == len(images):
-                fh.flush()
-                print(f"  {i}/{len(images)}", flush=True)
+        # Batched when the recogniser offers it, one at a time otherwise. The
+        # chunk is small enough that a failure costs a chunk, not the run, and
+        # that the file still grows often enough to poll — both properties the
+        # per-image loop had and neither is worth trading for speed.
+        many = getattr(predict, "many", None)
+        step = a.batch if many else 1
+        i = 0
+        for start in range(0, len(images), step):
+            chunk = images[start:start + step]
+            paths = [str(a.job_dir / it["file"]) for it in chunk]
+            got: list = []
+            if many:
+                try:
+                    got = many(paths)
+                except Exception as e:      # fall back rather than lose them
+                    print(f"  batch of {len(chunk)} failed ({type(e).__name__}); "
+                          f"retrying one at a time", flush=True)
+                    got = []
+            for j, item in enumerate(chunk):
+                i += 1
+                row = {"chemistry_id": item["id"],
+                       "image_file": Path(item["file"]).name,
+                       "smiles": "", "molfile": "", "confidence": "",
+                       "recogniser": name, "error": ""}
+                try:
+                    smi, molfile, conf = (got[j] if j < len(got)
+                                          else predict(paths[j]))
+                    row["smiles"] = smi or ""
+                    # Newlines would break the TSV row. Restored on read.
+                    row["molfile"] = (molfile or "").replace("\n", "\\n")
+                    row["confidence"] = "" if conf == "" else f"{float(conf):.4f}"
+                    if not smi:
+                        row["error"] = "empty prediction"
+                except Exception as e:            # one bad drawing, not the run
+                    row["error"] = f"{type(e).__name__}: {e}"[:200]
+                    traceback.print_exc(limit=1)
+                w.writerow(row)
+                rows.append(row)
+            fh.flush()
+            print(f"  {i}/{len(images)}", flush=True)
 
     ok = sum(1 for r in rows if r["smiles"])
     print(f"wrote {out}  —  {ok}/{len(rows)} recognised")
