@@ -292,6 +292,59 @@ def structures(patent_id: str) -> dict[str, str]:
     return read_results(patent_id)
 
 
+def supersede(rows: list, patent_id: str) -> tuple[list, int]:
+    """Fill each drawn marker whose picture the recogniser could read.
+
+    `rows` is the merged structure list for one patent, exactly as
+    `verify.dump()` assembles it. Returns `(rows, n_filled)`.
+
+    WITHOUT THIS THE GPU WORK REACHES NOTHING. `recognise.structures()` existed
+    and only `repair/markush_loop.py` called it, so a finished `results.tsv`
+    fed the assembly tier and nothing else: 2,840 drawings read at 89-96%
+    against the patents' own printed masses, and `structures.tsv` still
+    recorded every one of those compounds as drawn-and-unresolved. The models
+    were never the missing piece.
+
+    THE JOIN IS THE IMAGE STEM, NOT `drawn_ref`. A worker keys its rows on the
+    file it was given — `US11286268-20220329-C01557` — while `drawn_ref` is
+    the `<chemistry>` id, `CHEM-US-01557`. Both live on the row; only one of
+    them matches. Joining on `drawn_ref` returns 0 of 2,838 and looks exactly
+    like a recogniser that answered nothing.
+
+    Supersession, not union, and the same two rules `image_ocr.supersede`
+    holds to: only a row with NO InChIKey is filled, so a compound the text
+    track resolved keeps its text answer; and the picture pointer survives, so
+    a structure read from pixels is still traceable to the drawing it came
+    from. `source` becomes the recogniser's name, which is what tells this
+    apart from a parsed name if a join ever turns out wrong.
+    """
+    got = structures(patent_id)
+    if not got:
+        return rows, 0
+    from rdkit import Chem, RDLogger
+    RDLogger.DisableLog("rdApp.*")
+
+    n = 0
+    for nc in rows:
+        if getattr(nc, "inchikey", "") or not getattr(nc, "drawn_file", ""):
+            continue
+        smi = got.get(Path(str(nc.drawn_file)).stem)
+        if not smi:
+            continue
+        # RDKit IS THE GATE, exactly as OPSIN is on the text routes. A
+        # recogniser returns a SMILES string for every image it is shown,
+        # including ones that do not describe a molecule; a key can only be
+        # computed for one that does.
+        mol = Chem.MolFromSmiles(smi)
+        key = Chem.MolToInchiKey(mol) if mol is not None else ""
+        if not key:
+            continue
+        nc.smiles, nc.inchikey = smi, key
+        nc.source = config.RECOGNISER
+        n += 1
+    return rows, n
+
+
 def _from_legacy(path: Path) -> dict[str, str]:
     """`decimer.py`'s results, which are keyed by cid rather than drawing.
 

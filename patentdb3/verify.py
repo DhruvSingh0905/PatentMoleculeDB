@@ -83,6 +83,7 @@ from .sources import image_ocr, losses, mass_gate
 from .sources.uspto_assays import normalize_cid
 from .sources.cid_first import extract_by_cid
 from .sources.iupac_names import NamedCompound, extract_names
+from . import recognise
 from .sources.table_names import TableName, extract_table_names
 from .sources.uspto_assays import extract_from_patent
 from .sources.uspto_xml import UsptoUnavailable, fetch_grant_xml, parse_fidelity, parse_tables
@@ -209,7 +210,7 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
     DUMP_PATH.parent.mkdir(parents=True, exist_ok=True)
     STRUCT_PATH.parent.mkdir(parents=True, exist_ok=True)
     lib = RuleLibrary() if heal else None
-    n = n_struct = n_repaired = n_ocr = 0
+    n = n_struct = n_repaired = n_ocr = n_recognised = 0
     done: list[str] = []
     recovered_total = adopted_total = gaps_total = superseded_total = 0
     flags: list = []
@@ -350,6 +351,25 @@ def dump(pids: list[str], *, heal: bool | None = None) -> int:
                 except Exception as e:
                     print(f"  {pid}: image_ocr failed ({e})")
                     losses.record("image_ocr_exception", pid, error=repr(e))
+                # THE FOURTH ROUTE, and the only one that reads the MOLECULE
+                # out of the picture rather than a name printed beside it.
+                # `recognise.structures()` already existed and only the markush
+                # tier called it, so a finished GPU run reached the assembly
+                # code and nothing else — 2,840 drawings read at 89-96% against
+                # the patents' own masses while `structures.tsv` still called
+                # every one of them unresolved.
+                #
+                # Off unless `RECOGNISER_BACKEND`, and free when no
+                # `results.tsv` exists. Runs AFTER image_ocr, so a name the
+                # patent printed beside its drawing outranks a shape read off
+                # the pixels, and BEFORE the mass gate, so a recognised
+                # structure is weighed against the printed mass like any other.
+                try:
+                    _merged, _n_rec = recognise.supersede(_merged, pid)
+                    n_recognised += _n_rec
+                except Exception as e:
+                    print(f"  {pid}: recognise failed ({e})")
+                    losses.record("recognise_exception", pid, error=repr(e))
                 # THE ONE CHECK THAT DOUBTS THE ANCHOR, not the name. Run here
                 # because this is the first point both routes have been
                 # resolved AND merged, so every shipped row is weighed exactly

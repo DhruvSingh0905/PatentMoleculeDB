@@ -279,14 +279,24 @@ def build():
         drawn = (r.get("drawn_ref") or "").strip()
         has_structure = bool(r.get("inchikey"))
         markush = r.get("markush") == "True"
+        # THE ARTIFACT ALREADY SAYS WHICH ROUTE ANSWERED — read it, do not
+        # re-derive it. `source` is stamped by the route that resolved the row
+        # (`cid_first`, `table`, `image_ocr`, or the recogniser's own name),
+        # and inferring instead labelled every image-read structure `xml`,
+        # which is the one thing it is not. The reverse error was worse: a
+        # compound still WAITING on a recogniser was labelled `molscribe`,
+        # so the column read as "a model answered this" for 14,112 rows no
+        # model had seen.
+        src = (r.get("source") or "").strip()
         if has_structure and markush:
             route, status = "markush", "resolved"
         elif has_structure:
-            route, status = "xml", "resolved"
+            route = src or "xml"
+            status = "resolved"
         elif markush:
             route, status = "markush", "scaffold only, not assembled"
         elif drawn:
-            route, status = "molscribe", "drawn, not yet enumerated"
+            route, status = "drawn", "drawn, not yet enumerated"
         else:
             route, status = None, "no structure found"
         rows.append({
