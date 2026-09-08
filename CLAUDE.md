@@ -45,6 +45,46 @@ invent a second rule — an ad-hoc one scored 79.2% against the truth of 98.9%.
 Quote no coverage number without its date and its population. Re-run the dump
 if the tree changed.
 
+## The image track, run for real — 2026-09-03
+
+**MolScribe reads these drawings at 89-96%, judged against the mass the patent
+itself prints.** Not a sample: 2,840 drawings on two documents, every one read.
+
+| patent | images | read | mass-checkable | agree |
+|---|---:|---:|---:|---:|
+| US11286268 | 1,821 | 1,821 | 1,702 | **89%** |
+| US11053244 | 1,019 | 1,019 | 1,008 | **96%** |
+
+The older `score_sample` figure of 72.2% pooled is a different and harder
+population — 8 images per patent across 33 patents, chosen for breadth. Per
+patent its median was already 83%.
+
+**13,133 of 13,201 RECOVER drawings are fetched and staged** (60 min at
+3.7/s, `output_v3/recognise/`, 76 patents, 81 MB), so the remaining ~10,100
+need only GPU time. `RECOGNISER_BACKEND=file` reads a finished `results.tsv`.
+
+**THE JOIN IS ON `drawn_file`'s STEM, NOT ON `drawn_ref`.** `structures.tsv`
+carries both — `drawn_ref` is `CHEM-US-01557` and `drawn_file` is
+`US11286268-20220329-C01557.TIF` — while a worker keys its rows on the image
+stem. Joining on `drawn_ref` matches nothing and looks exactly like a failed
+recognition run. Measured correctly: 1,820 of 1,820 and 1,018 of 1,018.
+
+Three operational facts, each of which cost a run:
+
+- **Colab is on Python 3.13 and MolScribe cannot install there.** OpenNMT-py
+  needs `pyonmttok`, which publishes no wheel above 3.11. `COLAB_SETUP`'s
+  system-pip install therefore fails on every current runtime. What works is
+  a uv-built 3.11 venv: `uv venv --python 3.11 /content/ms`, install into it,
+  and launch the worker with `/content/ms/bin/python`.
+- **Clear `MPLBACKEND`.** Colab exports
+  `MPLBACKEND=module://matplotlib_inline.backend_inline`, which does not exist
+  in a fresh venv, and matplotlib raises on import before MolScribe loads.
+  `MPLBACKEND=Agg` in the worker's environment.
+- **A session is reclaimed mid-run, twice observed.** Anything that only
+  finishes in one long session will not finish. Batching made this
+  survivable — see the worker's `predict.many`: 0.37 img/s one at a time,
+  5.9 img/s in batches of 16, so a patent completes in minutes.
+
 ## The shape assumption, and where it still lives
 
 **Fixed 2026-08-21.** The recurring defect is a gate in front of a capable
