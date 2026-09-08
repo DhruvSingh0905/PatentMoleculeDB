@@ -340,7 +340,64 @@ def build():
     return rows
 
 
+# One row per MEASUREMENT, not per compound — the nested shape is right for a
+# database and wrong for a spreadsheet, where a reader wants to sort by potency
+# and see the structure on the same line. The compound's fields repeat down its
+# measurements, which is what makes the file pivotable.
+CSV_FIELDS = (
+    "patent_id", "cid", "route", "status", "smiles", "inchikey", "name",
+    "image_file", "image_ref", "reported_mz", "mass_check", "mass_delta",
+    "assay", "metric", "target", "dose", "species",
+    "value", "unit", "value_um", "qualifier",
+    "grade", "band", "lo", "hi", "n_runs", "table",
+)
+
+
+def to_csv(path, route=None):
+    """Flatten `build()` to one row per measurement. Returns (rows, compounds).
+
+    `route` filters to one identity route — `molscribe` for the structures a
+    recogniser read out of the drawings, `drawn` for the ones still waiting.
+    A compound with no measurements still gets a row, with the assay columns
+    empty: it was extracted, and a file that silently omitted it would
+    misreport coverage.
+    """
+    import csv as _csv
+
+    rows = [r for r in build() if route is None or r.get("route") == route]
+    n = 0
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = _csv.DictWriter(fh, CSV_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            base = {k: r.get(k) for k in CSV_FIELDS}
+            if not r["assays"]:
+                w.writerow(base)
+                n += 1
+                continue
+            for a in r["assays"]:
+                out = dict(base)
+                out.update({k: a.get(k) for k in
+                            ("assay", "metric", "target", "dose", "species",
+                             "value", "unit", "value_um", "qualifier",
+                             "grade", "band", "lo", "hi", "n_runs", "table")})
+                w.writerow(out)
+                n += 1
+    return n, len(rows)
+
+
 def main():
+    if "--csv" in sys.argv:
+        i = sys.argv.index("--csv")
+        path = (sys.argv[i + 1] if len(sys.argv) > i + 1
+                else BASE / "out" / "image_structures.csv")
+        route = None
+        if "--route" in sys.argv:
+            route = sys.argv[sys.argv.index("--route") + 1]
+        n, c = to_csv(path, route)
+        print(f"{n:,} measurement row(s) over {c:,} compound(s) -> {path}")
+        return 0
+
     rows = build()
     by_status = {}
     for r in rows:
